@@ -1,0 +1,31 @@
+# 前后端一体镜像的 HTTPS 反向代理。
+
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+
+{$DOMAIN} {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	reverse_proxy backend:19998 {
+		transport http {
+			read_timeout 180s
+			write_timeout 180s
+		}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

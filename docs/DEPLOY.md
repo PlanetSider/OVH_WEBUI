@@ -32,6 +32,32 @@ sudo -E ./scripts/linux-oneclick-deploy.sh --yes
 
 SSL 完整编排文件：`docker-compose.https.yml`（Caddy + backend + frontend，公网只开 80/443）。
 
+## GitHub 推送自动构建镜像
+
+仓库已配置 `.github/workflows/publish-images.yml`：推送到 `main` 或推送 `v*` 格式标签时，GitHub Actions 会将前端静态资源嵌入 Go 后端，并自动构建、发布一个 GHCR 镜像：
+
+```text
+ghcr.io/planetsider/ovh-webui:latest
+```
+
+同时会发布基于 Git 提交 SHA 和版本标签的镜像标签。工作流只负责构建和发布镜像，不会自动连接生产服务器更新容器。
+
+首次使用时，在 GitHub 仓库的 **Settings → Actions → General** 确认允许 Actions 使用 `GITHUB_TOKEN` 发布 Packages。第一次发布后，可在仓库的 **Packages** 中将镜像设为 Public；如果镜像保持 Private，服务器需要先执行 `docker login ghcr.io`。
+
+### 服务器使用 GHCR 镜像
+
+服务器保留 `.env` 和 Docker 数据卷，只需同步 Compose 配置或拉取最新代码，然后执行：
+
+```bash
+cd /opt/ovh-webui
+docker login ghcr.io
+docker compose -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.ghcr.yml up -d
+docker compose -f docker-compose.ghcr.yml ps
+```
+
+`docker-compose.ghcr.yml` 是可独立运行的 HTTPS 生产编排。项目自身只有一个前后端一体镜像，另一个容器是官方 `caddy` 镜像，用于 TLS 证书和 HTTPS 反向代理。若需要固定版本，可在 `.env` 中设置 `OVH_IMAGE_TAG=sha-<commit>` 或 `OVH_IMAGE_TAG=vX.Y.Z`。
+
 ---
 
 ## 架构（SSL 模式）
@@ -57,6 +83,15 @@ https://你的域名/api/telegram/webhook
 ```
 
 后端已将此路径加入鉴权白名单（Telegram 无需 X-API-Key）。
+
+**飞书事件与卡片回调 URL：**
+
+```text
+https://你的域名/api/feishu/events
+https://你的域名/api/feishu/card-action
+```
+
+飞书基础通知只需在 WebUI 的“设置 → 飞书”填写 App ID 和 App Secret。Verification Token、Encrypt Key 为可选回调安全项；如果需要事件绑定账户或卡片按钮交互，请按飞书应用后台的事件订阅配置填写。
 
 ---
 

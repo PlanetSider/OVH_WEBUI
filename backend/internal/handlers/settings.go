@@ -38,6 +38,10 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		patch.TgToken = strings.TrimSpace(patch.TgToken)
 		patch.TgChatID = strings.TrimSpace(patch.TgChatID)
 		patch.TgWebhookSecret = strings.TrimSpace(patch.TgWebhookSecret)
+		patch.FeishuAppID = strings.TrimSpace(patch.FeishuAppID)
+		patch.FeishuAppSecret = strings.TrimSpace(patch.FeishuAppSecret)
+		patch.FeishuVerificationToken = strings.TrimSpace(patch.FeishuVerificationToken)
+		patch.FeishuEncryptKey = strings.TrimSpace(patch.FeishuEncryptKey)
 		patch.Endpoint = strings.TrimSpace(patch.Endpoint)
 		patch.Zone = strings.TrimSpace(patch.Zone)
 		patch.IAM = strings.TrimSpace(patch.IAM)
@@ -62,6 +66,20 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if patch.TgWebhookSecret != "" {
 			newCfg.TgWebhookSecret = patch.TgWebhookSecret
 		}
+		if patch.FeishuAppID != "" {
+			newCfg.FeishuAppID = patch.FeishuAppID
+		}
+		if patch.FeishuAppSecret != "" {
+			newCfg.FeishuAppSecret = patch.FeishuAppSecret
+		}
+		if patch.FeishuVerificationToken != "" {
+			newCfg.FeishuVerificationToken = patch.FeishuVerificationToken
+		}
+		if patch.FeishuEncryptKey != "" {
+			newCfg.FeishuEncryptKey = patch.FeishuEncryptKey
+		}
+		// App ID + App Secret 即自动启用飞书发送能力；回调安全项单独校验。
+		newCfg.FeishuEnabled = newCfg.FeishuAppID != "" && newCfg.FeishuAppSecret != ""
 		if patch.Endpoint != "" {
 			newCfg.Endpoint = patch.Endpoint
 		}

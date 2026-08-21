@@ -23,6 +23,9 @@
 | 账户：邮件 / **订单** / 退款 / 账单 | ✅ | orders 已补 |
 | 联系人变更 | ✅ | |
 | Telegram | ✅ | |
+| **飞书通知 / 交互卡片** | ✅ | App ID + App Secret 可完成基础发送；可用性配置聚合卡片支持一键入队 |
+| **账户状态查询** | ✅ | `GET /api/accounts/status` 并发验证全部账户 |
+| **服务器控制摘要** | ✅ | `GET /api/server-control/:serviceName/summary` |
 | AuthGate + ⌘K + 移动端 | ✅ | |
 | **线上巡检** | ❌ **已取消** | 路由/页面/包已删 |
 | **Config Sniper** | ❌ **废弃不迁** | 不加入 |

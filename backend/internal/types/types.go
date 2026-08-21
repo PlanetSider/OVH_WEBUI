@@ -13,8 +13,21 @@ type Config struct {
 	// TgWebhookSecret 用于 setWebhook(secret_token) + 校验 X-Telegram-Bot-Api-Secret-Token。
 	// 防止任意人伪造 POST /api/telegram/webhook 入队。
 	TgWebhookSecret string `json:"tgWebhookSecret,omitempty"`
+	FeishuEnabled bool `json:"feishuEnabled,omitempty"`
+	FeishuAppID string `json:"feishuAppId,omitempty"`
+	FeishuAppSecret string `json:"feishuAppSecret,omitempty"`
+	FeishuVerificationToken string `json:"feishuVerificationToken,omitempty"`
+	FeishuEncryptKey string `json:"feishuEncryptKey,omitempty"`
 	IAM             string `json:"iam"`
 	Zone            string `json:"zone"`
+}
+
+// FeishuBinding 记录飞书用户与 OVH 账户的绑定关系。
+type FeishuBinding struct {
+	AccountID string `json:"accountId"`
+	OpenID string `json:"openId"`
+	Name string `json:"name,omitempty"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // DefaultConfig 与 Python 端默认值保持一致

@@ -1,6 +1,6 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -18,6 +18,8 @@ import {
   useClearCache,
   useTelegramWebhookInfo,
   useSetTelegramWebhook,
+  useFeishuBinding,
+  useSendFeishuTestCard,
   type SettingsConfig,
 } from "@/hooks/use-settings";
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
@@ -30,6 +32,7 @@ import {
   useDeleteAccount,
   useSetDefaultAccount,
   useVerifyAccount,
+  useAccountStatuses,
   accountChipColor,
   type OVHAccount,
 } from "@/hooks/use-accounts";
@@ -44,6 +47,7 @@ const SECTIONS = [
   { id: "password", icon: KeyRound, label: "访问密码" },
   { id: "accounts", icon: Globe, label: "OVH 账户" },
   { id: "telegram", icon: Send, label: "Telegram" },
+  { id: "feishu", icon: MessageSquare, label: "飞书" },
   { id: "cache", icon: Database, label: "缓存管理" },
 ] as const;
 
@@ -146,6 +150,8 @@ function SettingsPage() {
               <AccountsSection />
             ) : active === "telegram" ? (
               <TelegramSection form={form} set={set} onSaveToken={onSave} saving={save.isPending} />
+            ) : active === "feishu" ? (
+              <FeishuSection form={form} set={set} onSave={onSave} saving={save.isPending} />
             ) : (
               <CacheSection />
             )}
@@ -172,6 +178,55 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
       {hint && <p className="text-[11px] text-muted-foreground mt-1">{hint}</p>}
     </div>
+  );
+}
+
+function FeishuSection({
+  form,
+  set,
+  onSave,
+  saving,
+}: {
+  form: SettingsConfig;
+  set: (key: keyof SettingsConfig, value: string) => void;
+  onSave: () => Promise<void>;
+  saving: boolean;
+}) {
+  const accounts = useAccounts();
+  const defaultAccount = accounts.data?.find((account) => account.isDefault) || accounts.data?.[0];
+  const binding = useFeishuBinding(defaultAccount?.id);
+  const testCard = useSendFeishuTestCard(defaultAccount?.id);
+  const accountStatuses = useAccountStatuses(false);
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+
+  return (
+    <Section title="飞书通知与交互卡片">
+      <div className="rounded-2xl border border-border p-4 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-[13px] font-medium">启用飞书</h3>
+            <p className="text-[11px] text-muted-foreground mt-1">只填写 App ID 和 App Secret 即可完成飞书通知配置；Verification Token、Encrypt Key 为事件回调和按钮交互的可选安全项。</p>
+          </div>
+          <Chip tone={form.feishuEnabled ? "success" : "warning"}>{form.feishuEnabled ? "已启用" : "待配置"}</Chip>
+        </div>
+        <Field label="App ID"><Input value={form.feishuAppId || ""} onChange={(e) => set("feishuAppId", e.target.value)} placeholder="cli_xxx" /></Field>
+        <Field label="App Secret"><Input type="password" value={form.feishuAppSecret || ""} onChange={(e) => set("feishuAppSecret", e.target.value)} /></Field>
+        <Field label="Verification Token（可选）"><Input type="password" value={form.feishuVerificationToken || ""} onChange={(e) => set("feishuVerificationToken", e.target.value)} /></Field>
+        <Field label="Encrypt Key（可选）" hint="仅在飞书事件订阅启用了加密时填写；发送通知不需要此项。"><Input type="password" value={form.feishuEncryptKey || ""} onChange={(e) => set("feishuEncryptKey", e.target.value)} /></Field>
+        <div className="text-[11px] text-muted-foreground">事件订阅 URL：<code className="font-mono">{origin}/api/feishu/events</code></div>
+        <div className="text-[11px] text-muted-foreground">卡片回调 URL：<code className="font-mono">{origin}/api/feishu/card-action</code></div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={() => void onSave()} disabled={saving}>{saving ? "保存中…" : "保存飞书配置"}</Button>
+          <Button type="button" variant="outline" onClick={() => testCard.mutate()} disabled={testCard.isPending || !binding.data?.bound}>{testCard.isPending ? "发送中…" : "发送测试卡片"}</Button>
+          <Button type="button" variant="outline" onClick={() => void accountStatuses.refetch()} disabled={accountStatuses.isFetching}>{accountStatuses.isFetching ? "查询账户状态…" : "查询账户状态"}</Button>
+        </div>
+        <div className="text-[12px]">
+          <span className="text-muted-foreground">默认账户绑定：</span>{binding.data?.bound ? <Chip tone="success">已绑定 {binding.data.binding?.openId}</Chip> : <Chip tone="warning">未绑定</Chip>}
+        </div>
+        {accountStatuses.data && accountStatuses.data.length > 0 && <div className="space-y-1">{accountStatuses.data.map((account) => <div key={account.id} className="flex justify-between text-[12px]"><span>{account.name}</span><Chip tone={account.valid ? "success" : "danger"}>{account.valid ? "正常" : account.error || "失败"}</Chip></div>)}</div>}
+      </div>
+      <p className="text-[11px] text-muted-foreground">在飞书私聊中发送“绑定账户 账户ID”完成绑定；可用性通知会按配置组合聚合机房，并提供一键入队按钮。未填写 Token/Encrypt Key 时，发送能力仍可用，但事件绑定和按钮回调需补充安全项。</p>
+    </Section>
   );
 }
 

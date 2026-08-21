@@ -177,6 +177,14 @@ func main() {
 		api.DELETE("/accounts/:id", handlers.DeleteAccountByID(state, mon))
 		api.POST("/accounts/:id/set-default", handlers.SetDefaultAccountByID(state))
 		api.POST("/accounts/:id/verify", handlers.VerifyAccount(state))
+		api.GET("/accounts/status", handlers.AccountsStatus(state))
+
+		// Feishu events / interactive cards
+		api.POST("/feishu/events", handlers.FeishuEvents(state))
+		api.POST("/feishu/card-action", handlers.FeishuCardAction(state))
+		api.GET("/feishu/binding", handlers.FeishuBinding(state))
+		api.DELETE("/feishu/binding", handlers.ClearFeishuBinding(state))
+		api.POST("/feishu/test-card", handlers.FeishuTestCard(state))
 
 		// 快速下单端点 (监控的 auto-order 通过 HTTP 自调走它,前端也可直接调)
 		api.POST("/queue/quick-order", handlers.QuickOrder(state))
@@ -214,6 +222,7 @@ func main() {
 			sc.POST("/:service_name/reverse", handlers.SetReverseDNS(state))
 			sc.DELETE("/:service_name/reverse/:ip", handlers.DeleteReverseDNS(state))
 			sc.GET("/:service_name/serviceinfo", handlers.GetServiceInfo(state))
+			sc.GET("/:service_name/summary", handlers.GetServerSummary(state))
 			sc.PUT("/:service_name/serviceinfo/renewal", handlers.UpdateServiceRenewal(state))
 
 			// engagement(合同期切换)

@@ -27,6 +27,18 @@ func (m *Monitor) checkTGOrStop() bool {
 	if !due {
 		return true
 	}
+	if FeishuEnabled(m.state) {
+		m.tgCheckMu.Lock()
+		m.lastTGCheck = time.Now()
+		m.tgCheckMu.Unlock()
+		defaultAccountID := ""
+		if account, accountOK := m.state.FindAccount(""); accountOK {
+			defaultAccountID = account.ID
+		}
+		if _, ok := FeishuBindingForAccount(m.state, defaultAccountID); ok {
+			return true
+		}
+	}
 	ok, reason := telegram.VerifyConfig(m.state)
 	m.tgCheckMu.Lock()
 	m.lastTGCheck = time.Now()

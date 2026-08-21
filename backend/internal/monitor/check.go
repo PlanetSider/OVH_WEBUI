@@ -49,6 +49,8 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	}
 	lastStatus := sub.LastStatus
 	monitoredDCs := sub.Datacenters
+	feishuGroups := []FeishuAvailabilityGroup{}
+	feishuAccountID := m.resolvePriceAccount(sub)
 
 	m.state.Logger.Info(fmt.Sprintf("订阅 %s - 监控数据中心: %v", planCode, monitoredDCs), "monitor")
 	m.state.Logger.Info(fmt.Sprintf("订阅 %s - 当前发现 %d 个配置组合", planCode, len(currentAvailability)), "monitor")
@@ -66,6 +68,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			"storage": storage,
 			"display": configDisplay,
 			"options": configData.Options,
+			"accountId": m.resolvePriceAccount(sub),
 		}
 
 		type dcStatus struct {
@@ -332,6 +335,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			}
 			m.SendAvailabilityAlertGrouped(planCode, availDCs, configInfoWithPrice, sub.ServerName,
 				errIfNoPrice, traceID, configTraceForNotif)
+			feishuGroups = append(feishuGroups, FeishuAvailabilityGroup{Available: availDCs, ConfigInfo: configInfoWithPrice, PriceError: errIfNoPrice, ConfigTraceID: configTraceForNotif})
 
 			for _, n := range availables {
 				entry := HistoryEntry{
@@ -404,6 +408,9 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 		}
 
 		m.limitHistorySize(sub, 100)
+	}
+	if len(feishuGroups) > 0 {
+		m.sendFeishuAvailabilityAggregate(planCode, sub.ServerName, feishuAccountID, traceID, feishuGroups)
 	}
 
 	// 新配置初始化

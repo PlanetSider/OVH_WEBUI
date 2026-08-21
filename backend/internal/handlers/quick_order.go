@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,6 +19,51 @@ import (
 
 // quickOrderMu 串行化 quick-order 入队的逻辑,避免并发同 plan@dc 重复入队
 var quickOrderMu sync.Mutex
+
+func enqueueQuickOrder(state *app.State, accountID, planCode, datacenter string, options []string, fromMonitor, skipDuplicateCheck bool) error {
+	quickOrderMu.Lock()
+	defer quickOrderMu.Unlock()
+	if !(fromMonitor && skipDuplicateCheck) {
+		fp := fingerprint(options)
+		state.QueueMu.Lock()
+		for _, item := range state.Queue {
+			if item.PlanCode == planCode && item.Datacenter == datacenter &&
+				(item.Status == "running" || item.Status == "pending" || item.Status == "paused") &&
+				fingerprint(item.Options) == fp {
+				state.QueueMu.Unlock()
+				return fmt.Errorf("已存在相同配置的购买任务，稍后再试")
+			}
+		}
+		state.QueueMu.Unlock()
+
+		nowTS := time.Now().Unix()
+		state.HistoryMu.Lock()
+		for index := len(state.History) - 1; index >= 0; index-- {
+			history := state.History[index]
+			if history.PlanCode == planCode && history.Datacenter == datacenter && history.Status == "success" && fingerprint(history.Options) == fp {
+				if timestamp, err := time.Parse(time.RFC3339Nano, history.PurchaseTime); err == nil && nowTS-timestamp.Unix() < 120 {
+					state.HistoryMu.Unlock()
+					return fmt.Errorf("刚刚已成功下过同配置订单，稍后再试")
+				}
+			}
+		}
+		state.HistoryMu.Unlock()
+	}
+
+	now := types.NowISO()
+	item := types.QueueItem{
+		ID: uuid.NewString(), AccountID: accountID, PlanCode: planCode, Datacenter: datacenter,
+		Options: options, Status: "running", RetryCount: 0, MaxRetries: 3, RetryInterval: 2,
+		CreatedAt: now, UpdatedAt: now, LastCheckTime: 0, QuickOrder: true, Priority: 100,
+	}
+	state.QueueMu.Lock()
+	state.Queue = append([]types.QueueItem{item}, state.Queue...)
+	state.QueueMu.Unlock()
+	if err := state.SaveQueue(); err != nil {
+		return err
+	}
+	return nil
+}
 
 // QuickOrder POST /api/queue/quick-order
 // 监控触发的"立即下单"或者外部主动调用:验证账户 + 拉一次价格 → 直接塞队列头(高优先级 + 2 秒重试)。
@@ -90,66 +136,11 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			return
 		}
 
-		// 去重:防止同一 plan@dc + 同 options 的任务被重复入队(除非监控来源 + 显式跳过)
-		quickOrderMu.Lock()
-		defer quickOrderMu.Unlock()
-		if !(body.FromMonitor && body.SkipDuplicateCheck) {
-			fp := fingerprint(options)
-			state.QueueMu.Lock()
-			for _, it := range state.Queue {
-				if it.PlanCode == body.PlanCode && it.Datacenter == body.Datacenter &&
-					(it.Status == "running" || it.Status == "pending" || it.Status == "paused") &&
-					fingerprint(it.Options) == fp {
-					state.QueueMu.Unlock()
-					state.Logger.Info("检测到重复的队列任务（含配置），拒绝再次入队", "quick_order")
-					c.JSON(http.StatusTooManyRequests, gin.H{"success": false, "error": "已存在相同配置的购买任务，稍后再试"})
-					return
-				}
-			}
-			state.QueueMu.Unlock()
-
-			nowTS := time.Now().Unix()
-			state.HistoryMu.Lock()
-			for i := len(state.History) - 1; i >= 0; i-- {
-				h := state.History[i]
-				if h.PlanCode == body.PlanCode && h.Datacenter == body.Datacenter && h.Status == "success" &&
-					fingerprint(h.Options) == fp {
-					if t, err := time.Parse(time.RFC3339Nano, h.PurchaseTime); err == nil {
-						if nowTS-t.Unix() < 120 {
-							state.HistoryMu.Unlock()
-							state.Logger.Info("检测到近期成功订单，拒绝再次入队", "quick_order")
-							c.JSON(http.StatusTooManyRequests, gin.H{"success": false, "error": "刚刚已成功下过同配置订单，稍后再试"})
-							return
-						}
-					}
-				}
-			}
-			state.HistoryMu.Unlock()
-		} else {
-			state.Logger.Info("来自监控的批量下单，跳过重复检查", "quick_order")
+		if err := enqueueQuickOrder(state, body.AccountID, body.PlanCode, body.Datacenter, options, body.FromMonitor, body.SkipDuplicateCheck); err != nil {
+			state.Logger.Info(err.Error(), "quick_order")
+			c.JSON(http.StatusTooManyRequests, gin.H{"success": false, "error": err.Error()})
+			return
 		}
-
-		now := types.NowISO()
-		item := types.QueueItem{
-			ID:            uuid.NewString(),
-			AccountID:     body.AccountID,
-			PlanCode:      body.PlanCode,
-			Datacenter:    body.Datacenter,
-			Options:       options,
-			Status:        "running",
-			RetryCount:    0,
-			MaxRetries:    3,
-			RetryInterval: 2,
-			CreatedAt:     now,
-			UpdatedAt:     now,
-			LastCheckTime: 0,
-			QuickOrder:    true,
-			Priority:      100,
-		}
-		state.QueueMu.Lock()
-		state.Queue = append([]types.QueueItem{item}, state.Queue...)
-		state.QueueMu.Unlock()
-		_ = state.SaveQueue()
 
 		state.Logger.Info("快速下单: "+body.PlanCode+" ("+body.Datacenter+") 已加入队列", "quick_order")
 

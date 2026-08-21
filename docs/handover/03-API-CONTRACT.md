@@ -4,7 +4,7 @@
 
 - Header：`X-API-Key: <API_SECRET_KEY>`
 - 可选：`X-Request-Time`（毫秒时间戳，偏差 >5 分钟拒绝）
-- 白名单免鉴权：`/health`, `/api/health`, `/api/version`, `/api/telegram/webhook` 等
+- 白名单免鉴权：`/health`, `/api/health`, `/api/version`, `/api/telegram/webhook`, `/api/feishu/events`, `/api/feishu/card-action` 等
 
 ## 多账户
 
@@ -27,6 +27,7 @@
 - `PUT/DELETE /api/accounts/:id`
 - `POST /api/accounts/:id/set-default`
 - `POST /api/accounts/:id/verify`
+- `GET /api/accounts/status`：并发验证全部 OVH 账户并返回 `/me` 基础资料
 - `GET /api/ovh/account/info|bills|refunds|credit-balance|email-history|sub-accounts`
 - `GET /api/ovh/contact-change-requests` + accept/refuse/resend-email
 
@@ -41,10 +42,20 @@
 
 - `/api/monitor/*` 独服
 - `/api/vps-monitor/*` VPS
+- 监控通知支持 Telegram 或飞书；飞书可用性通知按内存/存储配置聚合，并提供卡片入队按钮
+
+### 飞书
+
+- `POST /api/feishu/events`：事件订阅与绑定账户
+- `POST /api/feishu/card-action`：交互卡片回调
+- `GET/DELETE /api/feishu/binding`
+- `POST /api/feishu/test-card`
+- 基础发送配置只需 `feishuAppId` 与 `feishuAppSecret`；`feishuVerificationToken`、`feishuEncryptKey` 为事件回调安全项，使用回调/按钮交互时建议配置
 
 ### 服务器控制
 
 - 前缀：`/api/server-control`
+- 摘要：`GET /:serviceName/summary`
 - 列表：`GET /list`
 - 电源/重装/硬件/网络/IPMI/防火墙/BackupFTP/engagement/mitigation/...
 

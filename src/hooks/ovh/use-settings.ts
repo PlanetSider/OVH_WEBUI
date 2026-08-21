@@ -13,6 +13,38 @@ export interface SettingsConfig {
   tgToken?: string;
   tgChatId?: string;
   webhookUrl?: string;
+  feishuEnabled?: boolean;
+  feishuAppId?: string;
+  feishuAppSecret?: string;
+  feishuVerificationToken?: string;
+  feishuEncryptKey?: string;
+}
+
+export interface FeishuBinding {
+  accountId?: string;
+  openId?: string;
+  name?: string;
+  updatedAt?: string;
+}
+
+function apiErrorText(error: unknown, fallback: string) {
+  const value = error as { response?: { data?: { error?: string; message?: string } }; message?: string };
+  return value.response?.data?.error || value.response?.data?.message || value.message || fallback;
+}
+
+export function useFeishuBinding(accountId?: string) {
+  return useQuery({
+    queryKey: ["feishu", "binding", accountId || "default"],
+    queryFn: async () => (await api.get<{ success: boolean; bound: boolean; binding?: FeishuBinding }>("/feishu/binding", { params: { account: accountId } })).data,
+  });
+}
+
+export function useSendFeishuTestCard(accountId?: string) {
+  return useMutation({
+    mutationFn: async () => (await api.post("/feishu/test-card", undefined, { params: { account: accountId } })).data,
+    onSuccess: () => toast.success("测试交互卡片已发送"),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "发送飞书测试卡片失败")),
+  });
 }
 
 export interface TelegramWebhookInfo {
@@ -49,8 +81,7 @@ export function useSaveSettings() {
       qc.invalidateQueries({ queryKey: ["telegram", "verify"] });
       toast.success("设置已保存");
     },
-    onError: (e: any) =>
-      toast.error(e.response?.data?.message || e.response?.data?.error || "保存失败"),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "保存失败")),
   });
 }
 
@@ -75,13 +106,7 @@ export function useSetTelegramWebhook() {
       qc.invalidateQueries({ queryKey: qk.settings.telegramWebhookInfo() });
       toast.success(data?.message || `Webhook 已注册：${data?.webhook_url || ""}`);
     },
-    onError: (e: any) =>
-      toast.error(
-        e?.response?.data?.error ||
-          e?.response?.data?.message ||
-          e?.message ||
-          "Webhook 设置失败"
-      ),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "Webhook 设置失败")),
   });
 }
 
@@ -119,6 +144,6 @@ export function useClearCache() {
       qc.invalidateQueries({ queryKey: qk.settings.cacheInfo() });
       toast.success("已清除缓存");
     },
-    onError: (e: any) => toast.error(e.response?.data?.error || "清除失败"),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "清除失败")),
   });
 }

@@ -28,6 +28,25 @@ export interface AccountInput {
 
 const ACCOUNTS_KEY = ["accounts", "list"] as const;
 
+export interface AccountStatus {
+  id: string;
+  name: string;
+  alias?: string;
+  zone?: string;
+  email?: string;
+  valid: boolean;
+  error?: string;
+}
+
+export function useAccountStatuses(enabled = false) {
+  return useQuery({
+    queryKey: ["accounts", "status"],
+    queryFn: async () => (await api.get<{ accounts: AccountStatus[] }>("/accounts/status")).data.accounts || [],
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
 /** 全部账户列表(默认账户排首位) */
 export function useAccounts() {
   return useQuery({

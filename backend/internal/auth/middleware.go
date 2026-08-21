@@ -27,6 +27,8 @@ func DefaultWhitelist() map[string]struct{} {
 		"/api/version/check-update": {}, // 更新检查也免鉴权,登录前可提示
 		// /api/internal/monitor/price 已移出白名单：改进程内直调，或需 X-API-Key
 		"/api/telegram/webhook": {},
+		"/api/feishu/events": {},
+		"/api/feishu/card-action": {},
 	}
 }
 
