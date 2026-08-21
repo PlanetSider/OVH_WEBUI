@@ -56,7 +56,7 @@ OVH_WEBUI/
 ## 运行时
 
 - 默认端口：`19998`
-- 数据：`./data/sniper.db` + logs/cache
+- 数据：项目目录 `./data`（SQLite + logs/cache），Compose 直接绑定到容器 `/data`
 - 队列处理器：启动时 `go purchase.ProcessQueueLoop`
 - 监控：有订阅时自动 Start
 

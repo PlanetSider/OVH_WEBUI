@@ -1,28 +1,21 @@
 # OVH_WEBUI 单镜像部署
-# 首次使用：cp .env.example .env && 编辑 API_SECRET_KEY
+# 首次使用：cp .env.example .env && 编辑三个环境变量
 # 启动：docker compose pull && docker compose up -d
 
 services:
   ovh-webui:
-    image: ghcr.io/${GHCR_OWNER:-planetsider}/ovh-webui:${OVH_IMAGE_TAG:-latest}
+    image: ghcr.io/planetsider/ovh-webui:latest
     pull_policy: always
     container_name: ovh-webui
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      PORT: "19998"
-      LISTEN_HOST: ""
-      DATA_DIR: /data
-      GIN_MODE: release
-      ENABLE_API_KEY_AUTH: ${ENABLE_API_KEY_AUTH:-true}
       API_SECRET_KEY: ${API_SECRET_KEY:?Set API_SECRET_KEY in .env}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
-      TZ: ${TZ:-Asia/Shanghai}
+      TG_WEBHOOK_SECRET: ${TG_WEBHOOK_SECRET:-}
+      TG_WEBHOOK_SECRET_OPTIONAL: ${TG_WEBHOOK_SECRET_OPTIONAL:-false}
     ports:
-      - "${APP_PORT:-19998}:19998"
+      - "19998:19998"
     volumes:
-      - ovh_webui_data:/data
+      - ./data:/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:19998/health"]
       interval: 15s
@@ -34,7 +27,3 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
-
-volumes:
-  ovh_webui_data:
-    name: ovh_webui_data

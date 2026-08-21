@@ -60,8 +60,6 @@ curl -X POST http://127.0.0.1:19998/api/accounts \
 ```bash
 chmod +x scripts/docker-deploy.sh
 ./scripts/docker-deploy.sh
-# 生产:
-./scripts/docker-deploy.sh --prod
 ```
 
 ## 环境变量速查
@@ -69,9 +67,10 @@ chmod +x scripts/docker-deploy.sh
 | 变量 | 含义 | 默认 |
 |------|------|------|
 | PORT | 端口 | 19998 |
-| API_SECRET_KEY | 网关密钥 | **必改**（init 随机生成） |
-| ENABLE_API_KEY_AUTH | 鉴权 | true |
-| DATA_DIR | 数据目录 | data |
+| API_SECRET_KEY | 网关密钥 | **必填** |
+| TG_WEBHOOK_SECRET | Telegram Webhook 密钥 | 空时自动生成并落盘 |
+| TG_WEBHOOK_SECRET_OPTIONAL | 是否允许缺少 Webhook 密钥 | false |
+| DATA_DIR | 数据目录 | data（Compose 绑定 `./data`） |
 
 **已废弃（勿再配置）**：`INSPECTION_ALLOWLIST`、`ALLOW_FULL_INSPECTION`。
 

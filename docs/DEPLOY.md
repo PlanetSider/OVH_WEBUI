@@ -12,6 +12,9 @@ cd /opt/ovh-webui
 git clone https://github.com/PlanetSider/OVH_WEBUI.git .
 cp .env.example .env
 sed -i "s/^API_SECRET_KEY=.*/API_SECRET_KEY=$(openssl rand -hex 32)/" .env
+mkdir -p data
+# 镜像使用非 root 用户运行；Linux 主机首次部署时将 data 目录交给容器用户
+sudo chown -R 100:100 data
 docker compose pull
 docker compose up -d
 docker compose ps
@@ -19,20 +22,19 @@ docker compose ps
 
 打开 `http://服务器IP:19998`，使用 `.env` 中的 `API_SECRET_KEY` 登录。
 
-如果 GHCR 镜像是私有的，先执行 `docker login ghcr.io`。生产环境可以在 `.env` 中固定 `OVH_IMAGE_TAG`，例如 `sha-提交SHA` 或 `v1.0.0`。
+如果 GHCR 镜像是私有的，先执行 `docker login ghcr.io`。
 
 ## 配置
 
 ```dotenv
 API_SECRET_KEY=强随机密钥
-APP_PORT=19998
-OVH_IMAGE_TAG=latest
-TZ=Asia/Shanghai
+TG_WEBHOOK_SECRET=可选的随机密钥
+TG_WEBHOOK_SECRET_OPTIONAL=false
 ```
 
-容器内部监听 `19998`，宿主机通过 `APP_PORT` 映射。需要 HTTPS 时，在容器前使用已有的反向代理，并将流量转发到该端口；应用本身不申请证书。
+容器内部和宿主机都使用 `19998` 端口。需要 HTTPS 时，在容器前使用已有的反向代理，并将流量转发到该端口；应用本身不申请证书。
 
-数据保存在 Docker volume `ovh_webui_data`：
+数据直接绑定到项目目录的 `./data`（Linux 首次部署需确保容器用户可写）：
 
 - SQLite 数据库和 OVH 账户凭据：`/data`
 - 日志：`/data/logs`
@@ -58,7 +60,7 @@ docker compose logs -f --tail=200 ovh-webui
 docker compose restart ovh-webui
 
 # 健康检查
-curl -fsS http://127.0.0.1:${APP_PORT:-19998}/health
+curl -fsS http://127.0.0.1:19998/health
 
 # 停止
 docker compose down

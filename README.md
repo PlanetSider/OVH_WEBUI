@@ -31,7 +31,7 @@ Internet :19998（或由外部反向代理转发）
   React UI + Go API
         |
         v
-  Docker volume /data
+  宿主机 ./data:/data
   SQLite / 日志 / 缓存
 ```
 
@@ -53,13 +53,15 @@ cd /opt/ovh-webui
 
 cp .env.example .env
 sed -i "s/^API_SECRET_KEY=.*/API_SECRET_KEY=$(openssl rand -hex 32)/" .env
+mkdir -p data
 ```
 
 编辑 `.env`，至少设置：
 
 ```dotenv
 API_SECRET_KEY=替换为强随机密钥
-APP_PORT=19998
+TG_WEBHOOK_SECRET=可选的随机密钥
+TG_WEBHOOK_SECRET_OPTIONAL=false
 ```
 
 如果 GHCR 镜像是私有的，先登录：
@@ -80,7 +82,7 @@ docker compose ps
 
 ### 更新
 
-服务器上的 `.env` 和 Docker volume 不会被代码更新覆盖：
+服务器上的 `.env` 和 `./data` 数据目录不会被代码更新覆盖：
 
 ```bash
 cd /opt/ovh-webui
@@ -90,13 +92,7 @@ docker compose up -d
 docker compose ps
 ```
 
-默认使用 `latest`。生产环境建议固定提交或版本标签：
-
-```dotenv
-OVH_IMAGE_TAG=sha-提交SHA
-```
-
-也可以使用 `OVH_IMAGE_TAG=v1.0.0` 这类版本标签。
+Compose 默认使用 `ghcr.io/planetsider/ovh-webui:latest`。
 
 ### GitHub 自动构建
 
@@ -217,7 +213,7 @@ docker build -f Dockerfile -t ovh-webui:local .
 | OVH 账户凭据 | SQLite `/data`，通过 WebUI 添加 |
 | 队列、历史、监控订阅 | SQLite `/data` |
 | 日志和缓存 | `/data/logs`、`/data/cache` |
-| Docker 持久化卷 | `ovh_webui_data` |
+| Docker 数据目录 | `./data` 绑定到容器 `/data` |
 
 不要把以下内容提交到 Git：`.env`、`backend/.env`、`backend/data/`、OVH 凭据、Telegram Token、飞书 App Secret。
 
@@ -237,14 +233,14 @@ docker compose restart ovh-webui
 docker compose down
 
 # 健康检查
-curl -fsS http://127.0.0.1:${APP_PORT:-19998}/health
+curl -fsS http://127.0.0.1:19998/health
 ```
 
 默认端口：
 
 | 端口 | 用途 |
 |------|------|
-| `19998`（可由 `APP_PORT` 修改） | 应用页面、API 和健康检查 |
+| `19998` | 应用页面、API 和健康检查 |
 
 ## API 入口
 

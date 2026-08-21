@@ -12,7 +12,7 @@ backend/.env
 backend/.env.*
 secrets
 
-# runtime data (volume 挂载)
+# runtime data (Compose bind mount)
 backend/data
 backend/data/**
 data
