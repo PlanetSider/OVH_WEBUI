@@ -1,205 +1,77 @@
-# Linux Docker 部署（一键 + SSL + Telegram Webhook）
+# Docker Compose 部署
 
-## 一键部署（推荐）
+项目发布的是前后端一体镜像，Compose 只启动一个应用容器。容器自带 React 页面、Go API、SQLite 所需目录和健康检查，不需要额外的前端、后端或网关容器。
 
-```bash
-# 服务器上（Ubuntu 22.04+ 示例）
-sudo apt update && sudo apt install -y docker.io docker-compose-v2 curl
-sudo usermod -aG docker "$USER"   # 重新登录后免 sudo（可选）
+## 首次部署
 
-cd /opt
-# 上传或 git clone 本项目到 /opt/ovh-webui
-cd ovh-webui
-
-chmod +x scripts/linux-oneclick-deploy.sh
-sudo ./scripts/linux-oneclick-deploy.sh
-# 按提示输入域名、邮箱 → 自动申请 HTTPS 证书并启动
-```
-
-非交互：
+要求：Linux、Docker Engine、Docker Compose v2。
 
 ```bash
-export DOMAIN=ovh.example.com
-export ACME_EMAIL=ops@example.com
-sudo -E ./scripts/linux-oneclick-deploy.sh --yes
+mkdir -p /opt/ovh-webui
+cd /opt/ovh-webui
+git clone https://github.com/PlanetSider/OVH_WEBUI.git .
+cp .env.example .env
+sed -i "s/^API_SECRET_KEY=.*/API_SECRET_KEY=$(openssl rand -hex 32)/" .env
+docker compose pull
+docker compose up -d
+docker compose ps
 ```
 
-仅内网 HTTP（无 SSL，**Webhook 外网不可用**）：
+打开 `http://服务器IP:19998`，使用 `.env` 中的 `API_SECRET_KEY` 登录。
 
-```bash
-./scripts/linux-oneclick-deploy.sh --no-ssl --yes
+如果 GHCR 镜像是私有的，先执行 `docker login ghcr.io`。生产环境可以在 `.env` 中固定 `OVH_IMAGE_TAG`，例如 `sha-提交SHA` 或 `v1.0.0`。
+
+## 配置
+
+```dotenv
+API_SECRET_KEY=强随机密钥
+APP_PORT=19998
+OVH_IMAGE_TAG=latest
+TZ=Asia/Shanghai
 ```
 
-SSL 完整编排文件：`docker-compose.https.yml`（Caddy + backend + frontend，公网只开 80/443）。
+容器内部监听 `19998`，宿主机通过 `APP_PORT` 映射。需要 HTTPS 时，在容器前使用已有的反向代理，并将流量转发到该端口；应用本身不申请证书。
 
-## GitHub 推送自动构建镜像
+数据保存在 Docker volume `ovh_webui_data`：
 
-仓库已配置 `.github/workflows/publish-images.yml`：推送到 `main` 或推送 `v*` 格式标签时，GitHub Actions 会将前端静态资源嵌入 Go 后端，并自动构建、发布一个 GHCR 镜像：
+- SQLite 数据库和 OVH 账户凭据：`/data`
+- 日志：`/data/logs`
+- 缓存：`/data/cache`
 
-```text
-ghcr.io/planetsider/ovh-webui:latest
-```
+不要提交 `.env`、OVH 凭据、Telegram Token 或飞书 App Secret。
 
-同时会发布基于 Git 提交 SHA 和版本标签的镜像标签。工作流只负责构建和发布镜像，不会自动连接生产服务器更新容器。
-
-首次使用时，在 GitHub 仓库的 **Settings → Actions → General** 确认允许 Actions 使用 `GITHUB_TOKEN` 发布 Packages。第一次发布后，可在仓库的 **Packages** 中将镜像设为 Public；如果镜像保持 Private，服务器需要先执行 `docker login ghcr.io`。
-
-### 服务器使用 GHCR 镜像
-
-服务器保留 `.env` 和 Docker 数据卷，只需同步 Compose 配置或拉取最新代码，然后执行：
+## 更新与运维
 
 ```bash
 cd /opt/ovh-webui
-docker login ghcr.io
-docker compose -f docker-compose.ghcr.yml pull
-docker compose -f docker-compose.ghcr.yml up -d
-docker compose -f docker-compose.ghcr.yml ps
+git pull --ff-only
+docker compose pull
+docker compose up -d
+docker compose ps
 ```
 
-`docker-compose.ghcr.yml` 是可独立运行的 HTTPS 生产编排。项目自身只有一个前后端一体镜像，另一个容器是官方 `caddy` 镜像，用于 TLS 证书和 HTTPS 反向代理。若需要固定版本，可在 `.env` 中设置 `OVH_IMAGE_TAG=sha-<commit>` 或 `OVH_IMAGE_TAG=vX.Y.Z`。
+```bash
+# 查看日志
+docker compose logs -f --tail=200 ovh-webui
 
----
+# 重启
+docker compose restart ovh-webui
 
-## 架构（SSL 模式）
+# 健康检查
+curl -fsS http://127.0.0.1:${APP_PORT:-19998}/health
 
-```
-Internet
-   │  :80 / :443
-   ▼
-┌─────────────┐
-│   Caddy     │  自动 Let's Encrypt
-│  反代 + TLS │
-└──────┬──────┘
-       │
-       ├─ /api/*  /health ──► backend:19998  (volume /data)
-       │
-       └─ /* ───────────────► frontend:80   (nginx 静态)
+# 停止
+docker compose down
 ```
 
-**Telegram Webhook 公网 URL（必须 HTTPS）：**
+## Telegram / 飞书回调
+
+应用回调地址使用反向代理提供的 HTTPS 域名：
 
 ```text
 https://你的域名/api/telegram/webhook
-```
-
-后端已将此路径加入鉴权白名单（Telegram 无需 X-API-Key）。
-
-**飞书事件与卡片回调 URL：**
-
-```text
 https://你的域名/api/feishu/events
 https://你的域名/api/feishu/card-action
 ```
 
-飞书基础通知只需在 WebUI 的“设置 → 飞书”填写 App ID 和 App Secret。Verification Token、Encrypt Key 为可选回调安全项；如果需要事件绑定账户或卡片按钮交互，请按飞书应用后台的事件订阅配置填写。
-
----
-
-## 部署后配置 Webhook
-
-### 1. WebUI
-
-1. 打开 `https://域名`，用脚本打印的 **API Key** 登录  
-2. **设置** → 填写 Telegram Bot Token + Chat ID  
-3. **Telegram 下单** 页 → 设置 Webhook URL 为：`https://域名`  
-   （后端会自动补全 `/api/telegram/webhook`）
-
-### 2. 命令行
-
-```bash
-# 读取密钥
-source <(grep -E '^(API_SECRET_KEY|DOMAIN)=' .env | sed 's/^/export /')
-
-curl -sS -X POST "https://${DOMAIN}/api/telegram/set-webhook" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: ${API_SECRET_KEY}" \
-  -d "{\"webhook_url\":\"https://${DOMAIN}\"}"
-
-# 查看状态
-curl -sS "https://${DOMAIN}/api/telegram/get-webhook-info" \
-  -H "X-API-Key: ${API_SECRET_KEY}"
-```
-
-或：
-
-```bash
-./scripts/linux-oneclick-deploy.sh --webhook
-```
-
-### 3. 直接调 Telegram API（调试）
-
-```bash
-curl "https://api.telegram.org/bot<Token>/setWebhook?url=https://你的域名/api/telegram/webhook"
-curl "https://api.telegram.org/bot<Token>/getWebhookInfo"
-```
-
----
-
-## 防火墙 / 安全组
-
-| 端口 | SSL 模式 | HTTP-only |
-|------|----------|-----------|
-| 80   | **必开**（ACME 校验） | 可选映射 8080 |
-| 443  | **必开** | 不需要 |
-| 19998 | 不要对公网开放 | 调试可开 |
-
-域名 **A 记录** 必须指向本机公网 IP，证书才能签发。
-
----
-
-## 常用命令
-
-```bash
-# 状态
-docker compose -f docker-compose.yml -f docker-compose.ssl.yml ps
-
-# 日志
-./scripts/linux-oneclick-deploy.sh --logs
-
-# 重启后端
-docker compose -f docker-compose.yml -f docker-compose.ssl.yml restart backend
-
-# 停止
-./scripts/linux-oneclick-deploy.sh --down
-
-# 备份数据卷
-docker run --rm -v ovh_webui_data:/data -v "$PWD":/b alpine \
-  tar czf /b/ovh-data-$(date +%F).tgz -C /data .
-```
-
----
-
-## 环境变量摘要
-
-| 变量 | 说明 |
-|------|------|
-| `API_SECRET_KEY` | 登录密钥（脚本自动生成） |
-| `DOMAIN` | 公网域名（SSL 必填） |
-| `ACME_EMAIL` | Let's Encrypt 邮箱 |
-| `PUBLIC_BASE_URL` | `https://域名` |
-| `TZ` | 默认 Asia/Shanghai |
-
-详见根目录 `.env.example`。
-
----
-
-## 故障排查
-
-| 现象 | 处理 |
-|------|------|
-| 证书申请失败 | 检查 80 端口、A 记录、域名是否解析到本机；`docker logs ovh-webui-caddy` |
-| Webhook 无回调 | `getWebhookInfo` 看 last_error；确认 URL 为 https 且路径正确 |
-| 401 登录失败 | Key 与 `.env` 中 `API_SECRET_KEY` 不一致 |
-| 容器不健康 | `docker compose logs backend` |
-
----
-
-## 相关文件
-
-| 路径 | 说明 |
-|------|------|
-| `scripts/linux-oneclick-deploy.sh` | **一键部署（主入口）** |
-| `docker-compose.https.yml` | HTTPS 完整栈（生产 + Webhook） |
-| `docker-compose.yml` | HTTP 内网栈 |
-| `deploy/Caddyfile` | 自动 HTTPS / 反代 |
-| `docs/SECURITY.md` | 密钥与数据安全 |
+反向代理需要保留 `/api/*` 和 `/health` 路径，并将请求转发到应用容器的 `19998` 端口。

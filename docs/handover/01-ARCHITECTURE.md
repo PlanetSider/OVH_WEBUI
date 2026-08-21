@@ -29,8 +29,8 @@ OVH_WEBUI/
 │   └── pages/               # 路由页面
 ├── scripts/                 # smoke / full_functional_test
 ├── docs/handover/           # 交接记忆
-├── docker-compose.yml
-└── nginx/                   # 前端容器反代
+├── Dockerfile               # 前后端一体镜像
+└── docker-compose.yml       # 单镜像部署
 ```
 
 ## 设计原则

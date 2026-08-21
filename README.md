@@ -2,7 +2,7 @@
 
 OVH 独服与 VPS 的自托管控制台，提供服务器目录、可用性监控、抢购队列、多账户管理、已购服务器控制，以及 Telegram / 飞书通知和交互卡片。
 
-项目采用 **一个前后端一体镜像**：React 前端构建后嵌入 Go 二进制，由同一个应用容器提供页面和 API。生产环境可选用官方 Caddy 容器负责 HTTPS 和自动申请 Let's Encrypt 证书。
+项目采用 **一个前后端一体镜像**：React 前端构建后嵌入 Go 二进制，由同一个应用容器提供页面和 API。HTTPS 可按需交给已有的反向代理处理。
 
 ## 功能
 
@@ -24,11 +24,7 @@ OVH 独服与 VPS 的自托管控制台，提供服务器目录、可用性监�
 ### 架构
 
 ```text
-Internet :80 / :443
-        |
-        v
-  Caddy 官方镜像
-  HTTPS / Let's Encrypt
+Internet :19998（或由外部反向代理转发）
         |
         v
   ghcr.io/planetsider/ovh-webui
@@ -45,11 +41,9 @@ Internet :80 / :443
 ghcr.io/planetsider/ovh-webui:latest
 ```
 
-Caddy 是独立的官方基础设施镜像，不是项目的前端或后端镜像。
-
 ### 首次部署
 
-要求：Linux、Docker Engine、Docker Compose v2、域名 A 记录指向服务器，并开放 TCP 80/443。
+要求：Linux、Docker Engine、Docker Compose v2。需要公网 HTTPS 时，请在容器前配置已有的反向代理。
 
 ```bash
 sudo mkdir -p /opt/ovh-webui
@@ -65,8 +59,7 @@ sed -i "s/^API_SECRET_KEY=.*/API_SECRET_KEY=$(openssl rand -hex 32)/" .env
 
 ```dotenv
 API_SECRET_KEY=替换为强随机密钥
-DOMAIN=ovh.example.com
-ACME_EMAIL=ops@example.com
+APP_PORT=19998
 ```
 
 如果 GHCR 镜像是私有的，先登录：
@@ -75,15 +68,15 @@ ACME_EMAIL=ops@example.com
 docker login ghcr.io
 ```
 
-启动单镜像生产环境：
+启动：
 
 ```bash
-docker compose -f docker-compose.ghcr.yml pull
-docker compose -f docker-compose.ghcr.yml up -d
-docker compose -f docker-compose.ghcr.yml ps
+docker compose pull
+docker compose up -d
+docker compose ps
 ```
 
-访问 `https://你的域名`，使用 `API_SECRET_KEY` 登录，然后在设置页添加 OVH 账户。
+访问 `http://服务器IP:19998`，使用 `API_SECRET_KEY` 登录，然后在设置页添加 OVH 账户。
 
 ### 更新
 
@@ -92,9 +85,9 @@ docker compose -f docker-compose.ghcr.yml ps
 ```bash
 cd /opt/ovh-webui
 git pull --ff-only
-docker compose -f docker-compose.ghcr.yml pull
-docker compose -f docker-compose.ghcr.yml up -d
-docker compose -f docker-compose.ghcr.yml ps
+docker compose pull
+docker compose up -d
+docker compose ps
 ```
 
 默认使用 `latest`。生产环境建议固定提交或版本标签：
@@ -214,7 +207,7 @@ npm run dev
 docker build -f Dockerfile -t ovh-webui:local .
 ```
 
-源码构建的旧双容器编排仍保留在 `docker-compose.yml` 和 `docker-compose.https.yml`，用于兼容已有开发环境；新的生产部署推荐使用 `docker-compose.ghcr.yml`。
+生产和本地 Compose 都使用根目录的单镜像 `docker-compose.yml`；镜像已包含前端和 API，不需要额外的前端、后端或网关容器。
 
 ## 配置与数据
 
@@ -232,31 +225,26 @@ docker build -f Dockerfile -t ovh-webui:local .
 
 ```bash
 # 查看服务状态
-docker compose -f docker-compose.ghcr.yml ps
+docker compose ps
 
 # 查看应用日志
-docker compose -f docker-compose.ghcr.yml logs -f --tail=200 backend
-
-# 查看 Caddy 日志
-docker compose -f docker-compose.ghcr.yml logs -f --tail=200 caddy
+docker compose logs -f --tail=200 ovh-webui
 
 # 重启应用
-docker compose -f docker-compose.ghcr.yml restart backend
+docker compose restart ovh-webui
 
 # 停止服务
-docker compose -f docker-compose.ghcr.yml down
+docker compose down
 
 # 健康检查
-curl -fsS https://你的域名/health
+curl -fsS http://127.0.0.1:${APP_PORT:-19998}/health
 ```
 
 默认端口：
 
 | 端口 | 用途 |
 |------|------|
-| 80 | Let's Encrypt HTTP-01 和 HTTP 跳转 |
-| 443 | HTTPS 业务访问 |
-| 19998 | 仅容器内部，不对公网开放 |
+| `19998`（可由 `APP_PORT` 修改） | 应用页面、API 和健康检查 |
 
 ## API 入口
 
@@ -287,12 +275,7 @@ OVH_WEBUI/
 ├── backend/                         # Go API、监控、队列和 OVH 客户端
 ├── src/                             # React 前端
 ├── Dockerfile                       # 前后端一体镜像
-├── Dockerfile.backend               # 兼容的纯后端镜像
-├── Dockerfile.frontend              # 兼容的独立前端镜像
-├── docker-compose.ghcr.yml          # 推荐的 GHCR 单镜像生产部署
-├── docker-compose.yml               # 本地 HTTP 双容器兼容编排
-├── docker-compose.https.yml          # 源码构建 HTTPS 双容器兼容编排
-├── deploy/Caddyfile.embedded        # 单镜像生产 HTTPS 配置
+├── docker-compose.yml               # 单镜像部署
 ├── .github/workflows/                # GitHub Actions 镜像发布
 ├── scripts/                          # 初始化、开发和烟测脚本
 └── docs/                             # 部署、安全和架构文档
@@ -300,7 +283,7 @@ OVH_WEBUI/
 
 ## 文档
 
-- [`docs/DEPLOY.md`](./docs/DEPLOY.md)：Linux、HTTPS、GHCR 和运维说明
+- [`docs/DEPLOY.md`](./docs/DEPLOY.md)：Linux、镜像和运维说明
 - [`docs/SECURITY.md`](./docs/SECURITY.md)：密钥与数据安全
 - [`docs/handover/00-INDEX.md`](./docs/handover/00-INDEX.md)：架构、API、迁移和测试记录
 

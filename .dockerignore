@@ -38,6 +38,5 @@ scripts
 !package.json
 !package-lock.json
 
-# frontend unused in backend image (Dockerfile.backend only copies backend/)
-# keep whole tree for frontend build but ignore large junk
+# lockfile not used by the image build
 bun.lockb
