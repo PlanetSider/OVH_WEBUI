@@ -200,6 +200,22 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 	} else if v, ok := callbackObj["action"].(string); ok {
 		action = v
 	}
+	if action == "as" {
+		accountID, _ := callbackObj["i"].(string)
+		account, err := switchDefaultAccount(state, accountID)
+		if err != nil {
+			state.Logger.Warn("Telegram 切换默认账户失败: "+err.Error(), "telegram")
+			telegram.AnswerCallback(state, cbID, "切换失败："+err.Error(), true)
+			c.JSON(http.StatusOK, gin.H{"ok": true, "error": "account_switch_failed"})
+			return
+		}
+		message := fmt.Sprintf("✅ 默认 OVH 账户已切换为：%s", accountDisplayName(account))
+		telegram.AnswerCallback(state, cbID, "账户已切换", false)
+		telegram.SendReply(state, chatID, message, int64(messageID))
+		state.Logger.Info(fmt.Sprintf("Telegram 切换默认 OVH 账户: account=%s user=%v", account.ID, userID), "telegram")
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
 	if action != "add_to_queue" {
 		state.Logger.Warn("未知的action: "+action, "telegram")
 		telegram.AnswerCallback(state, cbID, "未知操作", true)

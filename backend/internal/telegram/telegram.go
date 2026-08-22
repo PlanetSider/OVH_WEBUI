@@ -199,6 +199,7 @@ func SetMyCommands(state *app.State) string {
 	commands := []botCmd{
 		{Command: "start", Description: "显示帮助"},
 		{Command: "help", Description: "命令帮助"},
+		{Command: "account", Description: "查看或切换 OVH 账户"},
 		{Command: "stock", Description: "查询库存 planCode"},
 		{Command: "queue", Description: "加入队列 planCode [dc]"},
 		{Command: "buy", Description: "快速下单 planCode [dc]"},
@@ -281,8 +282,17 @@ func AnswerCallback(state *app.State, callbackQueryID, text string, showAlert bo
 	}
 }
 
-// SendReply 回复指定消息
+// SendReply 回复指定消息。
 func SendReply(state *app.State, chatID interface{}, text string, replyToMessageID int64) {
+	sendReply(state, chatID, text, replyToMessageID, nil)
+}
+
+// SendReplyWithMarkup 回复指定消息，并附带 Telegram reply_markup（用于交互菜单）。
+func SendReplyWithMarkup(state *app.State, chatID interface{}, text string, replyToMessageID int64, replyMarkup map[string]interface{}) {
+	sendReply(state, chatID, text, replyToMessageID, replyMarkup)
+}
+
+func sendReply(state *app.State, chatID interface{}, text string, replyToMessageID int64, replyMarkup map[string]interface{}) {
 	cfg := state.Config.Get()
 	if cfg.TgToken == "" {
 		return
@@ -294,6 +304,9 @@ func SendReply(state *app.State, chatID interface{}, text string, replyToMessage
 	payload := map[string]interface{}{
 		"chat_id": chatID,
 		"text":    text,
+	}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
 	}
 	if replyToMessageID > 0 {
 		payload["reply_to_message_id"] = replyToMessageID

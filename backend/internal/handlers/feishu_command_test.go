@@ -2,6 +2,15 @@ package handlers
 
 import "testing"
 
+func TestIsAccountSwitchRequest(t *testing.T) {
+	if !isAccountSwitchRequest([]string{"switch"}) || !isAccountSwitchRequest([]string{"SWITCH"}) {
+		t.Fatal("switch 子命令应被识别")
+	}
+	if isAccountSwitchRequest(nil) || isAccountSwitchRequest([]string{"switch", "extra"}) {
+		t.Fatal("无效 switch 参数不应被识别")
+	}
+}
+
 func TestFeishuLooksLikeOrder(t *testing.T) {
 	tests := []struct {
 		name string

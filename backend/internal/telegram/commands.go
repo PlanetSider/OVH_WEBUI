@@ -20,6 +20,7 @@ type BotCommand struct {
 var KnownCommands = map[string]string{
 	"start":   "显示帮助与可用命令",
 	"help":    "显示帮助与可用命令",
+	"account": "查看或切换当前 OVH 账户: /account [switch]",
 	"stock":   "查询库存: /stock <planCode>",
 	"queue":   "加入队列: /queue <planCode> [dc] [qty] [options]",
 	"buy":     "快速下单: /buy <planCode> [dc] [qty] [options]",
@@ -71,6 +72,14 @@ func IsKnownCommand(name string) bool {
 func HelpMessage() string {
 	return strings.TrimSpace(`
 🤖 OVH Sniper Bot 命令帮助
+
+👤 当前账户
+  /account
+  /account switch  打开账户切换菜单
+
+🔎 型号查询
+  直接发送服务器型号
+  例: KS-1
 
 📦 库存查询
   /stock <planCode>

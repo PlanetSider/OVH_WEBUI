@@ -24,6 +24,8 @@ func dispatchBotCommand(state *app.State, mon *monitor.Monitor, cmd *telegram.Bo
 	switch cmd.Name {
 	case "start", "help":
 		return telegram.HelpMessage()
+	case "account":
+		return accountCommandText(state, cmd.Args, channel)
 	case "stock":
 		return cmdStock(state, cmd.Args, accountID)
 	case "queue", "buy":
@@ -319,6 +321,10 @@ func handleTelegramText(state *app.State, mon *monitor.Monitor, text string, cha
 				int64(messageID))
 			return
 		}
+		if cmd.Name == "account" && isAccountSwitchRequest(cmd.Args) {
+			sendTelegramAccountMenu(state, chatID, int64(messageID))
+			return
+		}
 		// 未知多余参数：buy/queue 若无 planCode 在 dispatch 内拒绝
 		reply := dispatchTelegramCommand(state, mon, cmd)
 		telegram.SendReply(state, chatID, reply, int64(messageID))
@@ -328,6 +334,15 @@ func handleTelegramText(state *app.State, mon *monitor.Monitor, text string, cha
 	// 2) free-form 下单: planCode [dc] [qty] [options]
 	if !authorized {
 		state.Logger.Debug(fmt.Sprintf("忽略未授权消息: chat=%v user=%v", chatID, userID), "telegram")
+		return
+	}
+	// 型号精确命中服务器列表时，按 PlanCode 分别展示与网页抢购弹窗一致的配置摘要。
+	if plans := findServerPlansByModel(state, text); len(plans) > 0 {
+		sendTelegramServerPlanCards(state, chatID, int64(messageID), text, plans)
+		return
+	}
+	if looksLikeServerModelQuery(text) {
+		telegram.SendReply(state, chatID, "❌ 服务器列表中未找到型号："+text, int64(messageID))
 		return
 	}
 	orderInfo := telegram.ParseOrderMessage(text)

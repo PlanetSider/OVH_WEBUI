@@ -125,6 +125,10 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 			} else if cmd := telegram.ParseBotCommand(trimmed); cmd != nil {
 				if cmd.Name == "start" || cmd.Name == "help" {
 					_ = monitor.FeishuSendText(state, openID, telegram.HelpMessage()+"\n当前账户：系统设置中的默认 OVH 账户")
+				} else if cmd.Name == "account" && isAccountSwitchRequest(cmd.Args) {
+					_ = sendFeishuAccountMenu(state, openID)
+				} else if cmd.Name == "account" {
+					_ = monitor.FeishuSendText(state, openID, accountCommandText(state, cmd.Args, "feishu"))
 				} else if !bound {
 					_ = monitor.FeishuSendText(state, openID, "请先在飞书中私聊机器人完成全局接收人绑定")
 				} else if accountID == "" {
@@ -132,6 +136,14 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 				} else {
 					_ = monitor.FeishuSendText(state, openID, dispatchBotCommand(state, mon, cmd, accountID, "feishu"))
 				}
+			} else if plans := findServerPlansByModel(state, trimmed); len(plans) > 0 {
+				// 每个 PlanCode 独立发送非表格卡片；配置过长时在完整分区之间自动分页。
+				if err := sendFeishuServerPlanCards(state, openID, trimmed, plans); err != nil {
+					state.Logger.Warn("发送飞书服务器型号卡片失败: "+err.Error(), "feishu")
+					_ = monitor.FeishuSendText(state, openID, "❌ 服务器配置卡片发送失败，请稍后重试")
+				}
+			} else if looksLikeServerModelQuery(trimmed) {
+				_ = monitor.FeishuSendText(state, openID, "❌ 服务器列表中未找到型号："+trimmed)
 			} else if feishuLooksLikeOrder(trimmed) {
 				order := telegram.ParseOrderMessage(trimmed)
 				if !bound {
@@ -230,6 +242,21 @@ func FeishuCardAction(state *app.State) gin.HandlerFunc {
 		switch name {
 		case "ping":
 			message = "飞书交互卡片连接正常"
+		case "switch_account":
+			binding, bound := monitor.FeishuDefaultBinding(state)
+			if !bound || openID == "" || binding.OpenID != openID {
+				message = "当前飞书用户不是全局通知接收人"
+			} else {
+				accountID, _ := values["account_id"].(string)
+				account, err := switchDefaultAccount(state, accountID)
+				if err != nil {
+					state.Logger.Warn("飞书切换默认账户失败: "+err.Error(), "feishu")
+					message = "切换失败：" + err.Error()
+				} else {
+					message = "✅ 默认 OVH 账户已切换为：" + accountDisplayName(account)
+					state.Logger.Info("飞书切换默认 OVH 账户: account="+account.ID+" open_id="+openID, "feishu")
+				}
+			}
 		case "add_to_queue":
 			binding, bound := monitor.FeishuDefaultBinding(state)
 			if !bound || openID == "" || binding.OpenID != openID {
@@ -241,7 +268,7 @@ func FeishuCardAction(state *app.State) gin.HandlerFunc {
 			message = "未知操作，请重新打开最新通知卡片"
 		}
 		c.JSON(http.StatusOK, gin.H{"toast": gin.H{"type": "success", "content": message}})
-		if openID != "" && name == "add_to_queue" && strings.HasPrefix(message, "✅") { _ = monitor.FeishuSendText(state, openID, message) }
+		if openID != "" && (name == "add_to_queue" || name == "switch_account") && strings.HasPrefix(message, "✅") { _ = monitor.FeishuSendText(state, openID, message) }
 	}
 }
 
