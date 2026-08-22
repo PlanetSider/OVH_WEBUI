@@ -13,6 +13,11 @@ import (
 
 // dispatchTelegramCommand 处理 /buy /stock 等斜杠命令，返回回复文案。
 func dispatchTelegramCommand(state *app.State, mon *monitor.Monitor, cmd *telegram.BotCommand) string {
+	return dispatchBotCommand(state, mon, cmd, telegram.DefaultAccountID(state), "telegram")
+}
+
+// dispatchBotCommand 为 Telegram / 飞书复用同一套命令语义，并显式绑定 OVH 账户。
+func dispatchBotCommand(state *app.State, mon *monitor.Monitor, cmd *telegram.BotCommand, accountID, channel string) string {
 	if cmd == nil {
 		return telegram.HelpMessage()
 	}
@@ -20,19 +25,19 @@ func dispatchTelegramCommand(state *app.State, mon *monitor.Monitor, cmd *telegr
 	case "start", "help":
 		return telegram.HelpMessage()
 	case "stock":
-		return cmdStock(state, cmd.Args)
+		return cmdStock(state, cmd.Args, accountID)
 	case "queue", "buy":
-		return cmdBuyOrQueue(state, cmd.Args, cmd.Name)
+		return cmdBuyOrQueue(state, cmd.Args, cmd.Name, accountID, channel)
 	case "monitor":
-		return cmdMonitor(state, mon, cmd.Args)
+		return cmdMonitor(state, mon, cmd.Args, accountID, channel)
 	case "price":
-		return cmdPrice(state, cmd.Args)
+		return cmdPrice(state, cmd.Args, accountID)
 	default:
 		return "❌ 未知命令: /" + cmd.Name + "\n\n" + telegram.HelpMessage()
 	}
 }
 
-func cmdStock(state *app.State, args []string) string {
+func cmdStock(state *app.State, args []string, accountID string) string {
 	if len(args) < 1 || strings.TrimSpace(args[0]) == "" {
 		return "用法: /stock <planCode>\n例: /stock 24ska01"
 	}
@@ -40,7 +45,9 @@ func cmdStock(state *app.State, args []string) string {
 	if !state.HasAnyAccount() {
 		return "❌ 未配置任何 OVH 账户"
 	}
-	accountID := telegram.DefaultAccountID(state)
+	if _, ok := state.FindAccount(accountID); !ok {
+		return "❌ 当前绑定的 OVH 账户不存在"
+	}
 	avail := catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID)
 	if len(avail) == 0 {
 		return "❌ 无法获取 " + planCode + " 的库存信息（型号可能不存在或 API 失败）"
@@ -108,7 +115,7 @@ func cmdStock(state *app.State, args []string) string {
 	return b.String()
 }
 
-func cmdBuyOrQueue(state *app.State, args []string, cmdName string) string {
+func cmdBuyOrQueue(state *app.State, args []string, cmdName, accountID, channel string) string {
 	if len(args) < 1 {
 		return "用法: /" + cmdName + " <planCode> [datacenter] [quantity] [options]\n例: /" + cmdName + " 24ska01 gra"
 	}
@@ -121,10 +128,10 @@ func cmdBuyOrQueue(state *app.State, args []string, cmdName string) string {
 		return "❌ 型号无效: " + info.PlanCode
 	}
 
-	state.Logger.Info(fmt.Sprintf("Telegram /%s: planCode=%s dc=%s qty=%d opts=%v",
-		cmdName, info.PlanCode, info.Datacenter, info.Quantity, info.Options), "telegram")
+	state.Logger.Info(fmt.Sprintf("%s /%s: planCode=%s dc=%s qty=%d opts=%v account=%s",
+		channel, cmdName, info.PlanCode, info.Datacenter, info.Quantity, info.Options, accountID), channel)
 
-	result := telegram.ProcessOrder(state, info.PlanCode, info.Datacenter, info.Quantity, info.Options)
+	result := telegram.ProcessOrderForAccount(state, accountID, info.PlanCode, info.Datacenter, info.Quantity, info.Options, channel == "telegram")
 	if result.Success {
 		dcText := "所有可用机房"
 		if info.Datacenter != "" {
@@ -144,15 +151,21 @@ func cmdBuyOrQueue(state *app.State, args []string, cmdName string) string {
 	return "❌ 下单失败\n\n" + result.Message
 }
 
-func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string) string {
+func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID, channel string) string {
 	if mon == nil {
 		return "❌ 监控模块不可用"
 	}
 	if len(args) < 1 || strings.TrimSpace(args[0]) == "" {
 		return "用法: /monitor <planCode> [datacenter...]\n例: /monitor 24ska01\n例: /monitor 24ska01 gra rbx"
 	}
-	// 监控依赖 TG 通知自身
-	if ok, reason := telegram.VerifyConfig(state); !ok {
+	if channel == "feishu" {
+		if !monitor.FeishuEnabled(state) {
+			return "❌ 飞书应用未启用或配置不完整"
+		}
+		if _, ok := monitor.FeishuBindingForAccount(state, accountID); !ok {
+			return "❌ 当前 OVH 账户尚未绑定飞书用户"
+		}
+	} else if ok, reason := telegram.VerifyConfig(state); !ok {
 		return "❌ Telegram 配置无效: " + reason
 	}
 	planCode := strings.TrimSpace(args[0])
@@ -174,11 +187,12 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string) string {
 	}
 	state.ServerPlansMu.RUnlock()
 
-	mon.AddSubscription(planCode, dcs, true, false, serverName, nil, nil, false, 0, "")
+	// 监控的账户字段同时决定询价/飞书通知目标；autoOrder=false，不会自动购买。
+	mon.AddSubscription(planCode, dcs, true, false, serverName, nil, nil, false, 0, accountID)
 	mon.SaveToDB()
 	if !mon.Running() {
 		mon.Start()
-		state.Logger.Info("Telegram /monitor 添加订阅后自动启动监控", "telegram")
+		state.Logger.Info(channel+" /monitor 添加订阅后自动启动监控", channel)
 	}
 
 	dcText := "全部机房"
@@ -193,10 +207,14 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string) string {
 	if serverName != "" {
 		namePart = planCode + " (" + serverName + ")"
 	}
-	return fmt.Sprintf("✅ 已添加监控\n\n型号: %s\n机房: %s\n有货时将通过 Telegram 通知。", namePart, dcText)
+	notifyChannel := "Telegram"
+	if channel == "feishu" {
+		notifyChannel = "飞书"
+	}
+	return fmt.Sprintf("✅ 已添加监控\n\n型号: %s\n机房: %s\n有货时将通过 %s 通知。", namePart, dcText, notifyChannel)
 }
 
-func cmdPrice(state *app.State, args []string) string {
+func cmdPrice(state *app.State, args []string, accountID string) string {
 	if len(args) < 2 {
 		return "用法: /price <planCode> <datacenter>\n例: /price 24ska01 gra"
 	}
@@ -208,7 +226,9 @@ func cmdPrice(state *app.State, args []string) string {
 	if !state.HasAnyAccount() {
 		return "❌ 未配置任何 OVH 账户"
 	}
-	accountID := telegram.DefaultAccountID(state)
+	if _, ok := state.FindAccount(accountID); !ok {
+		return "❌ 当前绑定的 OVH 账户不存在"
+	}
 
 	// 尝试取该机房任一有货配置的 options 再询价
 	options := []string{}

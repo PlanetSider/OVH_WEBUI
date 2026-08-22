@@ -23,6 +23,7 @@ import VpsControlPage from "./pages/VpsControlPage";
 import ContactChangePage from "./pages/ContactChangePage";
 import PerformancePage from "./pages/PerformancePage";
 import TelegramOrderPage from "./pages/TelegramOrderPage";
+import FeishuOrderPage from "./pages/FeishuOrderPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -64,6 +65,7 @@ const App = () => (
                 <Route path="/contact-change" element={<ContactChangePage />} />
                 <Route path="/performance" element={<PerformancePage />} />
                 <Route path="/telegram-order" element={<TelegramOrderPage />} />
+                <Route path="/feishu-order" element={<FeishuOrderPage />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </OvhCredsGate>

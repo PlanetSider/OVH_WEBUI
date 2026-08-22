@@ -32,10 +32,11 @@ function apiErrorText(error: unknown, fallback: string) {
   return value.response?.data?.error || value.response?.data?.message || value.message || fallback;
 }
 
-export function useFeishuBinding(accountId?: string) {
+export function useFeishuBinding(accountId?: string, enabled = true) {
   return useQuery({
     queryKey: ["feishu", "binding", accountId || "default"],
     queryFn: async () => (await api.get<{ success: boolean; bound: boolean; binding?: FeishuBinding }>("/feishu/binding", { params: { account: accountId } })).data,
+    enabled,
   });
 }
 
@@ -60,10 +61,11 @@ export interface TelegramWebhookInfo {
 }
 
 /** 读取后端 config */
-export function useSettings() {
+export function useSettings(enabled = true) {
   return useQuery({
     queryKey: qk.settings.config(),
     queryFn: async () => (await api.get<SettingsConfig>("/settings")).data,
+    enabled,
   });
 }
 

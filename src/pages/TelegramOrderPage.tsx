@@ -37,7 +37,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useServers } from "@/hooks/useApi";
+import { AccountSelect } from "@/components/common/AccountSelect";
+import { useFeishuBinding, useSendFeishuTestCard, useSettings } from "@/hooks/use-settings";
 import { Badge } from "@/components/ui/badge";
+import { Link } from "react-router-dom";
 import {
   Dialog,
   DialogContent,
@@ -114,21 +117,42 @@ const orderModes: OrderMode[] = [
 const HISTORY_STORAGE_KEY = 'telegram_command_history';
 const MAX_HISTORY_ITEMS = 20;
 
-const TelegramOrderPage = () => {
+interface TelegramOrderPageProps {
+  channel?: 'telegram' | 'feishu';
+}
+
+interface OrderResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+  price?: { prices?: { withTax?: number } } | number;
+  orderId?: string;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => {
+  const isFeishu = channel === 'feishu';
   const { data: servers } = useServers();
+  const settings = useSettings(isFeishu);
   const [selectedMode, setSelectedMode] = useState<OrderMode['mode']>('stock');
+  const [accountId, setAccountId] = useState('');
   const [planCode, setPlanCode] = useState('');
   const [datacenter, setDatacenter] = useState('');
   const [quantity, setQuantity] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [lastResult, setLastResult] = useState<any>(null);
+  const [lastResult, setLastResult] = useState<OrderResult | null>(null);
   const [copied, setCopied] = useState(false);
   
   // Webhook status
-  const [webhookInfo, setWebhookInfo] = useState<any>(null);
+  const [webhookInfo, setWebhookInfo] = useState<{ url?: string } | null>(null);
   const [isLoadingWebhook, setIsLoadingWebhook] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [isSettingWebhook, setIsSettingWebhook] = useState(false);
+  const feishuBinding = useFeishuBinding(accountId, isFeishu && Boolean(accountId));
+  const sendFeishuTestCard = useSendFeishuTestCard(isFeishu ? accountId : undefined);
   
   // Command history
   const [commandHistory, setCommandHistory] = useState<CommandHistory[]>([]);
@@ -139,7 +163,7 @@ const TelegramOrderPage = () => {
 
   // Load command history from localStorage
   useEffect(() => {
-    const saved = localStorage.getItem(HISTORY_STORAGE_KEY);
+    const saved = localStorage.getItem(isFeishu ? 'feishu_command_history' : HISTORY_STORAGE_KEY);
     if (saved) {
       try {
         setCommandHistory(JSON.parse(saved));
@@ -147,12 +171,12 @@ const TelegramOrderPage = () => {
         console.error('Failed to parse command history:', e);
       }
     }
-  }, []);
+  }, [isFeishu]);
 
   // Load webhook info on mount
   useEffect(() => {
-    loadWebhookInfo();
-  }, []);
+    if (!isFeishu) void loadWebhookInfo();
+  }, [isFeishu]);
 
   const loadWebhookInfo = async () => {
     setIsLoadingWebhook(true);
@@ -184,8 +208,8 @@ const TelegramOrderPage = () => {
       } else {
         toast.error(result.error || "设置失败");
       }
-    } catch (error: any) {
-      toast.error(`设置失败: ${error.message}`);
+    } catch (error: unknown) {
+      toast.error(`设置失败: ${errorMessage(error)}`);
     } finally {
       setIsSettingWebhook(false);
     }
@@ -199,13 +223,13 @@ const TelegramOrderPage = () => {
       } else {
         toast.error(result.error || "注册失败");
       }
-    } catch (error: any) {
-      toast.error(`注册失败: ${error.message}`);
+    } catch (error: unknown) {
+      toast.error(`注册失败: ${errorMessage(error)}`);
     }
   };
 
   const saveHistory = (history: CommandHistory[]) => {
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
+    localStorage.setItem(historyStorageKey, JSON.stringify(history));
     setCommandHistory(history);
   };
 
@@ -247,14 +271,26 @@ const TelegramOrderPage = () => {
       return;
     }
 
+    if (isFeishu && !accountId) {
+      toast.error("请选择已绑定飞书的 OVH 账户");
+      return;
+    }
+
+    if (isFeishu && !feishuBinding.data?.bound) {
+      toast.error("当前 OVH 账户尚未绑定飞书用户");
+      return;
+    }
+
     const command = generateCommand();
     setIsSubmitting(true);
     try {
-      const result = await api.telegramQuickOrder({
+      const execute = isFeishu ? api.feishuQuickOrder : api.telegramQuickOrder;
+      const result = await execute({
         mode: selectedMode,
         planCode,
         datacenter: datacenter || undefined,
         quantity: selectedMode === 'buy' ? quantity : undefined,
+        accountId: isFeishu ? accountId : undefined,
       });
       
       setLastResult(result);
@@ -265,9 +301,10 @@ const TelegramOrderPage = () => {
       } else {
         toast.error(result.error || "操作失败");
       }
-    } catch (error: any) {
-      toast.error(`请求失败: ${error.message}`);
-      setLastResult({ success: false, error: error.message });
+    } catch (error: unknown) {
+      const message = errorMessage(error);
+      toast.error(`请求失败: ${message}`);
+      setLastResult({ success: false, error: message });
       addToHistory(command, selectedMode, planCode, datacenter || undefined, false);
     } finally {
       setIsSubmitting(false);
@@ -294,12 +331,22 @@ const TelegramOrderPage = () => {
 
   const needsDatacenter = selectedMode === 'queue' || selectedMode === 'price' || selectedMode === 'buy';
   const isWebhookConnected = webhookInfo?.url && webhookInfo?.url.length > 0;
+  const isFeishuConfigured = Boolean(
+    settings.data?.feishuEnabled && settings.data?.feishuAppId && settings.data?.feishuAppSecret
+  );
+  const isFeishuConnected = isFeishuConfigured && Boolean(feishuBinding.data?.bound);
+  const connectionLoading = isFeishu
+    ? settings.isLoading || feishuBinding.isLoading
+    : isLoadingWebhook;
+  const isConnected = isFeishu ? isFeishuConnected : isWebhookConnected;
+  const channelName = isFeishu ? "飞书" : "Telegram";
+  const historyStorageKey = isFeishu ? 'feishu_command_history' : HISTORY_STORAGE_KEY;
 
   return (
     <>
       <Helmet>
-        <title>Telegram 下单 | OVH Sniper</title>
-        <meta name="description" content="通过Telegram快速下单" />
+        <title>{channelName} 下单 | OVH Sniper</title>
+        <meta name="description" content={`通过${channelName}快速下单`} />
       </Helmet>
       
       <AppLayout>
@@ -310,19 +357,21 @@ const TelegramOrderPage = () => {
               <div className="flex-1 min-w-0">
                 <h1 className="text-xl sm:text-2xl font-bold text-primary flex items-center gap-2">
                   <span className="text-muted-foreground">&gt;</span>
-                  <span className="truncate">Telegram 下单</span>
+                  <span className="truncate">{channelName} 下单</span>
                   <span className="cursor-blink">_</span>
                 </h1>
                 <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-                  通过 Telegram 消息快速执行下单（需先配置 Webhook 并注册命令菜单）
+                  {isFeishu
+                    ? "通过飞书私聊命令和交互卡片执行下单（需先配置应用并绑定 OVH 账户）"
+                    : "通过 Telegram 消息快速执行下单（需先配置 Webhook 并注册命令菜单）"}
                 </p>
               </div>
               {/* Bot Connection Status */}
-              {isLoadingWebhook ? (
+              {connectionLoading ? (
                 <span className="flex items-center gap-1 text-xs text-muted-foreground bg-muted px-2 py-1 rounded w-fit">
                   <Loader2 className="h-3 w-3 animate-spin" /> 检查中
                 </span>
-              ) : isWebhookConnected ? (
+              ) : isConnected ? (
                 <span className="flex items-center gap-1 text-xs text-primary bg-primary/10 px-2 py-1 rounded w-fit">
                   <Wifi className="h-3 w-3" /> 已连接
                 </span>
@@ -334,16 +383,46 @@ const TelegramOrderPage = () => {
             </div>
             
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" onClick={loadWebhookInfo} disabled={isLoadingWebhook} className="h-8 text-xs">
-                <RefreshCw className={cn("h-3 w-3 sm:h-4 sm:w-4 mr-1", isLoadingWebhook && "animate-spin")} />
-                刷新
-              </Button>
-              <Button variant="outline" size="sm" onClick={handleRegisterCommands} className="h-8 text-xs">
-                <Settings2 className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
-                注册命令菜单
-              </Button>
-              
-              <Dialog>
+              {isFeishu ? (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void feishuBinding.refetch()}
+                    disabled={feishuBinding.isFetching || !accountId}
+                    className="h-8 text-xs"
+                  >
+                    <RefreshCw className={cn("h-3 w-3 sm:h-4 sm:w-4 mr-1", feishuBinding.isFetching && "animate-spin")} />
+                    刷新绑定
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => sendFeishuTestCard.mutate()}
+                    disabled={sendFeishuTestCard.isPending || !isFeishuConnected}
+                    className="h-8 text-xs"
+                  >
+                    {sendFeishuTestCard.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
+                    发送测试卡片
+                  </Button>
+                  <Button asChild variant="terminal" size="sm" className="h-8 text-xs">
+                    <Link to="/settings?section=feishu">
+                      <Settings2 className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
+                      飞书配置
+                    </Link>
+                  </Button>
+                </>
+              ) : <>
+                <Button variant="outline" size="sm" onClick={loadWebhookInfo} disabled={isLoadingWebhook} className="h-8 text-xs">
+                  <RefreshCw className={cn("h-3 w-3 sm:h-4 sm:w-4 mr-1", isLoadingWebhook && "animate-spin")} />
+                  刷新
+                </Button>
+                <Button variant="outline" size="sm" onClick={handleRegisterCommands} className="h-8 text-xs">
+                  <Settings2 className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
+                  注册命令菜单
+                </Button>
+
+                <Dialog>
                 <DialogTrigger asChild>
                   <Button variant="terminal" size="sm" className="h-8 text-xs">
                     <Settings2 className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
@@ -401,9 +480,28 @@ const TelegramOrderPage = () => {
                     </Button>
                   </DialogFooter>
                 </DialogContent>
-              </Dialog>
+                </Dialog>
+              </>}
             </div>
           </div>
+
+          {isFeishu && (
+            <div className="terminal-card p-3 sm:p-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-center">
+              <div className="space-y-1">
+                <Label>飞书绑定的 OVH 账户</Label>
+                <AccountSelect value={accountId} onChange={setAccountId} />
+              </div>
+              <div className="text-xs text-muted-foreground leading-relaxed">
+                {isFeishuConnected ? (
+                  <span className="text-primary">已绑定，可用飞书私聊执行命令并接收有货交互卡片。</span>
+                ) : isFeishuConfigured ? (
+                  <>当前账户未绑定。在飞书中私聊机器人发送 <code className="font-mono text-primary">绑定账户 {accountId || "账户ID"}</code>，然后刷新绑定状态。</>
+                ) : (
+                  <>飞书应用尚未配置，请先前往“飞书配置”填写 App ID、App Secret 和回调安全信息。</>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Mode Selection Cards */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3">
@@ -570,7 +668,9 @@ const TelegramOrderPage = () => {
                     <div className="p-3 bg-muted/50 rounded-sm border border-border">
                       <p className="text-sm text-muted-foreground mb-1">价格信息</p>
                       <p className="text-lg font-bold font-mono text-accent">
-                        {lastResult.price.prices?.withTax?.toFixed(2) || lastResult.price} €
+                        {typeof lastResult.price === "number"
+                          ? lastResult.price.toFixed(2)
+                          : lastResult.price.prices?.withTax?.toFixed(2) || "--"} €
                       </p>
                     </div>
                   )}

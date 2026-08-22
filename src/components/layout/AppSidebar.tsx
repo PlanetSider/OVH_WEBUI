@@ -49,6 +49,7 @@ const navGroups = [
       { to: "/queue", icon: ListOrdered, label: "抢购队列" },
       { to: "/history", icon: History, label: "购买历史" },
       { to: "/telegram-order", icon: MessageSquare, label: "Telegram 下单" },
+      { to: "/feishu-order", icon: MessageSquare, label: "飞书下单" },
     ],
   },
   {

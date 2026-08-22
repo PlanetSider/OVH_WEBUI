@@ -180,11 +180,12 @@ func main() {
 		api.GET("/accounts/status", handlers.AccountsStatus(state))
 
 		// Feishu events / interactive cards
-		api.POST("/feishu/events", handlers.FeishuEvents(state))
+		api.POST("/feishu/events", handlers.FeishuEventsWithMonitor(state, mon))
 		api.POST("/feishu/card-action", handlers.FeishuCardAction(state))
 		api.GET("/feishu/binding", handlers.FeishuBinding(state))
 		api.DELETE("/feishu/binding", handlers.ClearFeishuBinding(state))
 		api.POST("/feishu/test-card", handlers.FeishuTestCard(state))
+		api.POST("/feishu/quick-order", handlers.FeishuQuickOrder(state, mon))
 
 		// 快速下单端点 (监控的 auto-order 通过 HTTP 自调走它,前端也可直接调)
 		api.POST("/queue/quick-order", handlers.QuickOrder(state))

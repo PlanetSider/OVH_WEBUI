@@ -72,6 +72,76 @@ func TelegramQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 	}
 }
 
+// FeishuQuickOrder POST /api/feishu/quick-order
+// 网页「飞书下单」页按当前飞书绑定账户执行与机器人相同的命令语义。
+func FeishuQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Mode       string   `json:"mode"`
+			PlanCode   string   `json:"planCode"`
+			Datacenter string   `json:"datacenter"`
+			Quantity   int      `json:"quantity"`
+			Options    []string `json:"options"`
+			AccountID  string   `json:"accountId"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无效的请求体"})
+			return
+		}
+
+		mode := strings.ToLower(strings.TrimSpace(body.Mode))
+		planCode := strings.TrimSpace(body.PlanCode)
+		dc := strings.ToLower(strings.TrimSpace(body.Datacenter))
+		accountID := strings.TrimSpace(body.AccountID)
+		if !monitor.FeishuEnabled(state) {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "飞书应用未启用或配置不完整"})
+			return
+		}
+		if accountID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 accountId"})
+			return
+		}
+		if _, ok := state.FindAccount(accountID); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "指定的 OVH 账户不存在"})
+			return
+		}
+		binding, ok := monitor.FeishuBindingForAccount(state, accountID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "当前 OVH 账户尚未绑定飞书用户"})
+			return
+		}
+		if mode == "help" || mode == "start" {
+			c.JSON(http.StatusOK, gin.H{"success": true, "message": telegram.HelpMessage()})
+			return
+		}
+		if mode == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 mode"})
+			return
+		}
+		if planCode == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 planCode"})
+			return
+		}
+
+		args, errMsg := buildTelegramCommandArgs(mode, planCode, dc, body.Quantity, body.Options)
+		if errMsg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": errMsg})
+			return
+		}
+		cmd := &telegram.BotCommand{Name: mode, Args: args, Raw: "/" + mode + " " + strings.Join(args, " ")}
+		reply := dispatchBotCommand(state, mon, cmd, accountID, "feishu")
+		success := !strings.HasPrefix(strings.TrimSpace(reply), "❌")
+		if err := monitor.FeishuSendText(state, binding.OpenID, reply); err != nil {
+			state.Logger.Warn("飞书网页下单结果回传失败: "+err.Error(), "feishu")
+		}
+		errField := ""
+		if !success {
+			errField = reply
+		}
+		c.JSON(http.StatusOK, gin.H{"success": success, "message": reply, "error": errField, "mode": mode, "command": cmd.Raw})
+	}
+}
+
 func buildTelegramCommandArgs(mode, planCode, dc string, quantity int, options []string) ([]string, string) {
 	switch mode {
 	case "stock":

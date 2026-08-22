@@ -24,6 +24,7 @@ import {
 } from "@/hooks/use-settings";
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useSearchParams } from "react-router-dom";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
 import {
   useAccounts,
@@ -52,9 +53,15 @@ const SECTIONS = [
 ] as const;
 
 function SettingsPage() {
+  const [searchParams] = useSearchParams();
   const cfg = useSettings();
   const save = useSaveSettings();
-  const [active, setActive] = useState<typeof SECTIONS[number]["id"]>("password");
+  const initialSection = searchParams.get("section");
+  const [active, setActive] = useState<typeof SECTIONS[number]["id"]>(
+    SECTIONS.some((section) => section.id === initialSection)
+      ? initialSection as typeof SECTIONS[number]["id"]
+      : "password"
+  );
   const [form, setForm] = useState<SettingsConfig>({});
   const [apiKey, setApiKey] = useState("");
 
@@ -65,6 +72,13 @@ function SettingsPage() {
   useEffect(() => {
     setApiKey(getApiSecretKey() || "");
   }, []);
+
+  useEffect(() => {
+    const section = searchParams.get("section");
+    if (SECTIONS.some((item) => item.id === section)) {
+      setActive(section as typeof SECTIONS[number]["id"]);
+    }
+  }, [searchParams]);
 
   const set = (k: keyof SettingsConfig, v: string) => setForm((prev) => ({ ...prev, [k]: v }));
 

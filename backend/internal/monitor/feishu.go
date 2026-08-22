@@ -226,6 +226,7 @@ func FeishuDeleteBinding(state *app.State, accountID string) error {
 func FeishuBindingForAccount(state *app.State, accountID string) (types.FeishuBinding, bool) {
 	bindings := FeishuBindings(state)
 	resolvedAccountID := strings.TrimSpace(accountID)
+	isDefaultAccount := resolvedAccountID == "" || resolvedAccountID == "default"
 	if resolvedAccountID == "" || resolvedAccountID == "default" {
 		if account, ok := state.FindAccount(""); ok {
 			resolvedAccountID = account.ID
@@ -234,8 +235,16 @@ func FeishuBindingForAccount(state *app.State, accountID string) (types.FeishuBi
 	if binding, ok := bindings[resolvedAccountID]; ok && binding.OpenID != "" {
 		return binding, true
 	}
-	if binding, ok := bindings["default"]; ok && binding.OpenID != "" {
-		return binding, true
+	// 仅默认账户兼容旧版 default 键，不能把默认绑定错误复用到其他账户。
+	if isDefaultAccount {
+		if binding, ok := bindings["default"]; ok && binding.OpenID != "" {
+			return binding, true
+		}
+	}
+	if account, ok := state.FindAccount(""); ok && account.ID == resolvedAccountID {
+		if binding, ok := bindings["default"]; ok && binding.OpenID != "" {
+			return binding, true
+		}
 	}
 	return types.FeishuBinding{}, false
 }

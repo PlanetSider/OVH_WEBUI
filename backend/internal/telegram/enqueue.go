@@ -27,10 +27,10 @@ func EnqueueSingle(state *app.State, accountID, planCode, datacenter string, opt
 	if !CanEnqueue(state, 1) {
 		return OrderResult{Success: false, Message: fmt.Sprintf("队列已满（上限 %d），请清理后再试", MaxQueueLen)}
 	}
-	if HasActiveDuplicate(state, planCode, datacenter, options) {
+	if HasActiveDuplicateForAccount(state, accountID, planCode, datacenter, options) {
 		return OrderResult{Success: false, Message: "已存在相同配置的购买任务，请勿重复点击"}
 	}
-	if RecentSuccessDuplicate(state, planCode, datacenter, options) {
+	if RecentSuccessDuplicateForAccount(state, accountID, planCode, datacenter, options) {
 		return OrderResult{Success: false, Message: "刚刚已成功下过同配置订单，稍后再试"}
 	}
 
@@ -87,18 +87,23 @@ func EnqueueSingle(state *app.State, accountID, planCode, datacenter string, opt
 // ProcessOrder 重写：带数量/扇出上限、去重、账户绑定、队列硬顶。
 // 未指定机房时仅取 1 个可用机房；未指定 options 时仅取 1 套配置（防笛卡尔积爆炸）。
 func ProcessOrder(state *app.State, planCode, datacenter string, quantity int, options []string) OrderResult {
+	return ProcessOrderForAccount(state, DefaultAccountID(state), planCode, datacenter, quantity, options, true)
+}
+
+// ProcessOrderForAccount 执行指定机器人通道、指定 OVH 账户的受控批量入队。
+// 飞书必须显式传入已绑定账户，避免多账户环境误用默认账户。
+func ProcessOrderForAccount(state *app.State, accountID, planCode, datacenter string, quantity int, options []string, fromTelegram bool) OrderResult {
 	quantity = ClampQuantity(quantity)
 	planCode = strings.TrimSpace(planCode)
 	datacenter = strings.ToLower(strings.TrimSpace(datacenter))
 	if planCode == "" {
 		return OrderResult{Success: false, Message: "缺少 planCode"}
 	}
-	if !state.HasAnyAccount() {
-		return OrderResult{Success: false, Message: "未配置任何 OVH 账户"}
-	}
-	accountID := DefaultAccountID(state)
 	if accountID == "" {
 		return OrderResult{Success: false, Message: "未配置任何 OVH 账户"}
+	}
+	if _, ok := state.FindAccount(accountID); !ok {
+		return OrderResult{Success: false, Message: "指定的 OVH 账户不存在"}
 	}
 
 	// 生产建议：强制指定机房，避免「全机房 × 全配置」扇出
@@ -157,7 +162,7 @@ func ProcessOrder(state *app.State, planCode, datacenter string, quantity int, o
 				break
 			}
 		}
-		state.Logger.Info(fmt.Sprintf("[Telegram下单] 未指定机房，限制为 %d 个: %v", len(dcsToOrder), dcsToOrder), "telegram")
+		state.Logger.Info(fmt.Sprintf("[机器人下单] 未指定机房，限制为 %d 个: %v", len(dcsToOrder), dcsToOrder), "bot")
 	}
 
 	// 预估并硬顶
@@ -180,13 +185,14 @@ func ProcessOrder(state *app.State, planCode, datacenter string, quantity int, o
 				continue
 			}
 			// 队列中已有同配置活跃任务时整组跳过（不与 quantity 混用）
-			if HasActiveDuplicate(state, planCode, dc, configOptions) {
+			if HasActiveDuplicateForAccount(state, accountID, planCode, dc, configOptions) {
 				skippedDup += quantity
 				continue
 			}
 			// quantity 表示同配置入队条数（每条独立抢购任务），允许同批重复
 			for i := 0; i < quantity; i++ {
 				item := NewTelegramQueueItem(accountID, planCode, dc, configOptions)
+				item.FromTelegram = fromTelegram
 				ordersToCreate = append(ordersToCreate, item)
 			}
 		}
@@ -218,11 +224,11 @@ func ProcessOrder(state *app.State, planCode, datacenter string, quantity int, o
 		}
 		state.Queue = kept
 		state.QueueMu.Unlock()
-		state.Logger.Error("Telegram 批量入队落盘失败: "+err.Error(), "telegram")
+		state.Logger.Error("机器人批量入队落盘失败: "+err.Error(), "bot")
 		return OrderResult{Success: false, Message: "入队保存失败，请重试"}
 	}
 	created := len(ordersToCreate)
-	state.Logger.Info(fmt.Sprintf("Telegram 受控批量入队: %d 个 (skip_dup=%d)", created, skippedDup), "telegram")
+	state.Logger.Info(fmt.Sprintf("机器人受控批量入队: %d 个 (skip_dup=%d) account=%s", created, skippedDup, accountID), "bot")
 	return OrderResult{
 		Success:       true,
 		Message:       fmt.Sprintf("已创建 %d 个订单", created),

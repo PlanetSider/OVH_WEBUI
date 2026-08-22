@@ -27,7 +27,7 @@ func enqueueQuickOrder(state *app.State, accountID, planCode, datacenter string,
 		fp := fingerprint(options)
 		state.QueueMu.Lock()
 		for _, item := range state.Queue {
-			if item.PlanCode == planCode && item.Datacenter == datacenter &&
+			if item.AccountID == accountID && item.PlanCode == planCode && item.Datacenter == datacenter &&
 				(item.Status == "running" || item.Status == "pending" || item.Status == "paused") &&
 				fingerprint(item.Options) == fp {
 				state.QueueMu.Unlock()
@@ -40,7 +40,7 @@ func enqueueQuickOrder(state *app.State, accountID, planCode, datacenter string,
 		state.HistoryMu.Lock()
 		for index := len(state.History) - 1; index >= 0; index-- {
 			history := state.History[index]
-			if history.PlanCode == planCode && history.Datacenter == datacenter && history.Status == "success" && fingerprint(history.Options) == fp {
+			if history.AccountID == accountID && history.PlanCode == planCode && history.Datacenter == datacenter && history.Status == "success" && fingerprint(history.Options) == fp {
 				if timestamp, err := time.Parse(time.RFC3339Nano, history.PurchaseTime); err == nil && nowTS-timestamp.Unix() < 120 {
 					state.HistoryMu.Unlock()
 					return fmt.Errorf("刚刚已成功下过同配置订单，稍后再试")

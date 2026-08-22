@@ -174,3 +174,10 @@ CREATE TABLE IF NOT EXISTS telegram_updates (
   processed_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tg_updates_processed ON telegram_updates(processed_at);
+
+-- 飞书事件会自动重试投递，按 event_id 幂等去重，避免重复执行下单命令。
+CREATE TABLE IF NOT EXISTS feishu_events (
+  event_id     TEXT PRIMARY KEY,
+  processed_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feishu_events_processed ON feishu_events(processed_at);

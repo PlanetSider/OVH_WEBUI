@@ -594,6 +594,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(order),
     }),
+  /** 网页端按飞书绑定账户执行 /stock /queue /buy /monitor /price 语义 */
+  feishuQuickOrder: (order: Record<string, unknown>) =>
+    apiRequest<{
+      success: boolean;
+      message?: string;
+      error?: string;
+      mode?: string;
+      command?: string;
+    }>("/api/feishu/quick-order", {
+      method: "POST",
+      body: JSON.stringify(order),
+    }),
   /** 向 Telegram 注册 Bot 命令菜单（setMyCommands） */
   registerTelegramCommands: () =>
     apiRequest<any>("/api/telegram/register-commands", {

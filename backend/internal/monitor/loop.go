@@ -31,12 +31,19 @@ func (m *Monitor) checkTGOrStop() bool {
 		m.tgCheckMu.Lock()
 		m.lastTGCheck = time.Now()
 		m.tgCheckMu.Unlock()
-		defaultAccountID := ""
-		if account, accountOK := m.state.FindAccount(""); accountOK {
-			defaultAccountID = account.ID
-		}
-		if _, ok := FeishuBindingForAccount(m.state, defaultAccountID); ok {
-			return true
+		// 任一有效账户完成飞书绑定即可维持监控；不能只检查默认账户，
+		// 否则非默认账户从飞书创建的监控会被错误停止。
+		for accountID, binding := range FeishuBindings(m.state) {
+			if binding.OpenID == "" {
+				continue
+			}
+			if accountID == "default" {
+				if _, accountOK := m.state.FindAccount(""); accountOK {
+					return true
+				}
+			} else if _, accountOK := m.state.FindAccount(accountID); accountOK {
+				return true
+			}
 		}
 	}
 	ok, reason := telegram.VerifyConfig(m.state)

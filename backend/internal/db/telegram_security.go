@@ -35,6 +35,33 @@ func (db *DB) CleanupTelegramUpdates(beforeUnix float64) (int64, error) {
 	return n, nil
 }
 
+// TryClaimFeishuEvent 幂等认领 event_id。飞书重试相同事件时返回 false。
+func (db *DB) TryClaimFeishuEvent(eventID string) (claimed bool, err error) {
+	if eventID == "" {
+		return true, nil
+	}
+	now := float64(time.Now().Unix())
+	res, err := db.Exec(
+		`INSERT OR IGNORE INTO feishu_events (event_id, processed_at) VALUES (?, ?)`,
+		eventID, now,
+	)
+	if err != nil {
+		return false, fmt.Errorf("claim feishu event: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// CleanupFeishuEvents 删除过期的飞书事件幂等记录。
+func (db *DB) CleanupFeishuEvents(beforeUnix float64) (int64, error) {
+	res, err := db.Exec(`DELETE FROM feishu_events WHERE processed_at < ?`, beforeUnix)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // TryConsumeTelegramButton 原子消费按钮 UUID（一次性 nonce）。
 // 仅当 used_at=0 且存在时成功；成功后 used_at 写入当前时间。
 func (db *DB) TryConsumeTelegramButton(id string) (ok bool, err error) {

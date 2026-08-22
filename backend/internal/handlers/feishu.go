@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/numconv"
 	"github.com/ovh-webui/server/internal/price"
+	"github.com/ovh-webui/server/internal/telegram"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -48,18 +50,51 @@ func feishuHeaderValues(body map[string]interface{}) (string, string) {
 }
 
 func FeishuEvents(state *app.State) gin.HandlerFunc {
+	return FeishuEventsWithMonitor(state, nil)
+}
+
+const feishuEventRetentionDays = 7
+
+// FeishuEventsWithMonitor 同时处理账户绑定与飞书私聊命令。
+func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, body, err := feishuJSONBody(c)
-		if err != nil { c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": "invalid json"}); return }
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": "invalid json"})
+			return
+		}
 		token, appID := feishuHeaderValues(body)
 		if !monitor.FeishuVerifyRequest(state, raw, token, appID, c.GetHeader("X-Lark-Request-Timestamp"), c.GetHeader("X-Lark-Request-Nonce"), c.GetHeader("X-Lark-Signature")) {
-			c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid token"}); return
+			c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid token"})
+			return
 		}
 		body, err = monitor.FeishuUnwrapPayload(state, body)
-		if err != nil { c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": err.Error()}); return }
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": err.Error()})
+			return
+		}
 		token, appID = feishuHeaderValues(body)
-		if !monitor.FeishuVerifyIdentity(state, token, appID) { c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid identity"}); return }
-		if challenge, ok := body["challenge"].(string); ok && challenge != "" { c.JSON(http.StatusOK, gin.H{"challenge": challenge}); return }
+		if !monitor.FeishuVerifyIdentity(state, token, appID) {
+			c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid identity"})
+			return
+		}
+		if challenge, ok := body["challenge"].(string); ok && challenge != "" {
+			c.JSON(http.StatusOK, gin.H{"challenge": challenge})
+			return
+		}
+		eventID := feishuEventID(body)
+		if state.DB != nil && eventID != "" {
+			claimed, claimErr := state.DB.TryClaimFeishuEvent(eventID)
+			if claimErr != nil {
+				state.Logger.Warn("飞书 event_id 幂等写入失败: "+claimErr.Error(), "feishu")
+			} else if !claimed {
+				c.JSON(http.StatusOK, gin.H{"code": 0, "duplicate": true})
+				return
+			}
+			if len(eventID)%20 == 0 {
+				_, _ = state.DB.CleanupFeishuEvents(float64(time.Now().Add(-feishuEventRetentionDays * 24 * time.Hour).Unix()))
+			}
+		}
 		event, _ := body["event"].(map[string]interface{})
 		message, _ := event["message"].(map[string]interface{})
 		contentText, _ := message["content"].(string)
@@ -68,20 +103,110 @@ func FeishuEvents(state *app.State) gin.HandlerFunc {
 		text, _ := content["text"].(string)
 		openID := feishuOpenID(body)
 		if openID != "" {
-			accountID := "default"
 			trimmed := strings.TrimSpace(text)
-			if strings.HasPrefix(trimmed, "绑定账户 ") { accountID = strings.TrimSpace(strings.TrimPrefix(trimmed, "绑定账户 ")) }
-			if accountID == "default" || accountExists(state, accountID) {
-				_ = monitor.FeishuSaveBinding(state, types.FeishuBinding{AccountID: accountID, OpenID: openID, Name: openID, UpdatedAt: types.NowISO()})
+			if trimmed != "" && !telegram.AllowRate("feishu:"+openID) {
+				_ = monitor.FeishuSendText(state, openID, "⚠️ 操作过于频繁，请稍后再试")
+				c.JSON(http.StatusOK, gin.H{"code": 0})
+				return
+			}
+			accountID, bound := feishuAccountForOpenID(state, openID)
+			if strings.HasPrefix(trimmed, "绑定账户 ") {
+				requestedAccountID := strings.TrimSpace(strings.TrimPrefix(trimmed, "绑定账户 "))
+				if !accountExists(state, requestedAccountID) {
+					_ = monitor.FeishuSendText(state, openID, "绑定失败：OVH 账户不存在")
+				} else {
+					_ = monitor.FeishuSaveBinding(state, types.FeishuBinding{AccountID: requestedAccountID, OpenID: openID, Name: openID, UpdatedAt: types.NowISO()})
+					_ = monitor.FeishuSendText(state, openID, "飞书已绑定到账户："+requestedAccountID)
+				}
+				c.JSON(http.StatusOK, gin.H{"code": 0})
+				return
 			}
 			if trimmed == "账户状态" || strings.EqualFold(trimmed, "status") {
 				_ = monitor.FeishuSendText(state, openID, feishuAccountStatusText(state))
-			} else if strings.HasPrefix(trimmed, "绑定账户 ") {
-				_ = monitor.FeishuSendText(state, openID, "飞书已绑定到账户："+accountID)
+			} else if strings.EqualFold(trimmed, "help") || trimmed == "帮助" || trimmed == "?" {
+				_ = monitor.FeishuSendText(state, openID, telegram.HelpMessage()+"\n绑定账户：绑定账户 <账户ID>")
+			} else if cmd := telegram.ParseBotCommand(trimmed); cmd != nil {
+				if cmd.Name == "start" || cmd.Name == "help" {
+					_ = monitor.FeishuSendText(state, openID, telegram.HelpMessage()+"\n绑定账户：绑定账户 <账户ID>")
+				} else if !bound {
+					_ = monitor.FeishuSendText(state, openID, "请先发送“绑定账户 账户ID”绑定 OVH 账户")
+				} else {
+					_ = monitor.FeishuSendText(state, openID, dispatchBotCommand(state, mon, cmd, accountID, "feishu"))
+				}
+			} else if feishuLooksLikeOrder(trimmed) {
+				order := telegram.ParseOrderMessage(trimmed)
+				if !bound {
+					_ = monitor.FeishuSendText(state, openID, "请先发送“绑定账户 账户ID”绑定 OVH 账户")
+				} else if order != nil && order.PlanCode != "" {
+					result := telegram.ProcessOrderForAccount(state, accountID, order.PlanCode, order.Datacenter, order.Quantity, order.Options, false)
+					if result.Success {
+						_ = monitor.FeishuSendText(state, openID, fmt.Sprintf("✅ 已加入抢购队列\n\n型号: %s\n机房: %s\n数量: %d\n已创建: %d 个任务", order.PlanCode, feishuDCText(order.Datacenter), telegram.ClampQuantity(order.Quantity), result.CreatedOrders))
+					} else {
+						_ = monitor.FeishuSendText(state, openID, "❌ 下单失败\n\n"+result.Message)
+					}
+				}
 			}
 		}
 		c.JSON(http.StatusOK, gin.H{"code": 0})
 	}
+}
+
+func feishuEventID(body map[string]interface{}) string {
+	header, _ := body["header"].(map[string]interface{})
+	if eventID, ok := header["event_id"].(string); ok && eventID != "" {
+		return eventID
+	}
+	event, _ := body["event"].(map[string]interface{})
+	eventHeader, _ := event["header"].(map[string]interface{})
+	eventID, _ := eventHeader["event_id"].(string)
+	return eventID
+}
+
+func feishuLooksLikeOrder(text string) bool {
+	parts := strings.Fields(strings.TrimSpace(text))
+	if len(parts) == 0 || len(parts) > 4 {
+		return false
+	}
+	planCode := parts[0]
+	if strings.HasPrefix(planCode, "/") || strings.ContainsAny(planCode, "：:，,。！？!?“”\"") {
+		return false
+	}
+	hasDigit := false
+	for _, r := range planCode {
+		if r >= '0' && r <= '9' {
+			hasDigit = true
+			break
+		}
+	}
+	return hasDigit
+}
+
+func feishuDCText(datacenter string) string {
+	if strings.TrimSpace(datacenter) == "" {
+		return "自动选择机房"
+	}
+	return strings.ToUpper(datacenter)
+}
+
+func feishuAccountForOpenID(state *app.State, openID string) (string, bool) {
+	latestAccountID := ""
+	latestUpdatedAt := ""
+	for accountID, binding := range monitor.FeishuBindings(state) {
+		if binding.OpenID != openID {
+			continue
+		}
+		resolved := accountID
+		if resolved == "default" {
+			if account, ok := state.FindAccount(""); ok {
+				resolved = account.ID
+			}
+		}
+		if _, ok := state.FindAccount(resolved); ok && (latestAccountID == "" || binding.UpdatedAt > latestUpdatedAt) {
+			latestAccountID = resolved
+			latestUpdatedAt = binding.UpdatedAt
+		}
+	}
+	return latestAccountID, latestAccountID != ""
 }
 
 func FeishuCardAction(state *app.State) gin.HandlerFunc {
@@ -109,6 +234,10 @@ func FeishuCardAction(state *app.State) gin.HandlerFunc {
 		name, _ := values["action"].(string)
 		openID := feishuOpenID(body)
 		message := "操作已完成"
+		if openID != "" && !telegram.AllowRate("feishu-card:"+openID) {
+			c.JSON(http.StatusOK, gin.H{"toast": gin.H{"type": "warning", "content": "操作过于频繁，请稍后再试"}})
+			return
+		}
 		switch name {
 		case "ping":
 			message = "飞书交互卡片连接正常"
