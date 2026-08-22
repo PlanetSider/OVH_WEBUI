@@ -24,6 +24,7 @@ import ContactChangePage from "./pages/ContactChangePage";
 import PerformancePage from "./pages/PerformancePage";
 import TelegramOrderPage from "./pages/TelegramOrderPage";
 import FeishuOrderPage from "./pages/FeishuOrderPage";
+import RealtimeAvailabilityPage from "./pages/RealtimeAvailabilityPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -52,6 +53,7 @@ const App = () => (
               <ActiveAccountSync />
               <Routes>
                 <Route path="/" element={<Index />} />
+                <Route path="/realtime-availability" element={<RealtimeAvailabilityPage />} />
                 <Route path="/servers" element={<ServersPage />} />
                 <Route path="/queue" element={<QueuePage />} />
                 <Route path="/history" element={<HistoryPage />} />

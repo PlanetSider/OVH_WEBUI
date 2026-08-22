@@ -18,6 +18,33 @@ export interface AvailabilityItem {
   datacenters: DatacenterInfo[];
 }
 
+export type AvailabilityRegion = "eu" | "ca";
+
+export interface RealtimeAvailabilityResponse {
+  region: AvailabilityRegion;
+  source: string;
+  items: AvailabilityItem[];
+  total: number;
+  fetchedAt: string;
+}
+
+/** 按页面选择的 EU / CA 区域通过后端代理查询公开实时可用性接口。 */
+export function useRealtimeAvailability(region: AvailabilityRegion) {
+  return useQuery({
+    queryKey: qk.availability.all(region),
+    queryFn: async ({ signal }) => {
+      const res = await api.get<RealtimeAvailabilityResponse>("/realtime-availability", {
+        params: { region },
+        signal,
+      });
+      return res.data;
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
 /** 从默认 OVH 账户 endpoint（优先）或全局 settings 决定公开 API 区域 */
 async function resolveAvailabilityEndpoint(): Promise<string> {
   try {

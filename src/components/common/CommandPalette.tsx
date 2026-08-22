@@ -14,6 +14,7 @@ import {
   Settings,
   Search,
   Cpu,
+  Database,
 } from "lucide-react";
 
 interface NavEntry {
@@ -26,6 +27,7 @@ interface NavEntry {
 
 const NAV_ENTRIES: NavEntry[] = [
   { to: "/", label: "仪表盘", group: "概览", icon: BarChart3, shortcut: "G D" },
+  { to: "/realtime-availability", label: "实时可用性", group: "服务器", icon: Database, shortcut: "G A" },
   { to: "/servers", label: "服务器列表", group: "抢购", icon: Server, shortcut: "G S" },
   { to: "/queue", label: "抢购队列", group: "抢购", icon: ClipboardList, shortcut: "G Q" },
   { to: "/monitor", label: "服务器监控", group: "监控", icon: Bell, shortcut: "G M" },
@@ -80,6 +82,7 @@ export function CommandPalette() {
       if (waiting) {
         const map: Record<string, string> = {
           d: "/",
+          a: "/realtime-availability",
           s: "/servers",
           q: "/queue",
           m: "/monitor",

@@ -15,6 +15,7 @@ import {
   BarChart3,
   MessageSquare,
   UserCog,
+  Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
@@ -33,6 +34,7 @@ const primaryNav = [
 ];
 
 const moreNav = [
+  { to: "/realtime-availability", icon: Database, label: "实时可用性", group: "服务器" },
   { to: "/monitor", icon: Activity, label: "独服监控", group: "监控" },
   { to: "/vps-monitor", icon: MonitorDot, label: "VPS 监控", group: "监控" },
   { to: "/vps-control", icon: Cloud, label: "VPS 控制", group: "实例" },

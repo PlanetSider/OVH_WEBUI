@@ -159,6 +159,7 @@ func main() {
 		// Servers / availability / cache
 		api.GET("/servers", handlers.GetServers(state))
 		api.POST("/servers/:planCode/price", handlers.GetServerPrice(state))
+		api.GET("/realtime-availability", handlers.GetRealtimeAvailability())
 		api.GET("/availability/*planCode", availabilityHandler(handlers.GetAvailability(state)))
 		api.POST("/availability/*planCode", availabilityHandler(handlers.GetAvailability(state)))
 		api.POST("/internal/monitor/price", handlers.MonitorPrice(state))

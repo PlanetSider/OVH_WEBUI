@@ -17,6 +17,7 @@ import {
   MessageSquare,
   Cloud,
   Zap,
+  Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { QuickOrderDialog } from "@/components/orders/QuickOrderDialog";
@@ -37,6 +38,7 @@ const navGroups = [
   {
     title: "服务器",
     items: [
+      { to: "/realtime-availability", icon: Database, label: "实时可用性" },
       { to: "/servers", icon: Server, label: "服务器列表" },
       { to: "/server-control", icon: Cpu, label: "服务器控制" },
       { to: "/vps-control", icon: Cloud, label: "VPS 控制" },
