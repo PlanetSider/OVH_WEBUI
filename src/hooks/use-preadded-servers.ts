@@ -5,6 +5,7 @@ import type { AvailabilityItem } from "@/hooks/ovh/use-availability";
 
 export type PreaddedServer = AvailabilityItem & {
   region: "eu" | "ca";
+  comparisonRegion: "ovh-ie" | "ovh-ca";
   detectedAt: string;
 };
 

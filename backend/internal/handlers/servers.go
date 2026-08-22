@@ -60,7 +60,6 @@ func GetServers(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 				state.ServerPlansMu.Unlock()
 				state.ServerCache.Set(apiServers)
 				_ = state.SaveServers()
-				RebuildPreaddedServersFromSnapshots(state)
 				serverPlans = apiServers
 				state.Logger.Info("从OVH API加载了 "+strconv.Itoa(len(apiServers))+" 台服务器，已更新缓存", "")
 			} else {

@@ -31,7 +31,7 @@ function PreaddedServersPage() {
     const term = search.trim().toLowerCase();
     if (!term) return items;
     return items.filter((item) =>
-      [item.planCode, item.server, item.fqn, item.memory, item.storage, item.region]
+      [item.planCode, item.server, item.fqn, item.memory, item.storage, item.region, item.comparisonRegion]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
@@ -44,7 +44,7 @@ function PreaddedServersPage() {
       <PageHeader
         icon={Sparkles}
         title="预增服务器"
-        description="实时可用性快照中已出现、但尚未出现在服务器列表中的服务器"
+        description="实时可用性快照中已出现、但尚未出现在对应区域服务器列表中的服务器"
         action={
           <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
             <RefreshCw className={cn("h-4 w-4", query.isFetching && "animate-spin")} />
@@ -81,6 +81,11 @@ function PreaddedServersPage() {
         </CardContent>
       </Card>
 
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ComparisonRule source="EU 实时可用性" target="ovh-ie" />
+        <ComparisonRule source="CA 实时可用性" target="ovh-ca" />
+      </div>
+
       {query.isLoading ? (
         <div className="space-y-3">
           {[0, 1, 2].map((value) => <Skeleton key={value} className="h-48 rounded-2xl" />)}
@@ -114,6 +119,9 @@ function PreaddedServersPage() {
                       <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
                         {item.region.toUpperCase()}
                       </span>
+                      <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        对比 {item.comparisonRegion}
+                      </span>
                     </div>
                     <p className="mt-0.5 truncate text-xs text-muted-foreground">{item.server}</p>
                   </div>
@@ -143,6 +151,17 @@ function PreaddedServersPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function ComparisonRule({ source, target }: { source: string; target: "ovh-ie" | "ovh-ca" }) {
+  return (
+    <Card className="border-dashed">
+      <CardContent className="flex items-center justify-between gap-3 p-3 text-xs">
+        <span className="text-muted-foreground">{source}</span>
+        <span className="font-medium text-foreground">仅对比 {target}</span>
+      </CardContent>
+    </Card>
   );
 }
 

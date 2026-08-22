@@ -19,6 +19,12 @@ const realtimeAvailabilityMaxBody = 32 << 20
 
 var realtimeAvailabilityClient = &http.Client{Timeout: 30 * time.Second}
 
+type availabilityComparisonCatalog struct {
+	URL        string
+	Subsidiary string
+	Label      string
+}
+
 func realtimeAvailabilityURL(region string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(region)) {
 	case "", "eu":
@@ -37,6 +43,25 @@ func normalizeRealtimeRegion(region string) (string, string, bool) {
 	}
 	url, ok := realtimeAvailabilityURL(region)
 	return region, url, ok
+}
+
+func comparisonCatalogForRegion(region string) (availabilityComparisonCatalog, bool) {
+	switch strings.ToLower(strings.TrimSpace(region)) {
+	case "eu":
+		return availabilityComparisonCatalog{
+			URL:        "https://eu.api.ovh.com/v1/order/catalog/public/eco?ovhSubsidiary=IE",
+			Subsidiary: "IE",
+			Label:      "ovh-ie",
+		}, true
+	case "ca":
+		return availabilityComparisonCatalog{
+			URL:        "https://ca.api.ovh.com/v1/order/catalog/public/eco?ovhSubsidiary=CA",
+			Subsidiary: "CA",
+			Label:      "ovh-ca",
+		}, true
+	default:
+		return availabilityComparisonCatalog{}, false
+	}
 }
 
 // GetRealtimeAvailability GET /api/realtime-availability?region=eu|ca
@@ -114,6 +139,9 @@ func GetPreaddedServers(state *app.State) gin.HandlerFunc {
 			item["fqn"] = row.FQN
 			item["planCode"] = row.PlanCode
 			item["detectedAt"] = time.UnixMilli(row.DetectedAt).UTC().Format(time.RFC3339)
+			if comparison, ok := comparisonCatalogForRegion(row.Region); ok {
+				item["comparisonRegion"] = comparison.Label
+			}
 			items = append(items, item)
 		}
 		c.Header("Cache-Control", "no-store")
@@ -165,30 +193,89 @@ func refreshRealtimeAvailabilityRegion(ctx context.Context, state *app.State, re
 	if err := state.DB.SaveAvailabilitySnapshot(region, fetchedAt, items); err != nil {
 		return err
 	}
-	if err := updatePreaddedServers(state, region, items, fetchedAt); err != nil {
+	knownPlanCodes, comparisonRegion, err := loadComparisonPlanCodes(ctx, state, region)
+	if err != nil {
+		return fmt.Errorf("load %s comparison catalog: %w", region, err)
+	}
+	if err := updatePreaddedServers(state, region, items, knownPlanCodes, fetchedAt); err != nil {
 		return err
 	}
-	state.Logger.Info(fmt.Sprintf("实时可用性已保存 %s: %d 条，预增服务器比对完成", region, len(items)), "availability")
+	state.Logger.Info(fmt.Sprintf("实时可用性已保存 %s: %d 条，已严格对比 %s 服务器列表", region, len(items), comparisonRegion), "availability")
 	return nil
 }
 
-func updatePreaddedServers(state *app.State, region string, items []map[string]interface{}, detectedAt time.Time) error {
-	known := make(map[string]struct{})
-	state.ServerPlansMu.RLock()
-	for _, plan := range state.ServerPlans {
-		if plan.PlanCode != "" {
-			known[strings.ToLower(plan.PlanCode)] = struct{}{}
+func loadComparisonPlanCodes(ctx context.Context, state *app.State, region string) (map[string]struct{}, string, error) {
+	comparison, ok := comparisonCatalogForRegion(region)
+	if !ok {
+		return nil, "", fmt.Errorf("unsupported region %s", region)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, comparison.URL, nil)
+	if err == nil {
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "OVH-WebUI-Preadded-Comparison")
+		if resp, requestErr := realtimeAvailabilityClient.Do(req); requestErr == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				raw, readErr := io.ReadAll(io.LimitReader(resp.Body, realtimeAvailabilityMaxBody))
+				if readErr == nil {
+					if planCodes, parseErr := parseComparisonPlanCodes(raw); parseErr == nil {
+						if saveErr := state.DB.UpsertCatalog(comparison.Subsidiary, string(raw)); saveErr != nil {
+							state.Logger.Warn("保存 "+comparison.Label+" 对比目录失败: "+saveErr.Error(), "availability")
+						}
+						return planCodes, comparison.Label, nil
+					}
+				}
+			}
 		}
 	}
-	state.ServerPlansMu.RUnlock()
-	// 服务器目录尚未成功加载时无法判断“未出现在列表中”，避免把整份实时数据误报为预增服务器。
+
+	// 对比目录请求失败时只允许回退到同一 subsidiary 的历史缓存，绝不跨区域取目录。
+	raw, _, cached, cacheErr := state.DB.GetCatalog(comparison.Subsidiary)
+	if cacheErr != nil {
+		return nil, comparison.Label, cacheErr
+	}
+	if !cached {
+		return nil, comparison.Label, fmt.Errorf("%s catalog unavailable and no same-region cache exists", comparison.Label)
+	}
+	planCodes, parseErr := parseComparisonPlanCodes([]byte(raw))
+	if parseErr != nil {
+		return nil, comparison.Label, parseErr
+	}
+	state.Logger.Warn("使用缓存的 "+comparison.Label+" 目录完成预增服务器比对", "availability")
+	return planCodes, comparison.Label, nil
+}
+
+func parseComparisonPlanCodes(raw []byte) (map[string]struct{}, error) {
+	var catalogData struct {
+		Plans []struct {
+			PlanCode string `json:"planCode"`
+		} `json:"plans"`
+	}
+	if err := json.Unmarshal(raw, &catalogData); err != nil {
+		return nil, fmt.Errorf("invalid comparison catalog: %w", err)
+	}
+	known := make(map[string]struct{}, len(catalogData.Plans))
+	for _, plan := range catalogData.Plans {
+		planCode := strings.ToLower(strings.TrimSpace(plan.PlanCode))
+		if planCode != "" {
+			known[planCode] = struct{}{}
+		}
+	}
 	if len(known) == 0 {
-		return state.DB.ReplacePreaddedServers(region, nil, detectedAt)
+		return nil, fmt.Errorf("comparison catalog contains no plans")
+	}
+	return known, nil
+}
+
+func updatePreaddedServers(state *app.State, region string, items []map[string]interface{}, known map[string]struct{}, detectedAt time.Time) error {
+	if len(known) == 0 {
+		return fmt.Errorf("comparison catalog for %s is empty", region)
 	}
 	preadded := make([]map[string]interface{}, 0)
 	seen := make(map[string]struct{})
 	for _, item := range items {
 		planCode, _ := item["planCode"].(string)
+		planCode = strings.TrimSpace(planCode)
 		if planCode == "" {
 			continue
 		}
@@ -209,8 +296,8 @@ func updatePreaddedServers(state *app.State, region string, items []map[string]i
 	return state.DB.ReplacePreaddedServers(region, preadded, detectedAt)
 }
 
-// RebuildPreaddedServersFromSnapshots 在服务器目录更新后重新比对最近快照，
-// 防止服务器目录首次加载晚于实时可用性快照时产生误报。
+// RebuildPreaddedServersFromSnapshots 使用各区域固定对应的服务器目录重新比对最近快照。
+// EU 只允许使用 ovh-ie，CA 只允许使用 ovh-ca，不依赖默认账户的服务器列表。
 func RebuildPreaddedServersFromSnapshots(state *app.State) {
 	for _, region := range []string{"eu", "ca"} {
 		snapshot, ok, err := state.DB.LatestAvailabilitySnapshot(region)
@@ -221,7 +308,12 @@ func RebuildPreaddedServersFromSnapshots(state *app.State) {
 		if err := json.Unmarshal([]byte(snapshot.Data), &items); err != nil {
 			continue
 		}
-		if err := updatePreaddedServers(state, region, items, time.UnixMilli(snapshot.FetchedAt)); err != nil {
+		knownPlanCodes, _, err := loadComparisonPlanCodes(context.Background(), state, region)
+		if err != nil {
+			state.Logger.Warn("读取区域服务器列表失败 "+region+": "+err.Error(), "availability")
+			continue
+		}
+		if err := updatePreaddedServers(state, region, items, knownPlanCodes, time.UnixMilli(snapshot.FetchedAt)); err != nil {
 			state.Logger.Warn("重建预增服务器失败 "+region+": "+err.Error(), "availability")
 		}
 	}
@@ -274,6 +366,7 @@ func ensureRealtimeAvailabilitySnapshots(state *app.State) error {
 	}
 	if needsRefresh {
 		RefreshRealtimeAvailabilityOnce(state)
+		return nil
 	}
 	RebuildPreaddedServersFromSnapshots(state)
 	return nil
