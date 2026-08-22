@@ -262,7 +262,7 @@ function RealtimeAvailabilityPage() {
             </Button>
             <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={query.isFetching}>
               <RefreshCw className={cn("h-4 w-4", query.isFetching && "animate-spin")} />
-              刷新
+              重新读取
             </Button>
           </>
         }
@@ -282,10 +282,15 @@ function RealtimeAvailabilityPage() {
                 {query.data?.source || regionInfo.url}
               </code>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                {query.data?.fetchedAt
-                  ? `数据时间：${new Date(query.data.fetchedAt).toLocaleString("zh-CN", { hour12: false })}`
+                {query.data?.lastRefreshAt || query.data?.fetchedAt
+                  ? `最后刷新：${new Date(query.data.lastRefreshAt || query.data.fetchedAt).toLocaleString("zh-CN", { hour12: false })}`
                   : "切换区域后将立即查询对应接口"}
               </p>
+              {query.data?.nextRefreshAt && (
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  下次整点刷新：{new Date(query.data.nextRefreshAt).toLocaleString("zh-CN", { hour12: false })}
+                </p>
+              )}
             </div>
             <div className="inline-flex w-full rounded-lg border border-border bg-muted/30 p-1 sm:w-auto" aria-label="选择 OVH 区域">
               {(["eu", "ca"] as const).map((code) => (

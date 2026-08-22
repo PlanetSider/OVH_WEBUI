@@ -133,6 +133,37 @@ CREATE TABLE IF NOT EXISTS catalogs (
   updated_at INTEGER NOT NULL -- Unix epoch ms
 );
 
+-- ===========================================
+-- availability_snapshots: OVH 实时可用性整点快照
+-- 每个区域每次后台刷新保存一份，应用层只保留最近 7 天。
+-- ===========================================
+CREATE TABLE IF NOT EXISTS availability_snapshots (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  region     TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL, -- Unix epoch ms
+  item_count INTEGER NOT NULL DEFAULT 0,
+  data       TEXT NOT NULL      -- 完整可用性数组 JSON
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_availability_snapshots_region_time
+  ON availability_snapshots(region, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_availability_snapshots_fetched_at
+  ON availability_snapshots(fetched_at DESC);
+
+-- ===========================================
+-- preadded_servers: 实时可用性中存在但服务器目录没有的条目
+-- 每次实时可用性快照完成后按区域整表更新。
+-- ===========================================
+CREATE TABLE IF NOT EXISTS preadded_servers (
+  region      TEXT NOT NULL,
+  fqn         TEXT NOT NULL,
+  plan_code   TEXT NOT NULL,
+  detected_at INTEGER NOT NULL,
+  data        TEXT NOT NULL,
+  PRIMARY KEY (region, fqn)
+);
+CREATE INDEX IF NOT EXISTS idx_preadded_servers_detected_at
+  ON preadded_servers(detected_at DESC);
+
 -- (旧:config_sniper_tasks 表已删除,功能下线。老数据库残留的该表 / config_sniper_task_id 列保留不动,
 --  无害,无人读写。)
 

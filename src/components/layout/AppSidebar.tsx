@@ -18,6 +18,7 @@ import {
   Cloud,
   Zap,
   Database,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { QuickOrderDialog } from "@/components/orders/QuickOrderDialog";
@@ -57,6 +58,7 @@ const navGroups = [
   {
     title: "监控",
     items: [
+      { to: "/preadded-servers", icon: Sparkles, label: "预增服务器" },
       { to: "/monitor", icon: Activity, label: "独服监控" },
       { to: "/vps-monitor", icon: MonitorDot, label: "VPS 监控" },
     ],

@@ -38,6 +38,10 @@ export const qk = {
     all: (endpoint: string) => ["availability", "all", endpoint] as const,
   },
 
+  preaddedServers: {
+    list: (region: string) => ["preadded-servers", "list", region] as const,
+  },
+
   // 抢购队列
   queue: {
     list: () => ["queue", "list"] as const,

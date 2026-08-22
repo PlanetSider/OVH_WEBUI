@@ -159,7 +159,8 @@ func main() {
 		// Servers / availability / cache
 		api.GET("/servers", handlers.GetServers(state))
 		api.POST("/servers/:planCode/price", handlers.GetServerPrice(state))
-		api.GET("/realtime-availability", handlers.GetRealtimeAvailability())
+		api.GET("/realtime-availability", handlers.GetRealtimeAvailability(state))
+		api.GET("/preadded-servers", handlers.GetPreaddedServers(state))
 		api.GET("/availability/*planCode", availabilityHandler(handlers.GetAvailability(state)))
 		api.POST("/availability/*planCode", availabilityHandler(handlers.GetAvailability(state)))
 		api.POST("/internal/monitor/price", handlers.MonitorPrice(state))
@@ -402,6 +403,7 @@ func main() {
 	// 后台线程
 	go purchase.ProcessQueueLoop(state)
 	// 服务器目录走懒加载：访问到且缓存过期时才打 OVH，无后台定时刷新
+	stopRealtimeAvailability := handlers.StartRealtimeAvailabilityRefresh(state)
 
 	// 自动启动监控（如果有订阅）
 	if len(mon.Snapshot()) > 0 {
@@ -444,6 +446,7 @@ func main() {
 		console.Info("shutdown signal", "sig", sig.String())
 		state.Logger.Info("收到退出信号，正在优雅关闭…", "system")
 	}
+	stopRealtimeAvailability()
 
 	// 停监控循环（若实现了 Stop）
 	if mon != nil {

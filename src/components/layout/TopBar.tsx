@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils";
 const pathNames: Record<string, string> = {
   "/": "仪表盘",
   "/realtime-availability": "实时可用性",
+  "/preadded-servers": "预增服务器",
   "/servers": "服务器列表",
   "/queue": "抢购队列",
   "/history": "购买历史",

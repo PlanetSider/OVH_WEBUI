@@ -25,6 +25,7 @@ import PerformancePage from "./pages/PerformancePage";
 import TelegramOrderPage from "./pages/TelegramOrderPage";
 import FeishuOrderPage from "./pages/FeishuOrderPage";
 import RealtimeAvailabilityPage from "./pages/RealtimeAvailabilityPage";
+import PreaddedServersPage from "./pages/PreaddedServersPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -54,6 +55,7 @@ const App = () => (
               <Routes>
                 <Route path="/" element={<Index />} />
                 <Route path="/realtime-availability" element={<RealtimeAvailabilityPage />} />
+                <Route path="/preadded-servers" element={<PreaddedServersPage />} />
                 <Route path="/servers" element={<ServersPage />} />
                 <Route path="/queue" element={<QueuePage />} />
                 <Route path="/history" element={<HistoryPage />} />

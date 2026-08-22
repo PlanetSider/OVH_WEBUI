@@ -26,6 +26,9 @@ export interface RealtimeAvailabilityResponse {
   items: AvailabilityItem[];
   total: number;
   fetchedAt: string;
+  fetchedAtUnix?: number;
+  lastRefreshAt?: string;
+  nextRefreshAt?: string;
 }
 
 /** 按页面选择的 EU / CA 区域通过后端代理查询公开实时可用性接口。 */
@@ -40,6 +43,7 @@ export function useRealtimeAvailability(region: AvailabilityRegion) {
       return res.data;
     },
     staleTime: 60_000,
+    refetchInterval: 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
