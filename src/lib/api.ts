@@ -594,7 +594,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(order),
     }),
-  /** 网页端按飞书绑定账户执行 /stock /queue /buy /monitor /price 语义 */
+  /** 网页端按当前默认 OVH 账户执行 /stock /queue /buy /monitor /price 语义 */
   feishuQuickOrder: (order: Record<string, unknown>) =>
     apiRequest<{
       success: boolean;

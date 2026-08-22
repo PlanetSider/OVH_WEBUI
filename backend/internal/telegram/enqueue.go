@@ -91,7 +91,7 @@ func ProcessOrder(state *app.State, planCode, datacenter string, quantity int, o
 }
 
 // ProcessOrderForAccount 执行指定机器人通道、指定 OVH 账户的受控批量入队。
-// 飞书必须显式传入已绑定账户，避免多账户环境误用默认账户。
+// TG/飞书命令传入当前默认账户；通知按钮传入生成通知时冻结的账户。
 func ProcessOrderForAccount(state *app.State, accountID, planCode, datacenter string, quantity int, options []string, fromTelegram bool) OrderResult {
 	quantity = ClampQuantity(quantity)
 	planCode = strings.TrimSpace(planCode)

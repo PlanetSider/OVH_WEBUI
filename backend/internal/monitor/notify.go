@@ -147,6 +147,7 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		CallbackData string `json:"callback_data"`
 	}
 	keyboard := [][]btn{}
+	feishuActions := []interface{}{}
 	row := []btn{}
 	options := []string{}
 	if configInfo != nil {
@@ -175,12 +176,22 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 			Text:         dcDisplayShortName(dc) + " 一键下单",
 			CallbackData: string(cbStr),
 		})
+		// 飞书使用独立 UUID，两个渠道互不抢占同一个一次性按钮；账户已冻结在 configInfo。
+		feishuUUID := uuid.NewString()
+		m.AddMessageUUID(feishuUUID, planCode, dc, options, configInfo)
+		feishuActions = append(feishuActions, map[string]interface{}{
+			"tag": "button",
+			"text": map[string]interface{}{"tag": "plain_text", "content": dcDisplayShortName(dc) + " 一键下单"},
+			"type": "primary",
+			"value": FeishuCardAction("add_to_queue", map[string]interface{}{"uuid": feishuUUID}),
+		})
 		if len(row) >= 2 || idx == len(availableDCs)-1 {
 			keyboard = append(keyboard, row)
 			row = nil
 		}
 	}
 	replyMarkup := map[string]interface{}{"inline_keyboard": keyboard}
+	FeishuSendDefaultNotification(m.state, "🎉 服务器上架通知", msg.String(), "green", feishuActions)
 
 	configDesc := ""
 	if configInfo != nil {
@@ -233,6 +244,7 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 		}
 	}
 	msg.WriteString("\n⏰ 时间: " + m.nowBeijing().Format("2006-01-02 15:04:05"))
+	FeishuSendDefaultNotification(m.state, "📦 服务器下架通知", msg.String(), "grey", nil)
 
 	configDesc := ""
 	if configInfo != nil {
@@ -388,6 +400,14 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 		}
 	}
 	m.state.Logger.Info(fmt.Sprintf("正在发送Telegram通知: %s@%s%s", planCode, datacenter, configDesc), "monitor")
+	template := "grey"
+	title := "📦 服务器下架通知"
+	if changeType == "available" {
+		template, title = "green", "🎉 服务器上架通知"
+	} else if changeType == "price_check_failed" {
+		template, title = "orange", "⚠️ 价格校验失败通知"
+	}
+	FeishuSendDefaultNotification(m.state, title, msg.String(), template, nil)
 	if telegram.SendMessage(m.state, msg.String(), nil) {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram通知发送成功: %s@%s%s - %s", planCode, datacenter, configDesc, changeType), "monitor")
 	} else {
@@ -400,6 +420,7 @@ func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
 	msg := fmt.Sprintf("🆕 新服务器上架通知！\n\n型号: %v\n名称: %v\nCPU: %v\n内存: %v\n存储: %v\n带宽: %v\n时间: %s\n\n💡 快去查看详情！",
 		server["planCode"], server["name"], server["cpu"], server["memory"], server["storage"], server["bandwidth"],
 		m.nowBeijing().Format("2006-01-02 15:04:05"))
+	FeishuSendDefaultNotification(m.state, "🆕 新服务器上架通知", msg, "green", nil)
 	telegram.SendMessage(m.state, msg, nil)
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
 }

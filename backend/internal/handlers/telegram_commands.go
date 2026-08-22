@@ -162,8 +162,8 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID
 		if !monitor.FeishuEnabled(state) {
 			return "❌ 飞书应用未启用或配置不完整"
 		}
-		if _, ok := monitor.FeishuBindingForAccount(state, accountID); !ok {
-			return "❌ 当前 OVH 账户尚未绑定飞书用户"
+		if _, ok := monitor.FeishuDefaultBinding(state); !ok {
+			return "❌ 尚未绑定全局飞书接收人"
 		}
 	} else if ok, reason := telegram.VerifyConfig(state); !ok {
 		return "❌ Telegram 配置无效: " + reason
@@ -187,7 +187,7 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID
 	}
 	state.ServerPlansMu.RUnlock()
 
-	// 监控的账户字段同时决定询价/飞书通知目标；autoOrder=false，不会自动购买。
+	// 通知数据源始终是当前默认账户；autoOrder=false，不会自动购买。
 	mon.AddSubscription(planCode, dcs, true, false, serverName, nil, nil, false, 0, accountID)
 	mon.SaveToDB()
 	if !mon.Running() {

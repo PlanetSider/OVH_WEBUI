@@ -16,13 +16,14 @@ type Config struct {
 	FeishuEnabled bool `json:"feishuEnabled,omitempty"`
 	FeishuAppID string `json:"feishuAppId,omitempty"`
 	FeishuAppSecret string `json:"feishuAppSecret,omitempty"`
+	FeishuDomain string `json:"feishuDomain,omitempty"`
 	FeishuVerificationToken string `json:"feishuVerificationToken,omitempty"`
 	FeishuEncryptKey string `json:"feishuEncryptKey,omitempty"`
 	IAM             string `json:"iam"`
 	Zone            string `json:"zone"`
 }
 
-// FeishuBinding 记录飞书用户与 OVH 账户的绑定关系。
+// FeishuBinding 记录全局飞书通知接收人；AccountID 固定为 default。
 type FeishuBinding struct {
 	AccountID string `json:"accountId"`
 	OpenID string `json:"openId"`

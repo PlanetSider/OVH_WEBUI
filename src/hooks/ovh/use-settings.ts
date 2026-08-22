@@ -16,6 +16,7 @@ export interface SettingsConfig {
   feishuEnabled?: boolean;
   feishuAppId?: string;
   feishuAppSecret?: string;
+  feishuDomain?: "feishu" | "lark";
   feishuVerificationToken?: string;
   feishuEncryptKey?: string;
 }
@@ -32,17 +33,44 @@ function apiErrorText(error: unknown, fallback: string) {
   return value.response?.data?.error || value.response?.data?.message || value.message || fallback;
 }
 
-export function useFeishuBinding(accountId?: string, enabled = true) {
+export function useFeishuBinding(enabled = true) {
   return useQuery({
-    queryKey: ["feishu", "binding", accountId || "default"],
-    queryFn: async () => (await api.get<{ success: boolean; bound: boolean; binding?: FeishuBinding }>("/feishu/binding", { params: { account: accountId } })).data,
+    queryKey: ["feishu", "binding", "default"],
+    queryFn: async () => (await api.get<{ success: boolean; bound: boolean; binding?: FeishuBinding }>("/feishu/binding")).data,
     enabled,
   });
 }
 
-export function useSendFeishuTestCard(accountId?: string) {
+export interface FeishuRegistrationSession {
+  success: boolean;
+  sessionId: string;
+  verificationUriComplete: string;
+  expiresIn: number;
+  interval: number;
+}
+
+export interface FeishuRegistrationStatus {
+  success: boolean;
+  status: "pending" | "complete" | "denied" | "expired" | "error";
+  retryAfter?: number;
+  appId?: string;
+  appSecret?: string;
+  domain?: "feishu" | "lark";
+  bound?: boolean;
+  error?: string;
+}
+
+export async function startFeishuRegistration() {
+  return (await api.post<FeishuRegistrationSession>("/feishu/registration/start")).data;
+}
+
+export async function pollFeishuRegistration(sessionId: string) {
+  return (await api.get<FeishuRegistrationStatus>(`/feishu/registration/${encodeURIComponent(sessionId)}`)).data;
+}
+
+export function useSendFeishuTestCard() {
   return useMutation({
-    mutationFn: async () => (await api.post("/feishu/test-card", undefined, { params: { account: accountId } })).data,
+    mutationFn: async () => (await api.post("/feishu/test-card")).data,
     onSuccess: () => toast.success("测试交互卡片已发送"),
     onError: (error: unknown) => toast.error(apiErrorText(error, "发送飞书测试卡片失败")),
   });

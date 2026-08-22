@@ -14,11 +14,23 @@ import (
 	"github.com/ovh-webui/server/internal/telegram"
 )
 
-// tgRecheckInterval loop 内 TG 健康检查节流间隔。5 分钟 verify 一次,
-// 失败立即调 Stop() 自停监控。
+// tgRecheckInterval loop 内通知渠道健康检查节流间隔。
 const tgRecheckInterval = 5 * time.Minute
 
-// checkTGOrStop 节流后 verify Telegram,失败则调 Stop() 让 loop 退出。
+func (m *Monitor) saveKnownServersSnapshot(known map[string]struct{}) {
+	if m.state.DB == nil {
+		return
+	}
+	codes := make([]string, 0, len(known))
+	for code := range known {
+		codes = append(codes, code)
+	}
+	if err := m.state.DB.SetKV("monitor_known_servers", codes); err != nil {
+		m.state.Logger.Warn("保存已知服务器基线失败: "+err.Error(), "monitor")
+	}
+}
+
+// checkTGOrStop 节流后验证 Telegram / 全局飞书，二者任一有效即可继续。
 // 返回 true=继续 loop,false=已自停,loop 应该 break。
 func (m *Monitor) checkTGOrStop() bool {
 	m.tgCheckMu.Lock()
@@ -27,31 +39,18 @@ func (m *Monitor) checkTGOrStop() bool {
 	if !due {
 		return true
 	}
+	feishuOK := false
 	if FeishuEnabled(m.state) {
-		m.tgCheckMu.Lock()
-		m.lastTGCheck = time.Now()
-		m.tgCheckMu.Unlock()
-		// 任一有效账户完成飞书绑定即可维持监控；不能只检查默认账户，
-		// 否则非默认账户从飞书创建的监控会被错误停止。
-		for accountID, binding := range FeishuBindings(m.state) {
-			if binding.OpenID == "" {
-				continue
-			}
-			if accountID == "default" {
-				if _, accountOK := m.state.FindAccount(""); accountOK {
-					return true
-				}
-			} else if _, accountOK := m.state.FindAccount(accountID); accountOK {
-				return true
-			}
+		if _, bindingOK := FeishuDefaultBinding(m.state); bindingOK {
+			_, feishuOK = m.state.FindAccount("")
 		}
 	}
-	ok, reason := telegram.VerifyConfig(m.state)
+	tgOK, tgReason := telegram.VerifyConfig(m.state)
 	m.tgCheckMu.Lock()
 	m.lastTGCheck = time.Now()
 	m.tgCheckMu.Unlock()
-	if !ok {
-		m.state.Logger.Error("Telegram 通知失效,自动停止服务器监控: "+reason, "monitor")
+	if !tgOK && !feishuOK {
+		m.state.Logger.Error("Telegram 与飞书通知均失效，自动停止服务器监控: "+tgReason, "monitor")
 		m.Stop()
 		return false
 	}
@@ -71,6 +70,7 @@ func (m *Monitor) CheckNewServers(currentServerList []map[string]interface{}) {
 	if len(m.knownServers) == 0 {
 		m.knownServers = current
 		m.state.Logger.Info(fmt.Sprintf("初始化已知服务器列表: %d 台", len(current)), "monitor")
+		go m.saveKnownServersSnapshot(current)
 		return
 	}
 	newServers := []string{}
@@ -89,6 +89,7 @@ func (m *Monitor) CheckNewServers(currentServerList []map[string]interface{}) {
 		}
 		m.knownServers = current
 		m.state.Logger.Info(fmt.Sprintf("检测到 %d 台新服务器上架", len(newServers)), "monitor")
+		go m.saveKnownServersSnapshot(current)
 	}
 }
 

@@ -37,7 +37,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useServers } from "@/hooks/useApi";
-import { AccountSelect } from "@/components/common/AccountSelect";
 import { useFeishuBinding, useSendFeishuTestCard, useSettings } from "@/hooks/use-settings";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "react-router-dom";
@@ -138,7 +137,6 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
   const { data: servers } = useServers();
   const settings = useSettings(isFeishu);
   const [selectedMode, setSelectedMode] = useState<OrderMode['mode']>('stock');
-  const [accountId, setAccountId] = useState('');
   const [planCode, setPlanCode] = useState('');
   const [datacenter, setDatacenter] = useState('');
   const [quantity, setQuantity] = useState(1);
@@ -151,8 +149,8 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
   const [isLoadingWebhook, setIsLoadingWebhook] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [isSettingWebhook, setIsSettingWebhook] = useState(false);
-  const feishuBinding = useFeishuBinding(accountId, isFeishu && Boolean(accountId));
-  const sendFeishuTestCard = useSendFeishuTestCard(isFeishu ? accountId : undefined);
+  const feishuBinding = useFeishuBinding(isFeishu);
+  const sendFeishuTestCard = useSendFeishuTestCard();
   
   // Command history
   const [commandHistory, setCommandHistory] = useState<CommandHistory[]>([]);
@@ -271,13 +269,8 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
       return;
     }
 
-    if (isFeishu && !accountId) {
-      toast.error("请选择已绑定飞书的 OVH 账户");
-      return;
-    }
-
     if (isFeishu && !feishuBinding.data?.bound) {
-      toast.error("当前 OVH 账户尚未绑定飞书用户");
+      toast.error("尚未绑定全局飞书接收人");
       return;
     }
 
@@ -290,7 +283,6 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
         planCode,
         datacenter: datacenter || undefined,
         quantity: selectedMode === 'buy' ? quantity : undefined,
-        accountId: isFeishu ? accountId : undefined,
       });
       
       setLastResult(result);
@@ -362,7 +354,7 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                 </h1>
                 <p className="text-xs sm:text-sm text-muted-foreground mt-1">
                   {isFeishu
-                    ? "通过飞书私聊命令和交互卡片执行下单（需先配置应用并绑定 OVH 账户）"
+                    ? "通过飞书私聊命令和流式交互卡片执行下单（使用系统当前默认 OVH 账户）"
                     : "通过 Telegram 消息快速执行下单（需先配置 Webhook 并注册命令菜单）"}
                 </p>
               </div>
@@ -389,7 +381,7 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                     variant="outline"
                     size="sm"
                     onClick={() => void feishuBinding.refetch()}
-                    disabled={feishuBinding.isFetching || !accountId}
+                    disabled={feishuBinding.isFetching}
                     className="h-8 text-xs"
                   >
                     <RefreshCw className={cn("h-3 w-3 sm:h-4 sm:w-4 mr-1", feishuBinding.isFetching && "animate-spin")} />
@@ -488,14 +480,14 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
           {isFeishu && (
             <div className="terminal-card p-3 sm:p-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-center">
               <div className="space-y-1">
-                <Label>飞书绑定的 OVH 账户</Label>
-                <AccountSelect value={accountId} onChange={setAccountId} />
+                <Label>命令使用账户</Label>
+                <div className="text-sm font-medium">系统当前默认 OVH 账户</div>
               </div>
               <div className="text-xs text-muted-foreground leading-relaxed">
                 {isFeishuConnected ? (
-                  <span className="text-primary">已绑定，可用飞书私聊执行命令并接收有货交互卡片。</span>
+                  <span className="text-primary">全局接收人已绑定；命令、库存和价格均使用当前默认 OVH 账户。</span>
                 ) : isFeishuConfigured ? (
-                  <>当前账户未绑定。在飞书中私聊机器人发送 <code className="font-mono text-primary">绑定账户 {accountId || "账户ID"}</code>，然后刷新绑定状态。</>
+                  <>尚未绑定全局接收人。请在飞书中私聊机器人发送任意消息，然后刷新绑定状态。</>
                 ) : (
                   <>飞书应用尚未配置，请先前往“飞书配置”填写 App ID、App Secret 和回调安全信息。</>
                 )}

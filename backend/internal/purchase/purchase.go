@@ -10,6 +10,7 @@ import (
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/numconv"
+	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/ovh"
 	"github.com/ovh-webui/server/internal/telegram"
 	"github.com/ovh-webui/server/internal/types"
@@ -398,19 +399,22 @@ func PurchaseServer(state *app.State, item *types.QueueItem) bool {
 	state.Logger.Info(fmt.Sprintf("成功购买 %s 在 %s (订单ID: %s, URL: %s)",
 		item.PlanCode, item.Datacenter, orderID, orderURL), "purchase")
 
-	// 发送 Telegram 成功通知。TG token / chat id 仍然走全局 state.Config(Telegram 是平台级配置,跨账户共享)
+	msg := fmt.Sprintf("🎉 OVH 服务器抢购成功！🎉\n\n服务器型号 (Plan Code): %s\n数据中心: %s\n订单 ID: %s\n订单链接: %s\n",
+		item.PlanCode, item.Datacenter, orderID, orderURL)
+	if len(item.Options) > 0 {
+		msg += "自定义配置: " + strings.Join(item.Options, ", ") + "\n"
+	}
+	msg += "\n抢购任务ID: " + item.ID
+	// TG 与飞书复用完全相同的成功文案；飞书接收人为全局绑定。
 	tgCfg := state.Config.Get()
 	if tgCfg.TgToken != "" && tgCfg.TgChatID != "" {
-		msg := fmt.Sprintf("🎉 OVH 服务器抢购成功！🎉\n\n服务器型号 (Plan Code): %s\n数据中心: %s\n订单 ID: %s\n订单链接: %s\n",
-			item.PlanCode, item.Datacenter, orderID, orderURL)
-		if len(item.Options) > 0 {
-			msg += "自定义配置: " + strings.Join(item.Options, ", ") + "\n"
-		}
-		msg += "\n抢购任务ID: " + item.ID
 		telegram.SendMessage(state, msg, nil)
 		state.Logger.Info("已为订单 "+orderID+" 发送 Telegram 成功通知。", "purchase")
 	} else {
 		state.Logger.Info("未配置 Telegram Token 或 Chat ID，跳过成功通知发送。", "purchase")
+	}
+	if monitor.FeishuSendDefaultNotification(state, "🎉 OVH 服务器抢购成功", msg, "green", nil) {
+		state.Logger.Info("已为订单 "+orderID+" 发送飞书成功通知。", "purchase")
 	}
 	return true
 }

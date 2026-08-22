@@ -8,11 +8,9 @@ import (
 	"github.com/ovh-webui/server/internal/price"
 )
 
-// resolvePriceAccount 询价账户：优先订阅 auto-order 账户，否则默认账户。
+// resolvePriceAccount 询价账户始终使用当前默认账户，与 TG / 飞书命令的数据源一致。
+// AutoOrderAccountID 只决定自动下单账户，不再隐式改变目录、库存和通知数据源。
 func (m *Monitor) resolvePriceAccount(sub *Subscription) string {
-	if sub != nil && sub.AutoOrderAccountID != "" {
-		return sub.AutoOrderAccountID
-	}
 	acc, ok := m.state.FindAccount("")
 	if ok {
 		return acc.ID

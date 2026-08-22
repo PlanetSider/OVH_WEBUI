@@ -345,13 +345,15 @@ func SetMonitorInterval(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 // TestNotification POST /api/monitor/test-notification
 func TestNotification(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		msg := "🔔 服务器监控测试通知\n\n时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n✅ Telegram通知配置正常！"
-		if telegram.SendMessage(state, msg, nil) {
-			state.Logger.Info("Telegram测试通知发送成功", "monitor")
-			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "测试通知已发送，请检查Telegram"})
-		} else {
-			state.Logger.Warn("Telegram测试通知发送失败", "monitor")
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "发送失败，请检查Telegram配置和日志"})
+		msg := "🔔 服务器监控测试通知\n\n时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n✅ 通知配置正常！"
+		tgOK := telegram.SendMessage(state, msg, nil)
+		feishuOK := monitor.FeishuSendDefaultNotification(state, "🔔 服务器监控测试通知", msg, "blue", nil)
+		if tgOK || feishuOK {
+			state.Logger.Info("机器人测试通知发送成功", "monitor")
+			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "测试通知已发送", "telegram": tgOK, "feishu": feishuOK})
+			return
 		}
+		state.Logger.Warn("机器人测试通知发送失败", "monitor")
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "发送失败，请检查 Telegram/飞书配置和日志"})
 	}
 }

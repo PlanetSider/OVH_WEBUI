@@ -207,13 +207,6 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 		return
 	}
 
-	accountID := telegram.DefaultAccountID(state)
-	if accountID == "" {
-		telegram.AnswerCallback(state, cbID, "未配置 OVH 账户", true)
-		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "no_account"})
-		return
-	}
-
 	messageUUID := ""
 	if v, ok := callbackObj["u"].(string); ok {
 		messageUUID = v
@@ -232,40 +225,14 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 		return
 	}
 
-	// 正确顺序：先取配置 → 受控入队 → 成功后再原子消费 nonce
-	// （若先 consume 再 lookup，会因 used_at>0 把缓存判废，导致一键下单永远失败）
-	var planCode, dc string
-	var options []string
-	claimedFromDB := false
-
-	if state.DB != nil {
-		// 已使用过？
-		if used, exists, _ := state.DB.IsTelegramButtonUsed(messageUUID); exists && used {
-			telegram.AnswerCallback(state, cbID, "该按钮已使用过", true)
-			telegram.SendReply(state, chatID, "⚠️ 该一键下单按钮已使用，请等待新的上架通知。", int64(messageID))
-			c.JSON(http.StatusOK, gin.H{"ok": true, "error": "button_already_used"})
-			return
-		}
+	// 一次性按钮必须先通过 SQLite 原子认领，再执行任何业务操作。
+	// 内存缓存只负责 TTL 校验，不能作为并发消费依据。
+	if state.DB == nil {
+		telegram.AnswerCallback(state, cbID, "按钮服务暂不可用", true)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "button_store_unavailable"})
+		return
 	}
-
-	if cached := mon.MessageUUIDCacheLookup(messageUUID); cached != nil {
-		planCode = cached.PlanCode
-		dc = cached.Datacenter
-		options = cached.Options
-	} else if state.DB != nil {
-		// 内存未命中：尝试直接 claim DB 行（含配置）
-		row, ok, err := state.DB.ClaimTelegramButton(messageUUID)
-		if err != nil {
-			state.Logger.Warn("claim button: "+err.Error(), "telegram")
-		} else if ok {
-			claimedFromDB = true
-			planCode = row.PlanCode
-			dc = row.Datacenter
-			options = dbParseOptions(row.Options)
-		}
-	}
-
-	if planCode == "" || dc == "" {
+	if mon.MessageUUIDCacheLookup(messageUUID) == nil {
 		telegram.AnswerCallback(state, cbID, "按钮已失效", true)
 		telegram.SendReply(state, chatID,
 			"❌ 一键下单失败：该通知按钮已过期或无效。\n\n请等待新的上架通知后重试。",
@@ -274,27 +241,54 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 		return
 	}
 
+	row, claimed, err := state.DB.ClaimTelegramButton(messageUUID)
+	if err != nil {
+		state.Logger.Warn("原子认领 TG 按钮失败: "+err.Error(), "telegram")
+		telegram.AnswerCallback(state, cbID, "按钮服务暂不可用", true)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "button_claim_failed"})
+		return
+	}
+	if !claimed {
+		telegram.AnswerCallback(state, cbID, "该按钮已使用过", true)
+		telegram.SendReply(state, chatID, "⚠️ 该一键下单按钮已使用，请等待新的上架通知。", int64(messageID))
+		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "button_already_used"})
+		return
+	}
+
+	planCode := row.PlanCode
+	dc := row.Datacenter
+	options := dbParseOptions(row.Options)
+	configInfo := dbParseConfigInfo(row.ConfigInfo)
+	if planCode == "" || dc == "" {
+		_ = state.DB.UnclaimTelegramButton(messageUUID)
+		telegram.AnswerCallback(state, cbID, "按钮数据无效", true)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "invalid_button_data"})
+		return
+	}
+	accountID, _ := configInfo["accountId"].(string)
+	if accountID == "" {
+		_ = state.DB.UnclaimTelegramButton(messageUUID)
+		telegram.AnswerCallback(state, cbID, "通知未冻结账户", true)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "account_not_frozen"})
+		return
+	}
+	if _, ok := state.FindAccount(accountID); !ok {
+		_ = state.DB.UnclaimTelegramButton(messageUUID)
+		telegram.AnswerCallback(state, cbID, "通知对应的账户已不存在", true)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "account_not_found"})
+		return
+	}
+
 	result := telegram.EnqueueSingle(state, accountID, planCode, dc, options, true)
 	if !result.Success {
-		// 入队失败：回滚已 claim 的按钮，允许重试
-		if claimedFromDB && state.DB != nil {
-			_ = state.DB.UnclaimTelegramButton(messageUUID)
-		}
+		// 入队失败：回滚已认领的按钮，允许重试。
+		_ = state.DB.UnclaimTelegramButton(messageUUID)
 		telegram.AnswerCallback(state, cbID, "入队失败", true)
 		telegram.SendReply(state, chatID, "❌ "+result.Message, int64(messageID))
 		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "enqueue_failed"})
 		return
 	}
 
-	// 入队成功：原子消费（若尚未 claim）
-	if !claimedFromDB && state.DB != nil {
-		if ok, err := state.DB.TryConsumeTelegramButton(messageUUID); err != nil {
-			state.Logger.Warn("消费按钮失败: "+err.Error(), "telegram")
-		} else if !ok {
-			// 并发下另一请求可能已消费；任务已入队，靠去重挡住重复
-			state.Logger.Warn("按钮消费未命中(可能并发): "+messageUUID, "telegram")
-		}
-	}
 	mon.InvalidateMessageUUID(messageUUID)
 
 	optsStr := strings.Join(options, ", ")
@@ -317,6 +311,14 @@ func dbParseOptions(raw string) []string {
 		return []string{}
 	}
 	return opts
+}
+
+func dbParseConfigInfo(raw string) map[string]interface{} {
+	var info map[string]interface{}
+	if raw == "" || json.Unmarshal([]byte(raw), &info) != nil || info == nil {
+		return map[string]interface{}{}
+	}
+	return info
 }
 
 func getNested(m map[string]interface{}, keys ...string) interface{} {

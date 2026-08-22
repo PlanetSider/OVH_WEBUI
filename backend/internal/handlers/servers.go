@@ -11,12 +11,13 @@ import (
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/catalog"
+	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/price"
 	"github.com/ovh-webui/server/internal/types"
 )
 
 // GetServers GET /api/servers
-func GetServers(state *app.State) gin.HandlerFunc {
+func GetServers(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		showAPI := strings.EqualFold(c.Query("showApiServers"), "true")
 		forceRefresh := strings.EqualFold(c.Query("forceRefresh"), "true")
@@ -40,6 +41,20 @@ func GetServers(state *app.State) gin.HandlerFunc {
 			state.Logger.Info("正在从OVH API重新加载服务器列表...", "")
 			apiServers := catalog.LoadServerList(state)
 			if len(apiServers) > 0 {
+				catalogSnapshot := make([]map[string]interface{}, 0, len(apiServers))
+				for _, server := range apiServers {
+					catalogSnapshot = append(catalogSnapshot, map[string]interface{}{
+						"planCode":  server.PlanCode,
+						"name":      server.Name,
+						"cpu":       server.CPU,
+						"memory":    server.Memory,
+						"storage":   server.Storage,
+						"bandwidth": server.Bandwidth,
+					})
+				}
+				if mon != nil {
+					mon.CheckNewServers(catalogSnapshot)
+				}
 				state.ServerPlansMu.Lock()
 				state.ServerPlans = apiServers
 				state.ServerPlansMu.Unlock()

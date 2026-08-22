@@ -73,7 +73,7 @@ func TelegramQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 }
 
 // FeishuQuickOrder POST /api/feishu/quick-order
-// 网页「飞书下单」页按当前飞书绑定账户执行与机器人相同的命令语义。
+// 网页「飞书下单」页按当前默认 OVH 账户执行与机器人相同的命令语义。
 func FeishuQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
@@ -82,7 +82,6 @@ func FeishuQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			Datacenter string   `json:"datacenter"`
 			Quantity   int      `json:"quantity"`
 			Options    []string `json:"options"`
-			AccountID  string   `json:"accountId"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无效的请求体"})
@@ -92,22 +91,18 @@ func FeishuQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		mode := strings.ToLower(strings.TrimSpace(body.Mode))
 		planCode := strings.TrimSpace(body.PlanCode)
 		dc := strings.ToLower(strings.TrimSpace(body.Datacenter))
-		accountID := strings.TrimSpace(body.AccountID)
+		accountID := telegram.DefaultAccountID(state)
 		if !monitor.FeishuEnabled(state) {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "飞书应用未启用或配置不完整"})
 			return
 		}
 		if accountID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 accountId"})
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "尚未配置默认 OVH 账户"})
 			return
 		}
-		if _, ok := state.FindAccount(accountID); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "指定的 OVH 账户不存在"})
-			return
-		}
-		binding, ok := monitor.FeishuBindingForAccount(state, accountID)
+		binding, ok := monitor.FeishuDefaultBinding(state)
 		if !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "当前 OVH 账户尚未绑定飞书用户"})
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "尚未绑定全局飞书接收人"})
 			return
 		}
 		if mode == "help" || mode == "start" {

@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ovh-webui/server/internal/app"
-	"github.com/ovh-webui/server/internal/telegram"
+	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/types"
 	"github.com/ovh-webui/server/internal/vps"
 )
@@ -42,9 +42,9 @@ func GetVPSSubscriptions(state *app.State) gin.HandlerFunc {
 // AddVPSSubscription POST /api/vps-monitor/subscriptions
 func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// VPS 监控同样要求 TG 通知可用
-		if ok, reason := telegram.VerifyConfig(state); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Telegram 通知未配置或无效:" + reason})
+		// VPS 监控与独服监控一致：Telegram / 全局飞书任一可用即可。
+		if ok, reason := monitor.NotificationConfigured(state, ""); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": reason})
 			return
 		}
 		var body struct {
@@ -68,7 +68,9 @@ func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 				return
 			}
 		}
-		if body.OvhSubsidiary == "" {
+		if account, ok := state.FindAccount(""); ok && account.Zone != "" {
+			body.OvhSubsidiary = account.Zone
+		} else if body.OvhSubsidiary == "" {
 			body.OvhSubsidiary = "IE"
 		}
 		monitorLinux := true
@@ -271,8 +273,8 @@ func StartVPSMonitor(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusOK, gin.H{"status": "info", "message": "VPS监控已在运行中"})
 			return
 		}
-		if ok, reason := telegram.VerifyConfig(state); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Telegram 通知未配置或无效,无法启动 VPS 监控:" + reason})
+		if ok, reason := monitor.NotificationConfigured(state, ""); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "无法启动 VPS 监控：" + reason})
 			return
 		}
 		vps.Start(state)

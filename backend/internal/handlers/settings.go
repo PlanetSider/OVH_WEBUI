@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/telegram"
 	"github.com/ovh-webui/server/internal/types"
 )
@@ -40,6 +41,7 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		patch.TgWebhookSecret = strings.TrimSpace(patch.TgWebhookSecret)
 		patch.FeishuAppID = strings.TrimSpace(patch.FeishuAppID)
 		patch.FeishuAppSecret = strings.TrimSpace(patch.FeishuAppSecret)
+		patch.FeishuDomain = strings.ToLower(strings.TrimSpace(patch.FeishuDomain))
 		patch.FeishuVerificationToken = strings.TrimSpace(patch.FeishuVerificationToken)
 		patch.FeishuEncryptKey = strings.TrimSpace(patch.FeishuEncryptKey)
 		patch.Endpoint = strings.TrimSpace(patch.Endpoint)
@@ -72,6 +74,9 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if patch.FeishuAppSecret != "" {
 			newCfg.FeishuAppSecret = patch.FeishuAppSecret
 		}
+		if patch.FeishuDomain == "feishu" || patch.FeishuDomain == "lark" {
+			newCfg.FeishuDomain = patch.FeishuDomain
+		}
 		if patch.FeishuVerificationToken != "" {
 			newCfg.FeishuVerificationToken = patch.FeishuVerificationToken
 		}
@@ -101,6 +106,9 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if err := state.Config.Set(newCfg); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 			return
+		}
+		if newCfg.FeishuAppID != prev.FeishuAppID || newCfg.FeishuAppSecret != prev.FeishuAppSecret || newCfg.FeishuDomain != prev.FeishuDomain {
+			monitor.FeishuResetToken()
 		}
 		state.Logger.Info("API settings updated in config.json", "system")
 

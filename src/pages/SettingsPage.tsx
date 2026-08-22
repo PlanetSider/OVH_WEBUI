@@ -1,7 +1,7 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,10 +20,13 @@ import {
   useSetTelegramWebhook,
   useFeishuBinding,
   useSendFeishuTestCard,
+  startFeishuRegistration,
+  pollFeishuRegistration,
   type SettingsConfig,
 } from "@/hooks/use-settings";
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { createQRCodeDataURL } from "@/vendor/qrcode";
 import { useSearchParams } from "react-router-dom";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
 import {
@@ -80,7 +83,7 @@ function SettingsPage() {
     }
   }, [searchParams]);
 
-  const set = (k: keyof SettingsConfig, v: string) => setForm((prev) => ({ ...prev, [k]: v }));
+  const set = <K extends keyof SettingsConfig>(k: K, v: SettingsConfig[K]) => setForm((prev) => ({ ...prev, [k]: v }));
 
   const onSave = async () => {
     if (apiKey) setApiSecretKey(apiKey);
@@ -202,16 +205,92 @@ function FeishuSection({
   saving,
 }: {
   form: SettingsConfig;
-  set: (key: keyof SettingsConfig, value: string) => void;
+  set: <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => void;
   onSave: () => Promise<void>;
   saving: boolean;
 }) {
-  const accounts = useAccounts();
-  const defaultAccount = accounts.data?.find((account) => account.isDefault) || accounts.data?.[0];
-  const binding = useFeishuBinding(defaultAccount?.id);
-  const testCard = useSendFeishuTestCard(defaultAccount?.id);
+  const binding = useFeishuBinding();
+  const bindingRefetch = useRef(binding.refetch);
+  const setFieldRef = useRef(set);
+  const testCard = useSendFeishuTestCard();
   const accountStatuses = useAccountStatuses(false);
   const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const [registration, setRegistration] = useState<{ sessionId: string; url: string; expiresAt: number; interval: number } | null>(null);
+  const [registrationStatus, setRegistrationStatus] = useState<"idle" | "starting" | "pending" | "complete" | "error">("idle");
+  const [registrationError, setRegistrationError] = useState("");
+  const [qrCodeDataURL, setQRCodeDataURL] = useState("");
+
+  useEffect(() => {
+    bindingRefetch.current = binding.refetch;
+  }, [binding.refetch]);
+
+  useEffect(() => {
+    setFieldRef.current = set;
+  }, [set]);
+
+  const startRegistration = async () => {
+    setRegistrationStatus("starting");
+    setRegistrationError("");
+    try {
+      const result = await startFeishuRegistration();
+      setRegistration({
+        sessionId: result.sessionId,
+        url: result.verificationUriComplete,
+        expiresAt: Date.now() + result.expiresIn * 1000,
+        interval: Math.max(2, result.interval || 5),
+      });
+      setQRCodeDataURL("");
+      void createQRCodeDataURL(result.verificationUriComplete)
+        .then(setQRCodeDataURL)
+        .catch((error) => {
+          setRegistrationStatus("error");
+          setRegistrationError(error instanceof Error ? error.message : "生成二维码失败");
+        });
+      setRegistrationStatus("pending");
+    } catch (error) {
+      setRegistrationStatus("error");
+      setRegistrationError(error instanceof Error ? error.message : "创建扫码会话失败");
+    }
+  };
+
+  useEffect(() => {
+    if (!registration || registrationStatus !== "pending") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      if (Date.now() >= registration.expiresAt) {
+        if (!cancelled) { setRegistrationStatus("error"); setRegistrationError("二维码已过期，请重新生成"); }
+        return;
+      }
+      try {
+        const result = await pollFeishuRegistration(registration.sessionId);
+        if (cancelled) return;
+        if (result.status === "complete" && result.appId && result.appSecret) {
+          setFieldRef.current("feishuAppId", result.appId);
+          setFieldRef.current("feishuAppSecret", result.appSecret);
+          setFieldRef.current("feishuDomain", result.domain || "feishu");
+          setFieldRef.current("feishuEnabled", true);
+          setRegistrationStatus("complete");
+          void bindingRefetch.current();
+          toast.success("飞书机器人已创建，App ID 和 App Secret 已自动回填并保存");
+          return;
+        }
+        if (result.status !== "pending") {
+          setRegistrationStatus("error");
+          setRegistrationError(result.error || "扫码创建机器人失败");
+          return;
+        }
+        timer = setTimeout(poll, Math.max(2, result.retryAfter || registration.interval) * 1000);
+      } catch (error) {
+        if (!cancelled) {
+          setRegistrationStatus("error");
+          setRegistrationError(error instanceof Error ? error.message : "查询扫码状态失败");
+        }
+      }
+    };
+    timer = setTimeout(poll, registration.interval * 1000);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [registration, registrationStatus]);
 
   return (
     <Section title="飞书通知与交互卡片">
@@ -223,8 +302,45 @@ function FeishuSection({
           </div>
           <Chip tone={form.feishuEnabled ? "success" : "warning"}>{form.feishuEnabled ? "已启用" : "待配置"}</Chip>
         </div>
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-[13px] font-medium flex items-center gap-2"><QrCode className="h-4 w-4" />扫码创建飞书机器人</h3>
+              <p className="text-[11px] text-muted-foreground mt-1">使用飞书官方 PersonalAgent 注册流程。扫码确认后，系统自动保存并回填 App ID / App Secret，同时把扫码者绑定为全局通知接收人。</p>
+            </div>
+            <Button type="button" size="sm" variant="outline" onClick={() => void startRegistration()} disabled={registrationStatus === "starting" || registrationStatus === "pending"}>
+              {registrationStatus === "starting" ? <Loader2 className="h-4 w-4 animate-spin" /> : <QrCode className="h-4 w-4" />}
+              {registrationStatus === "pending" ? "等待扫码" : "生成二维码"}
+            </Button>
+          </div>
+          {registration && registrationStatus === "pending" && (
+            <div className="rounded-lg bg-background border p-4 text-center space-y-3">
+              {qrCodeDataURL ? (
+                <img src={qrCodeDataURL} alt="飞书机器人创建二维码" className="h-64 w-64 max-w-full mx-auto rounded-lg bg-white p-2" />
+              ) : (
+                <div className="h-64 w-64 max-w-full mx-auto rounded-lg bg-white flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>
+              )}
+              <p className="text-xs text-muted-foreground">请使用飞书扫描上方二维码并确认创建机器人。二维码完全在浏览器本地生成。</p>
+              <Button asChild type="button" variant="terminal" size="sm">
+                <a href={registration.url} target="_blank" rel="noreferrer">打开飞书官方验证页 <ExternalLink className="h-3.5 w-3.5" /></a>
+              </Button>
+              <div className="flex items-center justify-center gap-2 text-xs text-primary"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在等待飞书返回机器人凭据…</div>
+            </div>
+          )}
+          {registrationStatus === "complete" && <div className="text-xs text-primary flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />创建成功，凭据已自动保存并回填。</div>}
+          {registrationStatus === "error" && <div className="text-xs text-destructive">{registrationError}</div>}
+        </div>
         <Field label="App ID"><Input value={form.feishuAppId || ""} onChange={(e) => set("feishuAppId", e.target.value)} placeholder="cli_xxx" /></Field>
         <Field label="App Secret"><Input type="password" value={form.feishuAppSecret || ""} onChange={(e) => set("feishuAppSecret", e.target.value)} /></Field>
+        <Field label="开放平台域名" hint="扫码创建时会自动识别；手动填写海外 Lark 凭据时请选择 Lark。">
+          <Select value={form.feishuDomain || "feishu"} onValueChange={(value: "feishu" | "lark") => set("feishuDomain", value)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="feishu">飞书（open.feishu.cn）</SelectItem>
+              <SelectItem value="lark">Lark（open.larksuite.com）</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
         <Field label="Verification Token（可选）"><Input type="password" value={form.feishuVerificationToken || ""} onChange={(e) => set("feishuVerificationToken", e.target.value)} /></Field>
         <Field label="Encrypt Key（可选）" hint="仅在飞书事件订阅启用了加密时填写；发送通知不需要此项。"><Input type="password" value={form.feishuEncryptKey || ""} onChange={(e) => set("feishuEncryptKey", e.target.value)} /></Field>
         <div className="text-[11px] text-muted-foreground">事件订阅 URL：<code className="font-mono">{origin}/api/feishu/events</code></div>
@@ -235,11 +351,11 @@ function FeishuSection({
           <Button type="button" variant="outline" onClick={() => void accountStatuses.refetch()} disabled={accountStatuses.isFetching}>{accountStatuses.isFetching ? "查询账户状态…" : "查询账户状态"}</Button>
         </div>
         <div className="text-[12px]">
-          <span className="text-muted-foreground">默认账户绑定：</span>{binding.data?.bound ? <Chip tone="success">已绑定 {binding.data.binding?.openId}</Chip> : <Chip tone="warning">未绑定</Chip>}
+          <span className="text-muted-foreground">全局飞书接收人：</span>{binding.data?.bound ? <Chip tone="success">已绑定 {binding.data.binding?.openId}</Chip> : <Chip tone="warning">未绑定</Chip>}
         </div>
         {accountStatuses.data && accountStatuses.data.length > 0 && <div className="space-y-1">{accountStatuses.data.map((account) => <div key={account.id} className="flex justify-between text-[12px]"><span>{account.name}</span><Chip tone={account.valid ? "success" : "danger"}>{account.valid ? "正常" : account.error || "失败"}</Chip></div>)}</div>}
       </div>
-      <p className="text-[11px] text-muted-foreground">在飞书私聊中发送“绑定账户 账户ID”完成绑定；可用性通知会按配置组合聚合机房，并提供一键入队按钮。未填写 Token/Encrypt Key 时，发送能力仍可用，但事件绑定和按钮回调需补充安全项。</p>
+      <p className="text-[11px] text-muted-foreground">飞书通知与 Telegram 使用同一份默认账户库存、价格和通知文案；每套配置单独发送，并提供冻结生成时账户的一次性下单按钮。私聊机器人任意消息即可更新全局接收人。</p>
     </Section>
   );
 }

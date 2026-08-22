@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -20,12 +21,30 @@ import (
 	"github.com/ovh-webui/server/internal/types"
 )
 
-const feishuBindingsKV = "feishu_bindings"
+const (
+	feishuBindingsKV       = "feishu_bindings"
+	feishuDefaultBindingKey = "default"
+)
 
 var feishuToken struct {
 	sync.Mutex
-	value string
+	value     string
 	expiresAt time.Time
+}
+
+func feishuOpenAPIBase(state *app.State) string {
+	if strings.EqualFold(state.Config.Get().FeishuDomain, "lark") {
+		return "https://open.larksuite.com"
+	}
+	return "https://open.feishu.cn"
+}
+
+// FeishuResetToken 在 App ID / App Secret 变更后清空旧租户令牌。
+func FeishuResetToken() {
+	feishuToken.Lock()
+	feishuToken.value = ""
+	feishuToken.expiresAt = time.Time{}
+	feishuToken.Unlock()
 }
 
 func FeishuEnabled(state *app.State) bool {
@@ -138,7 +157,7 @@ func feishuTenantToken(state *app.State) (string, error) {
 	}
 	cfg := state.Config.Get()
 	body, _ := json.Marshal(map[string]string{"app_id": cfg.FeishuAppID, "app_secret": cfg.FeishuAppSecret})
-	req, err := http.NewRequest(http.MethodPost, "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, feishuOpenAPIBase(state)+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -166,14 +185,20 @@ func feishuTenantToken(state *app.State) (string, error) {
 	return result.Token, nil
 }
 
-func feishuSend(state *app.State, openID, msgType string, content interface{}) error {
+func feishuAPIRequest(state *app.State, method, endpoint string, payload interface{}, result interface{}) error {
 	token, err := feishuTenantToken(state)
 	if err != nil {
 		return err
 	}
-	encoded, _ := json.Marshal(content)
-	body, _ := json.Marshal(map[string]interface{}{"receive_id": openID, "msg_type": msgType, "content": string(encoded)})
-	req, err := http.NewRequest(http.MethodPost, "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id", bytes.NewReader(body))
+	var reader io.Reader
+	if payload != nil {
+		body, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, feishuOpenAPIBase(state)+"/open-apis"+endpoint, reader)
 	if err != nil {
 		return err
 	}
@@ -184,15 +209,34 @@ func feishuSend(state *app.State, openID, msgType string, content interface{}) e
 		return err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("飞书接口返回 %d: %s", resp.StatusCode, string(raw))
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	var envelope struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
 	}
-	var result struct{ Code int `json:"code"`; Msg string `json:"msg"` }
-	if json.Unmarshal(raw, &result) == nil && result.Code != 0 {
-		return fmt.Errorf("飞书接口错误: %s", result.Msg)
+	_ = json.Unmarshal(raw, &envelope)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || envelope.Code != 0 {
+		message := strings.TrimSpace(envelope.Msg)
+		if message == "" {
+			message = strings.TrimSpace(string(raw))
+		}
+		return fmt.Errorf("飞书接口返回 HTTP %d / code %d: %s", resp.StatusCode, envelope.Code, message)
+	}
+	if result != nil && len(raw) > 0 {
+		if err := json.Unmarshal(raw, result); err != nil {
+			return fmt.Errorf("飞书接口返回了无效数据: %w", err)
+		}
 	}
 	return nil
+}
+
+func feishuSend(state *app.State, openID, msgType string, content interface{}) error {
+	encoded, _ := json.Marshal(content)
+	return feishuAPIRequest(state, http.MethodPost, "/im/v1/messages?receive_id_type=open_id", map[string]interface{}{
+		"receive_id": openID,
+		"msg_type":   msgType,
+		"content":    string(encoded),
+	}, nil)
 }
 
 func FeishuSendText(state *app.State, openID, text string) error {
@@ -203,6 +247,195 @@ func FeishuSendCard(state *app.State, openID string, card map[string]interface{}
 	return feishuSend(state, openID, "interactive", card)
 }
 
+const feishuStreamElementID = "ovh_stream_md"
+
+func feishuStreamingText(card map[string]interface{}) string {
+	elements, _ := card["elements"].([]interface{})
+	for _, raw := range elements {
+		element, _ := raw.(map[string]interface{})
+		if element["tag"] == "markdown" {
+			if content, ok := element["content"].(string); ok {
+				return content
+			}
+		}
+	}
+	return "OVH WebUI 通知"
+}
+
+func feishuCardKitCard(card map[string]interface{}, content string, streaming bool) map[string]interface{} {
+	config := map[string]interface{}{
+		"streaming_mode": streaming,
+		"summary":        map[string]interface{}{"content": "OVH WebUI 通知"},
+	}
+	if streaming {
+		config["streaming_config"] = map[string]interface{}{
+			"print_frequency_ms": map[string]interface{}{"default": 35},
+			"print_step":         map[string]interface{}{"default": 3},
+			"print_strategy":     "fast",
+		}
+	}
+	bodyElements := []interface{}{
+		map[string]interface{}{
+			"tag":        "markdown",
+			"element_id": feishuStreamElementID,
+			"content":    content,
+		},
+	}
+	if actions, ok := card["elements"].([]interface{}); ok {
+		for _, raw := range actions {
+			element, _ := raw.(map[string]interface{})
+			if element["tag"] == "action" {
+				bodyElements = append(bodyElements, element)
+			}
+		}
+	}
+	result := map[string]interface{}{
+		"schema": "2.0",
+		"config": config,
+		"body":   map[string]interface{}{"elements": bodyElements},
+	}
+	if header, ok := card["header"].(map[string]interface{}); ok {
+		result["header"] = header
+	}
+	return result
+}
+
+func feishuCardKitCreate(state *app.State, card map[string]interface{}) (string, error) {
+	data, _ := json.Marshal(card)
+	var result struct {
+		Data struct {
+			CardID string `json:"card_id"`
+		} `json:"data"`
+	}
+	if err := feishuAPIRequest(state, http.MethodPost, "/cardkit/v1/cards", map[string]interface{}{
+		"type": "card_json",
+		"data": string(data),
+	}, &result); err != nil {
+		return "", err
+	}
+	if result.Data.CardID == "" {
+		return "", fmt.Errorf("飞书 CardKit 未返回 card_id")
+	}
+	return result.Data.CardID, nil
+}
+
+func feishuCardKitUpdateContent(state *app.State, cardID, content string, sequence int) error {
+	endpoint := fmt.Sprintf("/cardkit/v1/cards/%s/elements/%s/content", url.PathEscape(cardID), feishuStreamElementID)
+	return feishuAPIRequest(state, http.MethodPut, endpoint, map[string]interface{}{
+		"content":  content,
+		"sequence": sequence,
+		"uuid":     fmt.Sprintf("c_%s_%d", cardID, sequence),
+	}, nil)
+}
+
+func feishuCardKitUpdate(state *app.State, cardID string, card map[string]interface{}, sequence int) error {
+	data, _ := json.Marshal(card)
+	return feishuAPIRequest(state, http.MethodPut, "/cardkit/v1/cards/"+url.PathEscape(cardID), map[string]interface{}{
+		"card": map[string]interface{}{
+			"type": "card_json",
+			"data": string(data),
+		},
+		"sequence": sequence,
+		"uuid":     fmt.Sprintf("u_%s_%d", cardID, sequence),
+	}, nil)
+}
+
+func feishuCardKitFinish(state *app.State, cardID, summary string, sequence int) error {
+	settings, _ := json.Marshal(map[string]interface{}{
+		"config": map[string]interface{}{
+			"streaming_mode": false,
+			"summary":        map[string]interface{}{"content": summary},
+		},
+	})
+	return feishuAPIRequest(state, http.MethodPatch, "/cardkit/v1/cards/"+url.PathEscape(cardID)+"/settings", map[string]interface{}{
+		"settings": string(settings),
+		"sequence": sequence,
+		"uuid":     fmt.Sprintf("s_%s_%d", cardID, sequence),
+	}, nil)
+}
+
+func feishuStreamChunks(text string) []string {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return []string{"…"}
+	}
+	steps := 5
+	if len(runes) < steps {
+		steps = len(runes)
+	}
+	result := make([]string, 0, steps)
+	for i := 1; i <= steps; i++ {
+		end := (len(runes)*i + steps - 1) / steps
+		if len(result) == 0 || result[len(result)-1] != string(runes[:end]) {
+			result = append(result, string(runes[:end]))
+		}
+	}
+	return result
+}
+
+// FeishuSendStreamingCard 使用 CardKit 真流式生命周期发送通知。
+// CardKit 不可用或权限不足时自动退回普通 interactive 卡片，保证通知不丢失。
+func FeishuSendStreamingCard(state *app.State, openID string, card map[string]interface{}) error {
+	fullText := feishuStreamingText(card)
+	streamCard := feishuCardKitCard(card, "正在生成通知…", true)
+	cardID, err := feishuCardKitCreate(state, streamCard)
+	if err != nil {
+		state.Logger.Warn("CardKit 创建流式卡片失败，降级为普通卡片: "+err.Error(), "feishu")
+		return FeishuSendCard(state, openID, card)
+	}
+	if err := feishuSend(state, openID, "interactive", map[string]interface{}{
+		"type": "card",
+		"data": map[string]interface{}{"card_id": cardID},
+	}); err != nil {
+		state.Logger.Warn("CardKit 卡片实例发送失败，降级为普通卡片: "+err.Error(), "feishu")
+		return FeishuSendCard(state, openID, card)
+	}
+	sequence := 0
+	for _, content := range feishuStreamChunks(fullText) {
+		sequence++
+		if err := feishuCardKitUpdateContent(state, cardID, content, sequence); err != nil {
+			state.Logger.Warn("CardKit 流式内容更新失败，将直接完成当前卡片: "+err.Error(), "feishu")
+			break
+		}
+	}
+	sequence++
+	if err := feishuCardKitUpdate(state, cardID, feishuCardKitCard(card, fullText, true), sequence); err != nil {
+		state.Logger.Warn("CardKit 最终整卡更新失败: "+err.Error(), "feishu")
+	}
+	sequence++
+	summary := strings.ReplaceAll(strings.TrimSpace(fullText), "\n", " ")
+	if len([]rune(summary)) > 50 {
+		summary = string([]rune(summary)[:49]) + "…"
+	}
+	if err := feishuCardKitFinish(state, cardID, summary, sequence); err != nil {
+		state.Logger.Warn("CardKit 关闭流式模式失败: "+err.Error(), "feishu")
+	}
+	return nil
+}
+
+// FeishuTextCard 用同一份 Telegram 文案渲染飞书卡片，不再次查询或筛选业务数据。
+func FeishuTextCard(title, text, template string, actions []interface{}) map[string]interface{} {
+	if strings.TrimSpace(title) == "" {
+		title = "OVH WebUI 通知"
+	}
+	if template == "" {
+		template = "blue"
+	}
+	elements := []interface{}{map[string]interface{}{"tag": "markdown", "content": text}}
+	// 与 Telegram 每行两个按钮的布局一致，也避免单个 action 元素超过飞书按钮数量限制。
+	for start := 0; start < len(actions); start += 2 {
+		end := start + 2
+		if end > len(actions) {
+			end = len(actions)
+		}
+		elements = append(elements, map[string]interface{}{"tag": "action", "actions": actions[start:end]})
+	}
+	return map[string]interface{}{
+		"header": map[string]interface{}{"template": template, "title": map[string]interface{}{"tag": "plain_text", "content": title}},
+		"elements": elements,
+	}
+}
+
 func FeishuBindings(state *app.State) map[string]types.FeishuBinding {
 	bindings := map[string]types.FeishuBinding{}
 	if state.DB != nil {
@@ -211,42 +444,51 @@ func FeishuBindings(state *app.State) map[string]types.FeishuBinding {
 	return bindings
 }
 
-func FeishuSaveBinding(state *app.State, binding types.FeishuBinding) error {
+// FeishuDefaultBinding 返回唯一的全局飞书接收人，并自动迁移旧版“按 OVH 账户绑定”的数据。
+func FeishuDefaultBinding(state *app.State) (types.FeishuBinding, bool) {
 	bindings := FeishuBindings(state)
-	bindings[binding.AccountID] = binding
-	return state.DB.SetKV(feishuBindingsKV, bindings)
+
+	var selected types.FeishuBinding
+	// 迁移优先级：当前默认账户旧绑定 > 旧 default 键 > 最近更新的有效绑定。
+	// 这样从“按账户绑定”升级时，接收人与当前默认账户的行为保持一致。
+	if account, ok := state.FindAccount(""); ok {
+		selected = bindings[account.ID]
+	}
+	if selected.OpenID == "" {
+		selected = bindings[feishuDefaultBindingKey]
+	}
+	if selected.OpenID == "" {
+		for _, binding := range bindings {
+			if binding.OpenID != "" && (selected.OpenID == "" || binding.UpdatedAt > selected.UpdatedAt) {
+				selected = binding
+			}
+		}
+	}
+	if selected.OpenID == "" {
+		return types.FeishuBinding{}, false
+	}
+	selected.AccountID = feishuDefaultBindingKey
+	if state.DB != nil {
+		// 完成一次性迁移后只保留全局键，避免旧账户键再次覆盖后续扫码绑定。
+		_ = state.DB.SetKV(feishuBindingsKV, map[string]types.FeishuBinding{feishuDefaultBindingKey: selected})
+	}
+	return selected, true
 }
 
-func FeishuDeleteBinding(state *app.State, accountID string) error {
-	bindings := FeishuBindings(state)
-	delete(bindings, accountID)
-	return state.DB.SetKV(feishuBindingsKV, bindings)
+func FeishuSaveDefaultBinding(state *app.State, binding types.FeishuBinding) error {
+	if state.DB == nil {
+		return fmt.Errorf("数据库不可用")
+	}
+	binding.AccountID = feishuDefaultBindingKey
+	return state.DB.SetKV(feishuBindingsKV, map[string]types.FeishuBinding{feishuDefaultBindingKey: binding})
 }
 
-func FeishuBindingForAccount(state *app.State, accountID string) (types.FeishuBinding, bool) {
-	bindings := FeishuBindings(state)
-	resolvedAccountID := strings.TrimSpace(accountID)
-	isDefaultAccount := resolvedAccountID == "" || resolvedAccountID == "default"
-	if resolvedAccountID == "" || resolvedAccountID == "default" {
-		if account, ok := state.FindAccount(""); ok {
-			resolvedAccountID = account.ID
-		}
+func FeishuDeleteDefaultBinding(state *app.State) error {
+	if state.DB == nil {
+		return fmt.Errorf("数据库不可用")
 	}
-	if binding, ok := bindings[resolvedAccountID]; ok && binding.OpenID != "" {
-		return binding, true
-	}
-	// 仅默认账户兼容旧版 default 键，不能把默认绑定错误复用到其他账户。
-	if isDefaultAccount {
-		if binding, ok := bindings["default"]; ok && binding.OpenID != "" {
-			return binding, true
-		}
-	}
-	if account, ok := state.FindAccount(""); ok && account.ID == resolvedAccountID {
-		if binding, ok := bindings["default"]; ok && binding.OpenID != "" {
-			return binding, true
-		}
-	}
-	return types.FeishuBinding{}, false
+	// 清空旧键，防止删除全局绑定后又被迁移回来。
+	return state.DB.SetKV(feishuBindingsKV, map[string]types.FeishuBinding{})
 }
 
 func NotificationConfigured(state *app.State, accountID string) (bool, string) {
@@ -254,12 +496,28 @@ func NotificationConfigured(state *app.State, accountID string) (bool, string) {
 		return true, ""
 	}
 	if FeishuEnabled(state) {
-		if _, ok := FeishuBindingForAccount(state, accountID); ok {
+		if _, ok := FeishuDefaultBinding(state); ok {
 			return true, ""
 		}
-		return false, "飞书已配置，但当前账户尚未绑定飞书用户"
+		return false, "飞书已配置，但尚未绑定全局飞书接收人"
 	}
 	return false, "Telegram 与飞书均未完成配置"
+}
+
+// FeishuSendDefaultNotification 向全局飞书接收人发送通知。
+func FeishuSendDefaultNotification(state *app.State, title, text, template string, actions []interface{}) bool {
+	if !FeishuEnabled(state) {
+		return false
+	}
+	binding, ok := FeishuDefaultBinding(state)
+	if !ok {
+		return false
+	}
+	if err := FeishuSendStreamingCard(state, binding.OpenID, FeishuTextCard(title, text, template, actions)); err != nil {
+		state.Logger.Warn("发送飞书通知失败: "+err.Error(), "feishu")
+		return false
+	}
+	return true
 }
 
 func FeishuCardAction(action string, values map[string]interface{}) map[string]interface{} {
@@ -270,56 +528,6 @@ func FeishuCardAction(action string, values map[string]interface{}) map[string]i
 	return result
 }
 
-type FeishuAvailabilityGroup struct {
-	Available []map[string]interface{}
-	ConfigInfo map[string]interface{}
-	PriceError string
-	ConfigTraceID string
-}
-
-func FeishuAvailabilityCard(planCode, serverName, accountID, traceID string, groups []FeishuAvailabilityGroup) map[string]interface{} {
-	elements := []interface{}{}
-	summary := []string{"**型号**: " + planCode, fmt.Sprintf("**可用配置**: %d 套", len(groups))}
-	if serverName != "" { summary = append(summary, "**服务器**: "+serverName) }
-	elements = append(elements, map[string]interface{}{"tag": "markdown", "content": strings.Join(summary, "\n")})
-	for index, group := range groups {
-		configInfo := group.ConfigInfo
-		lines := []string{fmt.Sprintf("**配置 %d**", index+1)}
-		if display, ok := configInfo["display"].(string); ok && display != "" { lines = append(lines, display) }
-		if price, ok := configInfo["cached_price"].(string); ok && price != "" { lines = append(lines, "价格: "+price) } else if group.PriceError != "" { lines = append(lines, "⚠️ "+group.PriceError) }
-		dcs := []string{}
-		for _, item := range group.Available { if dc, ok := item["dc"].(string); ok { dcs = append(dcs, strings.ToUpper(dc)) } }
-		lines = append(lines, "机房: "+strings.Join(dcs, "、"))
-		elements = append(elements, map[string]interface{}{"tag": "markdown", "content": strings.Join(lines, "\n")})
-		row := []interface{}{}
-		for _, item := range group.Available {
-			dc, _ := item["dc"].(string)
-			action := map[string]interface{}{"tag": "button", "text": map[string]interface{}{"tag": "plain_text", "content": strings.ToUpper(dc)+" 入队"}, "type": "primary", "value": FeishuCardAction("add_to_queue", map[string]interface{}{"planCode": planCode, "datacenter": dc, "accountId": accountID, "options": configInfo["options"]})}
-			row = append(row, action)
-			if len(row) == 2 { elements = append(elements, map[string]interface{}{"tag": "action", "actions": row}); row = []interface{}{} }
-		}
-		if len(row) > 0 { elements = append(elements, map[string]interface{}{"tag": "action", "actions": row}) }
-	}
-	if traceID != "" { elements = append(elements, map[string]interface{}{"tag": "markdown", "content": "订阅 Trace: "+traceID}) }
-	return map[string]interface{}{"header": map[string]interface{}{"template": "green", "title": map[string]interface{}{"tag": "plain_text", "content": "🎉 服务器配置聚合上架通知"}}, "elements": elements}
-}
-
 func FeishuTestCard() map[string]interface{} {
 	return map[string]interface{}{"header": map[string]interface{}{"template": "blue", "title": map[string]interface{}{"tag": "plain_text", "content": "OVH WebUI 飞书测试"}}, "elements": []interface{}{map[string]interface{}{"tag": "markdown", "content": "飞书通知和交互卡片已连接。"}, map[string]interface{}{"tag": "action", "actions": []interface{}{map[string]interface{}{"tag": "button", "text": map[string]interface{}{"tag": "plain_text", "content": "确认"}, "type": "primary", "value": FeishuCardAction("ping", map[string]interface{}{})}}}}}
-}
-
-func (m *Monitor) sendFeishuAvailabilityAggregate(planCode, serverName, accountID, traceID string, groups []FeishuAvailabilityGroup) {
-	if !FeishuEnabled(m.state) {
-		return
-	}
-	binding, ok := FeishuBindingForAccount(m.state, accountID)
-	if !ok {
-		return
-	}
-	card := FeishuAvailabilityCard(planCode, serverName, accountID, traceID, groups)
-	if err := FeishuSendCard(m.state, binding.OpenID, card); err != nil {
-		m.state.Logger.Warn("发送飞书可用性卡片失败: "+err.Error(), "feishu")
-		return
-	}
-	m.state.Logger.Info(fmt.Sprintf("飞书配置聚合卡片发送成功: %s (%d 套配置)", planCode, len(groups)), "feishu")
 }

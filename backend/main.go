@@ -157,7 +157,7 @@ func main() {
 		api.POST("/telegram/register-commands", handlers.RegisterTelegramCommands(state))
 
 		// Servers / availability / cache
-		api.GET("/servers", handlers.GetServers(state))
+		api.GET("/servers", handlers.GetServers(state, mon))
 		api.POST("/servers/:planCode/price", handlers.GetServerPrice(state))
 		api.GET("/realtime-availability", handlers.GetRealtimeAvailability(state))
 		api.GET("/preadded-servers", handlers.GetPreaddedServers(state))
@@ -188,6 +188,8 @@ func main() {
 		api.DELETE("/feishu/binding", handlers.ClearFeishuBinding(state))
 		api.POST("/feishu/test-card", handlers.FeishuTestCard(state))
 		api.POST("/feishu/quick-order", handlers.FeishuQuickOrder(state, mon))
+		api.POST("/feishu/registration/start", handlers.StartFeishuRegistration(state))
+		api.GET("/feishu/registration/:sessionId", handlers.PollFeishuRegistration(state))
 
 		// 快速下单端点 (监控的 auto-order 通过 HTTP 自调走它,前端也可直接调)
 		api.POST("/queue/quick-order", handlers.QuickOrder(state))

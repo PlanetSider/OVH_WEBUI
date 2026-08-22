@@ -10,10 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-webui/server/internal/app"
-	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/monitor"
-	"github.com/ovh-webui/server/internal/numconv"
-	"github.com/ovh-webui/server/internal/price"
 	"github.com/ovh-webui/server/internal/telegram"
 	"github.com/ovh-webui/server/internal/types"
 )
@@ -55,7 +52,7 @@ func FeishuEvents(state *app.State) gin.HandlerFunc {
 
 const feishuEventRetentionDays = 7
 
-// FeishuEventsWithMonitor 同时处理账户绑定与飞书私聊命令。
+// FeishuEventsWithMonitor 同时处理全局接收人绑定与飞书私聊命令。
 func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, body, err := feishuJSONBody(c)
@@ -97,46 +94,50 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 		}
 		event, _ := body["event"].(map[string]interface{})
 		message, _ := event["message"].(map[string]interface{})
+		chatType, _ := message["chat_type"].(string)
 		contentText, _ := message["content"].(string)
 		var content map[string]interface{}
 		_ = json.Unmarshal([]byte(contentText), &content)
 		text, _ := content["text"].(string)
 		openID := feishuOpenID(body)
-		if openID != "" {
+		if openID != "" && chatType == "p2p" {
+			// 合法私聊事件的发送人即全局飞书接收人；业务命令统一使用当时的默认 OVH 账户。
+			if binding, ok := monitor.FeishuDefaultBinding(state); !ok || binding.OpenID != openID {
+				_ = monitor.FeishuSaveDefaultBinding(state, types.FeishuBinding{AccountID: "default", OpenID: openID, Name: openID, UpdatedAt: types.NowISO()})
+			}
 			trimmed := strings.TrimSpace(text)
 			if trimmed != "" && !telegram.AllowRate("feishu:"+openID) {
 				_ = monitor.FeishuSendText(state, openID, "⚠️ 操作过于频繁，请稍后再试")
 				c.JSON(http.StatusOK, gin.H{"code": 0})
 				return
 			}
-			accountID, bound := feishuAccountForOpenID(state, openID)
+			accountID := telegram.DefaultAccountID(state)
+			_, bound := monitor.FeishuDefaultBinding(state)
 			if strings.HasPrefix(trimmed, "绑定账户 ") {
-				requestedAccountID := strings.TrimSpace(strings.TrimPrefix(trimmed, "绑定账户 "))
-				if !accountExists(state, requestedAccountID) {
-					_ = monitor.FeishuSendText(state, openID, "绑定失败：OVH 账户不存在")
-				} else {
-					_ = monitor.FeishuSaveBinding(state, types.FeishuBinding{AccountID: requestedAccountID, OpenID: openID, Name: openID, UpdatedAt: types.NowISO()})
-					_ = monitor.FeishuSendText(state, openID, "飞书已绑定到账户："+requestedAccountID)
-				}
+				_ = monitor.FeishuSendText(state, openID, "飞书接收人已全局绑定；命令和通知始终使用当前默认 OVH 账户，无需再指定账户。")
 				c.JSON(http.StatusOK, gin.H{"code": 0})
 				return
 			}
 			if trimmed == "账户状态" || strings.EqualFold(trimmed, "status") {
 				_ = monitor.FeishuSendText(state, openID, feishuAccountStatusText(state))
 			} else if strings.EqualFold(trimmed, "help") || trimmed == "帮助" || trimmed == "?" {
-				_ = monitor.FeishuSendText(state, openID, telegram.HelpMessage()+"\n绑定账户：绑定账户 <账户ID>")
+				_ = monitor.FeishuSendText(state, openID, telegram.HelpMessage()+"\n当前账户：系统设置中的默认 OVH 账户")
 			} else if cmd := telegram.ParseBotCommand(trimmed); cmd != nil {
 				if cmd.Name == "start" || cmd.Name == "help" {
-					_ = monitor.FeishuSendText(state, openID, telegram.HelpMessage()+"\n绑定账户：绑定账户 <账户ID>")
+					_ = monitor.FeishuSendText(state, openID, telegram.HelpMessage()+"\n当前账户：系统设置中的默认 OVH 账户")
 				} else if !bound {
-					_ = monitor.FeishuSendText(state, openID, "请先发送“绑定账户 账户ID”绑定 OVH 账户")
+					_ = monitor.FeishuSendText(state, openID, "请先在飞书中私聊机器人完成全局接收人绑定")
+				} else if accountID == "" {
+					_ = monitor.FeishuSendText(state, openID, "请先在系统设置中配置默认 OVH 账户")
 				} else {
 					_ = monitor.FeishuSendText(state, openID, dispatchBotCommand(state, mon, cmd, accountID, "feishu"))
 				}
 			} else if feishuLooksLikeOrder(trimmed) {
 				order := telegram.ParseOrderMessage(trimmed)
 				if !bound {
-					_ = monitor.FeishuSendText(state, openID, "请先发送“绑定账户 账户ID”绑定 OVH 账户")
+					_ = monitor.FeishuSendText(state, openID, "请先在飞书中私聊机器人完成全局接收人绑定")
+				} else if accountID == "" {
+					_ = monitor.FeishuSendText(state, openID, "请先在系统设置中配置默认 OVH 账户")
 				} else if order != nil && order.PlanCode != "" {
 					result := telegram.ProcessOrderForAccount(state, accountID, order.PlanCode, order.Datacenter, order.Quantity, order.Options, false)
 					if result.Success {
@@ -189,24 +190,12 @@ func feishuDCText(datacenter string) string {
 }
 
 func feishuAccountForOpenID(state *app.State, openID string) (string, bool) {
-	latestAccountID := ""
-	latestUpdatedAt := ""
-	for accountID, binding := range monitor.FeishuBindings(state) {
-		if binding.OpenID != openID {
-			continue
-		}
-		resolved := accountID
-		if resolved == "default" {
-			if account, ok := state.FindAccount(""); ok {
-				resolved = account.ID
-			}
-		}
-		if _, ok := state.FindAccount(resolved); ok && (latestAccountID == "" || binding.UpdatedAt > latestUpdatedAt) {
-			latestAccountID = resolved
-			latestUpdatedAt = binding.UpdatedAt
-		}
+	binding, ok := monitor.FeishuDefaultBinding(state)
+	if !ok || binding.OpenID != openID {
+		return "", false
 	}
-	return latestAccountID, latestAccountID != ""
+	accountID := telegram.DefaultAccountID(state)
+	return accountID, accountID != ""
 }
 
 func FeishuCardAction(state *app.State) gin.HandlerFunc {
@@ -242,10 +231,9 @@ func FeishuCardAction(state *app.State) gin.HandlerFunc {
 		case "ping":
 			message = "飞书交互卡片连接正常"
 		case "add_to_queue":
-			accountID, _ := values["accountId"].(string)
-			binding, bound := monitor.FeishuBindingForAccount(state, accountID)
+			binding, bound := monitor.FeishuDefaultBinding(state)
 			if !bound || openID == "" || binding.OpenID != openID {
-				message = "当前飞书用户未绑定该 OVH 账户"
+				message = "当前飞书用户不是全局通知接收人"
 			} else {
 				message = feishuEnqueue(state, values)
 			}
@@ -259,29 +247,25 @@ func FeishuCardAction(state *app.State) gin.HandlerFunc {
 
 func FeishuBinding(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		accountID := c.Query("account")
-		if accountID == "" { accountID = "default" }
-		binding, ok := monitor.FeishuBindingForAccount(state, accountID)
+		binding, ok := monitor.FeishuDefaultBinding(state)
+		accountID := telegram.DefaultAccountID(state)
 		c.JSON(http.StatusOK, gin.H{"success": true, "accountId": accountID, "bound": ok, "binding": binding})
 	}
 }
 
 func ClearFeishuBinding(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		accountID := c.Query("account")
-		if accountID == "" { accountID = "default" }
-		if err := monitor.FeishuDeleteBinding(state, accountID); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()}); return }
+		if err := monitor.FeishuDeleteDefaultBinding(state); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()}); return }
 		c.JSON(http.StatusOK, gin.H{"success": true, "cleared": true})
 	}
 }
 
 func FeishuTestCard(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		accountID := c.Query("account")
-		binding, ok := monitor.FeishuBindingForAccount(state, accountID)
-		if !ok { c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "当前账户未绑定飞书用户"}); return }
+		binding, ok := monitor.FeishuDefaultBinding(state)
+		if !ok { c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "尚未绑定全局飞书接收人"}); return }
 		if !monitor.FeishuEnabled(state) { c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "飞书应用未启用或配置不完整"}); return }
-		if err := monitor.FeishuSendCard(state, binding.OpenID, monitor.FeishuTestCard()); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()}); return }
+		if err := monitor.FeishuSendStreamingCard(state, binding.OpenID, monitor.FeishuTestCard()); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()}); return }
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "测试交互卡片已发送"})
 	}
 }
@@ -316,8 +300,6 @@ func feishuOpenID(body map[string]interface{}) string {
 	return id
 }
 
-func accountExists(state *app.State, accountID string) bool { _, ok := state.FindAccount(accountID); return ok }
-
 func feishuAccountStatusText(state *app.State) string {
 	accounts, _ := state.DB.ListAccounts()
 	if len(accounts) == 0 { return "当前没有配置 OVH 账户" }
@@ -327,24 +309,17 @@ func feishuAccountStatusText(state *app.State) string {
 }
 
 func feishuEnqueue(state *app.State, values map[string]interface{}) string {
-	planCode, _ := values["planCode"].(string)
-	datacenter, _ := values["datacenter"].(string)
-	accountID, _ := values["accountId"].(string)
-	if planCode == "" || datacenter == "" { return "缺少型号或机房" }
-	if _, ok := state.FindAccount(accountID); !ok { return "账户不存在，请重新绑定账户" }
-	options := []string{}
-	if raw, ok := values["options"].([]interface{}); ok { for _, item := range raw { if text, ok := item.(string); ok { options = append(options, text) } } }
-	if len(options) == 0 {
-		for _, config := range catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID) {
-			if status := config.Datacenters[datacenter]; status != "unavailable" && status != "unknown" && len(config.Options) > 0 { options = append(options, config.Options...); break }
-		}
-	}
-	result := price.GetInternal(state, accountID, planCode, datacenter, options)
-	if !result.Success { return "价格校验失败："+result.Error }
-	if result.Price == nil { return "价格校验失败：未返回价格" }
-	if raw := result.Price.Prices["withTax"]; raw == nil { return "价格校验失败：该组合暂无有效价格" } else if amount, ok := numconv.ToFloat64(raw); ok && amount == 0 { return "价格校验失败：该组合暂无有效价格" }
-	if err := enqueueQuickOrder(state, accountID, planCode, datacenter, options, false, false); err != nil {
-		return err.Error()
-	}
-	return fmt.Sprintf("✅ %s (%s) 已加入购买队列", planCode, strings.ToUpper(datacenter))
+	uuid, _ := values["uuid"].(string)
+	if uuid == "" || state.DB == nil { return "按钮协议已升级，请等待新的通知卡片" }
+	row, ok, err := state.DB.ClaimTelegramButton(uuid)
+	if err != nil { return "按钮处理失败："+err.Error() }
+	if !ok { return "按钮已使用、已过期或不存在" }
+	configInfo := dbParseConfigInfo(row.ConfigInfo)
+	accountID, _ := configInfo["accountId"].(string)
+	if accountID == "" { _ = state.DB.UnclaimTelegramButton(uuid); return "通知未冻结账户，请等待新的通知卡片" }
+	if _, ok := state.FindAccount(accountID); !ok { _ = state.DB.UnclaimTelegramButton(uuid); return "通知对应的 OVH 账户已不存在" }
+	options := dbParseOptions(row.Options)
+	result := telegram.EnqueueSingle(state, accountID, row.PlanCode, row.Datacenter, options, true)
+	if !result.Success { _ = state.DB.UnclaimTelegramButton(uuid); return "入队失败："+result.Message }
+	return fmt.Sprintf("✅ %s (%s) 已加入购买队列", row.PlanCode, strings.ToUpper(row.Datacenter))
 }
