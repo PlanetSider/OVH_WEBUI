@@ -93,10 +93,11 @@ export async function pollWeixinLogin(sessionId: string) {
   return (await api.get<WeixinLoginStatus>(`/weixin/login/${encodeURIComponent(sessionId)}`)).data;
 }
 
-export function useWeixinStatus() {
+export function useWeixinStatus(enabled = true) {
   return useQuery({
     queryKey: ["weixin", "status"],
     queryFn: async () => (await api.get<WeixinStatus>("/weixin/status")).data,
+    enabled,
     refetchInterval: 10_000,
   });
 }

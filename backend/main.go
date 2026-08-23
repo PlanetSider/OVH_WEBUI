@@ -169,6 +169,7 @@ func main() {
 		api.GET("/weixin/login/:sessionId", handlers.PollWeixinLogin(weixinManager))
 		api.GET("/weixin/status", handlers.GetWeixinStatus(weixinManager))
 		api.POST("/weixin/test", handlers.TestWeixin(weixinManager))
+		api.POST("/weixin/quick-order", handlers.WeixinQuickOrder(state, mon))
 		api.DELETE("/weixin/config", handlers.DisconnectWeixin(weixinManager))
 
 		// Servers / availability / cache

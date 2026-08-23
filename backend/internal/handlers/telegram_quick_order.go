@@ -137,6 +137,67 @@ func FeishuQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	}
 }
 
+// WeixinQuickOrder POST /api/weixin/quick-order
+// 网页「微信下单」页按当前默认 OVH 账户执行与微信 Bot 相同的命令语义。
+func WeixinQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Mode       string   `json:"mode"`
+			PlanCode   string   `json:"planCode"`
+			Datacenter string   `json:"datacenter"`
+			Quantity   int      `json:"quantity"`
+			Options    []string `json:"options"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无效的请求体"})
+			return
+		}
+
+		if state.Weixin == nil || !state.Weixin.Configured() {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "微信 iLink Bot 尚未连接"})
+			return
+		}
+		accountID := telegram.DefaultAccountID(state)
+		if accountID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "尚未配置默认 OVH 账户"})
+			return
+		}
+
+		mode := strings.ToLower(strings.TrimSpace(body.Mode))
+		planCode := strings.TrimSpace(body.PlanCode)
+		dc := strings.ToLower(strings.TrimSpace(body.Datacenter))
+		if mode == "help" || mode == "start" {
+			c.JSON(http.StatusOK, gin.H{"success": true, "message": weixinHelpMessage()})
+			return
+		}
+		if mode == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 mode"})
+			return
+		}
+		if planCode == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 planCode"})
+			return
+		}
+
+		args, errMsg := buildTelegramCommandArgs(mode, planCode, dc, body.Quantity, body.Options)
+		if errMsg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": errMsg})
+			return
+		}
+		cmd := &telegram.BotCommand{Name: mode, Args: args, Raw: "/" + mode + " " + strings.Join(args, " ")}
+		reply := dispatchBotCommand(state, mon, cmd, accountID, "weixin")
+		success := !strings.HasPrefix(strings.TrimSpace(reply), "❌")
+		if !state.Weixin.SendDefault(reply) {
+			state.Logger.Warn("微信网页下单结果回传失败", "weixin")
+		}
+		errField := ""
+		if !success {
+			errField = reply
+		}
+		c.JSON(http.StatusOK, gin.H{"success": success, "message": reply, "error": errField, "mode": mode, "command": cmd.Raw})
+	}
+}
+
 func buildTelegramCommandArgs(mode, planCode, dc string, quantity int, options []string) ([]string, string) {
 	switch mode {
 	case "stock":

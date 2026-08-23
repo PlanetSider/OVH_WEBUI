@@ -606,6 +606,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(order),
     }),
+  /** 网页端按当前默认 OVH 账户执行微信 Bot 的 /stock /queue /buy /monitor /price 语义 */
+  weixinQuickOrder: (order: Record<string, unknown>) =>
+    apiRequest<{
+      success: boolean;
+      message?: string;
+      error?: string;
+      mode?: string;
+      command?: string;
+    }>("/api/weixin/quick-order", {
+      method: "POST",
+      body: JSON.stringify(order),
+    }),
   /** 向 Telegram 注册 Bot 命令菜单（setMyCommands） */
   registerTelegramCommands: () =>
     apiRequest<any>("/api/telegram/register-commands", {

@@ -53,6 +53,7 @@ const navGroups = [
       { to: "/history", icon: History, label: "购买历史" },
       { to: "/telegram-order", icon: MessageSquare, label: "Telegram 下单" },
       { to: "/feishu-order", icon: MessageSquare, label: "飞书下单" },
+      { to: "/weixin-order", icon: MessageSquare, label: "微信下单" },
     ],
   },
   {
