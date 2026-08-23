@@ -39,7 +39,8 @@ export const qk = {
   },
 
   preaddedServers: {
-    list: (region: string) => ["preadded-servers", "list", region] as const,
+    list: (region: string, page: number, pageSize: number, search: string) =>
+      ["preadded-servers", "list", region, page, pageSize, search] as const,
   },
 
   // 抢购队列

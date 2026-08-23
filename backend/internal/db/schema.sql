@@ -164,6 +164,28 @@ CREATE TABLE IF NOT EXISTS preadded_servers (
 CREATE INDEX IF NOT EXISTS idx_preadded_servers_detected_at
   ON preadded_servers(detected_at DESC);
 
+-- ===========================================
+-- preadded_server_results: 后台比对后按区域 + planCode 聚合的页面结果
+-- 页面只读取这张小表，不再下载并处理全部 FQN 原始配置。
+-- ===========================================
+CREATE TABLE IF NOT EXISTS preadded_server_results (
+  region      TEXT NOT NULL,
+  plan_code   TEXT NOT NULL,
+  compared_at INTEGER NOT NULL,
+  search_text TEXT NOT NULL DEFAULT '',
+  data        TEXT NOT NULL,
+  PRIMARY KEY (region, plan_code)
+);
+CREATE INDEX IF NOT EXISTS idx_preadded_server_results_compared_at
+  ON preadded_server_results(compared_at DESC);
+
+-- 即使某次比对结果为 0 条，也单独保存成功完成时间。
+CREATE TABLE IF NOT EXISTS preadded_server_comparisons (
+  region      TEXT PRIMARY KEY,
+  compared_at INTEGER NOT NULL,
+  item_count  INTEGER NOT NULL DEFAULT 0
+);
+
 -- (旧:config_sniper_tasks 表已删除,功能下线。老数据库残留的该表 / config_sniper_task_id 列保留不动,
 --  无害,无人读写。)
 

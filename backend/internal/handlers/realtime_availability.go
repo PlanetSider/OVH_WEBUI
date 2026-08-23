@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/db"
 )
 
 const realtimeAvailabilityMaxBody = 32 << 20
@@ -116,7 +119,8 @@ func GetRealtimeAvailability(state *app.State) gin.HandlerFunc {
 	}
 }
 
-// GetPreaddedServers GET /api/preadded-servers?region=all|eu|ca
+// GetPreaddedServers GET /api/preadded-servers?region=all|eu|ca&page=1&pageSize=20&search=
+// 只读取后台已经按 planCode 聚合并保存的结果；不会访问 OVH，也不会返回全量 FQN 原始配置。
 func GetPreaddedServers(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		region := strings.ToLower(strings.TrimSpace(c.DefaultQuery("region", "all")))
@@ -124,29 +128,107 @@ func GetPreaddedServers(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "region must be all, eu or ca"})
 			return
 		}
-		rows, err := state.DB.ListPreaddedServers(region)
+		page := positiveQueryInt(c.Query("page"), 1, 1, 1_000_000)
+		pageSize := positiveQueryInt(c.Query("pageSize"), 20, 1, 100)
+		search := strings.ToLower(strings.TrimSpace(c.Query("search")))
+
+		// 区域单选时可以让 SQLite 先搜索过滤；“全部”必须先合并 EU/CA，
+		// 再搜索合并后的字段，避免搜索词分别存在于两个区域时漏掉同一型号。
+		dbSearch := search
+		if region == "all" {
+			dbSearch = ""
+		}
+		rows, err := state.DB.ListPreaddedServerResults(region, dbSearch)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取预增服务器失败: " + err.Error()})
 			return
 		}
-		items := make([]map[string]interface{}, 0, len(rows))
+		items := make([]db.PreaddedServerPageItem, 0, len(rows))
 		for _, row := range rows {
-			item := map[string]interface{}{}
+			var item db.PreaddedServerPageItem
 			if err := json.Unmarshal([]byte(row.Data), &item); err != nil {
 				continue
 			}
-			item["region"] = row.Region
-			item["fqn"] = row.FQN
-			item["planCode"] = row.PlanCode
-			item["detectedAt"] = time.UnixMilli(row.DetectedAt).UTC().Format(time.RFC3339)
-			if comparison, ok := comparisonCatalogForRegion(row.Region); ok {
-				item["comparisonRegion"] = comparison.Label
+			if len(item.Regions) == 0 {
+				item.Regions = []string{row.Region}
 			}
 			items = append(items, item)
 		}
+		items = mergePreaddedServerPageItems(items)
+		if region == "all" && search != "" {
+			filtered := make([]db.PreaddedServerPageItem, 0, len(items))
+			for _, item := range items {
+				raw, _ := json.Marshal(item)
+				if strings.Contains(strings.ToLower(string(raw)), search) {
+					filtered = append(filtered, item)
+				}
+			}
+			items = filtered
+		}
+		sort.Slice(items, func(i, j int) bool {
+			return strings.ToLower(items[i].PlanCode) < strings.ToLower(items[j].PlanCode)
+		})
+
+		total := len(items)
+		totalPages := 1
+		if total > 0 {
+			totalPages = (total + pageSize - 1) / pageSize
+		}
+		if page > totalPages {
+			page = totalPages
+		}
+		start := (page - 1) * pageSize
+		end := start + pageSize
+		if end > total {
+			end = total
+		}
+		pageItems := make([]db.PreaddedServerPageItem, 0)
+		if start < total {
+			pageItems = items[start:end]
+		}
+
+		comparisons, err := state.DB.ListPreaddedServerComparisons(region)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取预增服务器比对时间失败: " + err.Error()})
+			return
+		}
+		comparisonTimes := gin.H{}
+		var lastComparedAt int64
+		for _, comparison := range comparisons {
+			comparisonTimes[comparison.Region] = time.UnixMilli(comparison.ComparedAt).UTC().Format(time.RFC3339)
+			if lastComparedAt == 0 || comparison.ComparedAt < lastComparedAt {
+				// “全部”使用较早的成功时间，避免某一区域失败时误显为全部已经更新。
+				lastComparedAt = comparison.ComparedAt
+			}
+		}
+		lastComparedAtText := ""
+		comparisonComplete := (region == "all" && len(comparisons) == 2) || (region != "all" && len(comparisons) == 1)
+		if comparisonComplete && lastComparedAt > 0 {
+			lastComparedAtText = time.UnixMilli(lastComparedAt).UTC().Format(time.RFC3339)
+		}
 		c.Header("Cache-Control", "no-store")
-		c.JSON(http.StatusOK, gin.H{"region": region, "items": items, "total": len(items)})
+		c.JSON(http.StatusOK, gin.H{
+			"region":          region,
+			"items":           pageItems,
+			"total":           total,
+			"page":            page,
+			"pageSize":        pageSize,
+			"totalPages":      totalPages,
+			"lastComparedAt":  lastComparedAtText,
+			"comparisonTimes": comparisonTimes,
+		})
 	}
+}
+
+func positiveQueryInt(raw string, fallback, min, max int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < min {
+		return fallback
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
 
 // RefreshRealtimeAvailabilityOnce 拉取并保存 EU/CA 两个区域，保存完成后立即计算预增服务器。
@@ -197,7 +279,8 @@ func refreshRealtimeAvailabilityRegion(ctx context.Context, state *app.State, re
 	if err != nil {
 		return fmt.Errorf("load %s comparison catalog: %w", region, err)
 	}
-	if err := updatePreaddedServers(state, region, items, knownPlanCodes, fetchedAt); err != nil {
+	comparedAt := time.Now().UTC().Truncate(time.Second)
+	if err := updatePreaddedServers(state, region, items, knownPlanCodes, comparedAt); err != nil {
 		return err
 	}
 	state.Logger.Info(fmt.Sprintf("实时可用性已保存 %s: %d 条，已严格对比 %s 服务器列表", region, len(items), comparisonRegion), "availability")
@@ -267,12 +350,11 @@ func parseComparisonPlanCodes(raw []byte) (map[string]struct{}, error) {
 	return known, nil
 }
 
-func updatePreaddedServers(state *app.State, region string, items []map[string]interface{}, known map[string]struct{}, detectedAt time.Time) error {
+func updatePreaddedServers(state *app.State, region string, items []map[string]interface{}, known map[string]struct{}, comparedAt time.Time) error {
 	if len(known) == 0 {
 		return fmt.Errorf("comparison catalog for %s is empty", region)
 	}
 	preadded := make([]map[string]interface{}, 0)
-	seen := make(map[string]struct{})
 	for _, item := range items {
 		planCode, _ := item["planCode"].(string)
 		planCode = strings.TrimSpace(planCode)
@@ -282,41 +364,292 @@ func updatePreaddedServers(state *app.State, region string, items []map[string]i
 		if _, exists := known[strings.ToLower(planCode)]; exists {
 			continue
 		}
-		fqn, _ := item["fqn"].(string)
-		key := fqn
-		if key == "" {
-			key = planCode
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
 		preadded = append(preadded, item)
 	}
-	return state.DB.ReplacePreaddedServers(region, preadded, detectedAt)
+	aggregated := aggregatePreaddedServerItems(region, preadded)
+	return state.DB.ReplacePreaddedServerResults(region, aggregated, comparedAt)
 }
 
-// RebuildPreaddedServersFromSnapshots 使用各区域固定对应的服务器目录重新比对最近快照。
-// EU 只允许使用 ovh-ie，CA 只允许使用 ovh-ca，不依赖默认账户的服务器列表。
-func RebuildPreaddedServersFromSnapshots(state *app.State) {
-	for _, region := range []string{"eu", "ca"} {
-		snapshot, ok, err := state.DB.LatestAvailabilitySnapshot(region)
-		if err != nil || !ok {
+func aggregatePreaddedServerItems(region string, items []map[string]interface{}) []db.PreaddedServerPageItem {
+	type groupState struct {
+		item           db.PreaddedServerPageItem
+		memories       map[string]struct{}
+		storages       map[string]struct{}
+		systemStorages map[string]struct{}
+		datacenters    map[string]*db.PreaddedServerDatacenter
+		seenVariants   map[string]struct{}
+	}
+	groups := make(map[string]*groupState)
+	for _, rawItem := range items {
+		planCode, _ := rawItem["planCode"].(string)
+		planCode = strings.TrimSpace(planCode)
+		key := strings.ToLower(planCode)
+		if key == "" {
 			continue
 		}
-		items := make([]map[string]interface{}, 0)
-		if err := json.Unmarshal([]byte(snapshot.Data), &items); err != nil {
+		group := groups[key]
+		if group == nil {
+			server, _ := rawItem["server"].(string)
+			group = &groupState{
+				item: db.PreaddedServerPageItem{
+					PlanCode: planCode,
+					Server:   server,
+					Regions:  []string{region},
+				},
+				memories:       make(map[string]struct{}),
+				storages:       make(map[string]struct{}),
+				systemStorages: make(map[string]struct{}),
+				datacenters:    make(map[string]*db.PreaddedServerDatacenter),
+				seenVariants:   make(map[string]struct{}),
+			}
+			groups[key] = group
+		} else if group.item.Server == "" {
+			server, _ := rawItem["server"].(string)
+			group.item.Server = server
+		}
+		fqn, _ := rawItem["fqn"].(string)
+		memory, _ := rawItem["memory"].(string)
+		storage, _ := rawItem["storage"].(string)
+		systemStorage, _ := rawItem["systemStorage"].(string)
+		variantKey := strings.ToLower(strings.TrimSpace(fqn))
+		if variantKey == "" {
+			variantKey = strings.ToLower(strings.Join([]string{planCode, memory, storage, systemStorage}, "|"))
+		}
+		if _, exists := group.seenVariants[variantKey]; exists {
 			continue
 		}
-		knownPlanCodes, _, err := loadComparisonPlanCodes(context.Background(), state, region)
-		if err != nil {
-			state.Logger.Warn("读取区域服务器列表失败 "+region+": "+err.Error(), "availability")
-			continue
-		}
-		if err := updatePreaddedServers(state, region, items, knownPlanCodes, time.UnixMilli(snapshot.FetchedAt)); err != nil {
-			state.Logger.Warn("重建预增服务器失败 "+region+": "+err.Error(), "availability")
+		group.seenVariants[variantKey] = struct{}{}
+		group.item.VariantCount++
+		addTrimmedValue(group.memories, memory)
+		addTrimmedValue(group.storages, storage)
+		addTrimmedValue(group.systemStorages, systemStorage)
+
+		seenDatacenters := make(map[string]struct{})
+		datacenters, _ := rawItem["datacenters"].([]interface{})
+		for _, rawDatacenter := range datacenters {
+			datacenter, ok := rawDatacenter.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			code, _ := datacenter["datacenter"].(string)
+			code = strings.ToLower(strings.TrimSpace(code))
+			if code == "" {
+				continue
+			}
+			if _, exists := seenDatacenters[code]; exists {
+				continue
+			}
+			seenDatacenters[code] = struct{}{}
+			availability, _ := datacenter["availability"].(string)
+			dc := group.datacenters[code]
+			if dc == nil {
+				dc = &db.PreaddedServerDatacenter{Datacenter: code, Availability: availability}
+				group.datacenters[code] = dc
+			}
+			dc.ReportedVariants++
+			if preaddedAvailabilityIsAvailable(availability) {
+				dc.AvailableVariants++
+			}
+			dc.Availability = mergePreaddedAvailabilityStatus(dc.Availability, availability)
 		}
 	}
+
+	results := make([]db.PreaddedServerPageItem, 0, len(groups))
+	for _, group := range groups {
+		group.item.Memories = sortedMapKeys(group.memories)
+		group.item.Storages = sortedMapKeys(group.storages)
+		group.item.SystemStorages = sortedMapKeys(group.systemStorages)
+		group.item.Datacenters = make([]db.PreaddedServerDatacenter, 0, len(group.datacenters))
+		for _, datacenter := range group.datacenters {
+			group.item.Datacenters = append(group.item.Datacenters, *datacenter)
+		}
+		sort.Slice(group.item.Datacenters, func(i, j int) bool {
+			return group.item.Datacenters[i].Datacenter < group.item.Datacenters[j].Datacenter
+		})
+		results = append(results, group.item)
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return strings.ToLower(results[i].PlanCode) < strings.ToLower(results[j].PlanCode)
+	})
+	return results
+}
+
+func mergePreaddedServerPageItems(items []db.PreaddedServerPageItem) []db.PreaddedServerPageItem {
+	groups := make(map[string]*db.PreaddedServerPageItem)
+	for _, item := range items {
+		key := strings.ToLower(strings.TrimSpace(item.PlanCode))
+		if key == "" {
+			continue
+		}
+		existing := groups[key]
+		if existing == nil {
+			copyItem := item
+			copyItem.Regions = append([]string{}, item.Regions...)
+			copyItem.Memories = append([]string{}, item.Memories...)
+			copyItem.Storages = append([]string{}, item.Storages...)
+			copyItem.SystemStorages = append([]string{}, item.SystemStorages...)
+			copyItem.Datacenters = append([]db.PreaddedServerDatacenter{}, item.Datacenters...)
+			groups[key] = &copyItem
+			continue
+		}
+		if existing.Server == "" {
+			existing.Server = item.Server
+		}
+		existing.VariantCount += item.VariantCount
+		existing.Regions = mergeUniqueStrings(existing.Regions, item.Regions)
+		existing.Memories = mergeUniqueStrings(existing.Memories, item.Memories)
+		existing.Storages = mergeUniqueStrings(existing.Storages, item.Storages)
+		existing.SystemStorages = mergeUniqueStrings(existing.SystemStorages, item.SystemStorages)
+		dcIndex := make(map[string]int, len(existing.Datacenters))
+		for index, datacenter := range existing.Datacenters {
+			dcIndex[strings.ToLower(datacenter.Datacenter)] = index
+		}
+		for _, datacenter := range item.Datacenters {
+			index, exists := dcIndex[strings.ToLower(datacenter.Datacenter)]
+			if !exists {
+				existing.Datacenters = append(existing.Datacenters, datacenter)
+				dcIndex[strings.ToLower(datacenter.Datacenter)] = len(existing.Datacenters) - 1
+				continue
+			}
+			target := &existing.Datacenters[index]
+			target.AvailableVariants += datacenter.AvailableVariants
+			target.ReportedVariants += datacenter.ReportedVariants
+			target.Availability = mergePreaddedAvailabilityStatus(target.Availability, datacenter.Availability)
+		}
+		sort.Slice(existing.Datacenters, func(i, j int) bool {
+			return existing.Datacenters[i].Datacenter < existing.Datacenters[j].Datacenter
+		})
+	}
+	results := make([]db.PreaddedServerPageItem, 0, len(groups))
+	for _, item := range groups {
+		results = append(results, *item)
+	}
+	return results
+}
+
+func preaddedAvailabilityIsAvailable(status string) bool {
+	return status != "" && status != "unavailable" && status != "unknown"
+}
+
+func mergePreaddedAvailabilityStatus(current, candidate string) string {
+	if preaddedAvailabilityIsAvailable(current) {
+		return current
+	}
+	if preaddedAvailabilityIsAvailable(candidate) {
+		return candidate
+	}
+	if current == "unavailable" || candidate == "unavailable" {
+		return "unavailable"
+	}
+	if current != "" {
+		return current
+	}
+	if candidate != "" {
+		return candidate
+	}
+	return "unknown"
+}
+
+func addTrimmedValue(values map[string]struct{}, value string) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		values[value] = struct{}{}
+	}
+}
+
+func sortedMapKeys(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func mergeUniqueStrings(left, right []string) []string {
+	values := make(map[string]struct{}, len(left)+len(right))
+	for _, value := range append(append([]string{}, left...), right...) {
+		addTrimmedValue(values, value)
+	}
+	return sortedMapKeys(values)
+}
+
+// migrateLegacyPreaddedResults 把升级前按 FQN 保存的结果纯本地聚合到新表。
+// 只在新表没有对应区域记录时运行，不访问 OVH，也不改变旧比对时间。
+func migrateLegacyPreaddedResults(state *app.State) error {
+	for _, region := range []string{"eu", "ca"} {
+		exists, err := state.DB.HasPreaddedServerComparison(region)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		rows, err := state.DB.ListPreaddedServers(region)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			// 旧表用“0 行”表达“成功比对但没有预增型号”，改用最新快照和同区域缓存补建状态。
+			snapshot, ok, err := state.DB.LatestAvailabilitySnapshot(region)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			comparison, ok := comparisonCatalogForRegion(region)
+			if !ok {
+				continue
+			}
+			rawCatalog, _, cached, err := state.DB.GetCatalog(comparison.Subsidiary)
+			if err != nil {
+				return err
+			}
+			if !cached {
+				continue
+			}
+			knownPlanCodes, err := parseComparisonPlanCodes([]byte(rawCatalog))
+			if err != nil {
+				state.Logger.Warn("迁移预增服务器时跳过无效的 "+comparison.Label+" 缓存: "+err.Error(), "availability")
+				continue
+			}
+			snapshotItems := make([]map[string]interface{}, 0)
+			if err := json.Unmarshal([]byte(snapshot.Data), &snapshotItems); err != nil {
+				state.Logger.Warn("迁移预增服务器时跳过无效的 "+region+" 快照: "+err.Error(), "availability")
+				continue
+			}
+			comparedAt := time.Now().UTC().Truncate(time.Second)
+			if err := updatePreaddedServers(state, region, snapshotItems, knownPlanCodes, comparedAt); err != nil {
+				return err
+			}
+			state.Logger.Info("已使用本地快照和缓存迁移 "+region+" 预增服务器结果", "availability")
+			continue
+		}
+		items := make([]map[string]interface{}, 0, len(rows))
+		var comparedAt int64
+		for _, row := range rows {
+			item := map[string]interface{}{}
+			if err := json.Unmarshal([]byte(row.Data), &item); err != nil {
+				continue
+			}
+			item["planCode"] = row.PlanCode
+			item["fqn"] = row.FQN
+			items = append(items, item)
+			if row.DetectedAt > comparedAt {
+				comparedAt = row.DetectedAt
+			}
+		}
+		if comparedAt == 0 {
+			continue
+		}
+		aggregated := aggregatePreaddedServerItems(region, items)
+		if err := state.DB.ReplacePreaddedServerResults(region, aggregated, time.UnixMilli(comparedAt)); err != nil {
+			return err
+		}
+		state.Logger.Info(fmt.Sprintf("已迁移 %s 预增服务器聚合结果: %d 个型号", region, len(aggregated)), "availability")
+	}
+	return nil
 }
 
 // StartRealtimeAvailabilityRefresh 启动后台整点刷新。首次启动没有快照时立即补采，
@@ -348,6 +681,9 @@ func StartRealtimeAvailabilityRefresh(state *app.State) func() {
 func ensureRealtimeAvailabilitySnapshots(state *app.State) error {
 	needsRefresh := false
 	cutoff := time.Now().Add(-7 * 24 * time.Hour).UnixMilli()
+	if err := migrateLegacyPreaddedResults(state); err != nil {
+		return err
+	}
 	if _, err := state.DB.Exec(`DELETE FROM availability_snapshots WHERE fetched_at < ?`, cutoff); err != nil {
 		return err
 	}
@@ -366,8 +702,6 @@ func ensureRealtimeAvailabilitySnapshots(state *app.State) error {
 	}
 	if needsRefresh {
 		RefreshRealtimeAvailabilityOnce(state)
-		return nil
 	}
-	RebuildPreaddedServersFromSnapshots(state)
 	return nil
 }

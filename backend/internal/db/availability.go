@@ -25,6 +25,37 @@ type PreaddedServer struct {
 	Data       string `json:"-" db:"data"`
 }
 
+type PreaddedServerResult struct {
+	Region     string `db:"region"`
+	PlanCode   string `db:"plan_code"`
+	ComparedAt int64  `db:"compared_at"`
+	Data       string `db:"data"`
+}
+
+type PreaddedServerComparison struct {
+	Region     string `db:"region"`
+	ComparedAt int64  `db:"compared_at"`
+	ItemCount  int    `db:"item_count"`
+}
+
+type PreaddedServerDatacenter struct {
+	Datacenter        string `json:"datacenter"`
+	Availability      string `json:"availability"`
+	AvailableVariants int    `json:"availableVariants"`
+	ReportedVariants  int    `json:"reportedVariants"`
+}
+
+type PreaddedServerPageItem struct {
+	PlanCode       string                      `json:"planCode"`
+	Server         string                      `json:"server"`
+	Regions        []string                    `json:"regions"`
+	VariantCount   int                         `json:"variantCount"`
+	Memories       []string                    `json:"memories"`
+	Storages       []string                    `json:"storages"`
+	SystemStorages []string                    `json:"systemStorages"`
+	Datacenters    []PreaddedServerDatacenter `json:"datacenters"`
+}
+
 // SaveAvailabilitySnapshot 保存区域快照，并删除 7 天以前的快照。
 func (db *DB) SaveAvailabilitySnapshot(region string, fetchedAt time.Time, items []map[string]interface{}) error {
 	region = strings.ToLower(strings.TrimSpace(region))
@@ -121,4 +152,99 @@ func (db *DB) ListPreaddedServers(region string) ([]PreaddedServer, error) {
 		return nil, fmt.Errorf("list preadded servers: %w", err)
 	}
 	return rows, nil
+}
+
+// ReplacePreaddedServerResults 原子替换某区域按 planCode 聚合后的页面结果，
+// 并记录该区域最后一次成功比对时间。失败时旧结果和旧时间保持不变。
+func (db *DB) ReplacePreaddedServerResults(region string, items []PreaddedServerPageItem, comparedAt time.Time) error {
+	region = strings.ToLower(strings.TrimSpace(region))
+	tx, err := db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM preadded_server_results WHERE region = ?`, region); err != nil {
+		return fmt.Errorf("clear preadded server results: %w", err)
+	}
+	stmt, err := tx.Preparex(`
+		INSERT INTO preadded_server_results(region, plan_code, compared_at, search_text, data)
+		VALUES(?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, item := range items {
+		planCode := strings.TrimSpace(item.PlanCode)
+		if planCode == "" {
+			continue
+		}
+		raw, err := json.Marshal(item)
+		if err != nil {
+			return fmt.Errorf("marshal preadded server result %s: %w", planCode, err)
+		}
+		searchText := strings.ToLower(string(raw))
+		if _, err := stmt.Exec(region, strings.ToLower(planCode), comparedAt.UnixMilli(), searchText, string(raw)); err != nil {
+			return fmt.Errorf("insert preadded server result %s: %w", planCode, err)
+		}
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO preadded_server_comparisons(region, compared_at, item_count)
+		VALUES(?, ?, ?)
+		ON CONFLICT(region) DO UPDATE SET
+			compared_at = excluded.compared_at,
+			item_count = excluded.item_count`, region, comparedAt.UnixMilli(), len(items)); err != nil {
+		return fmt.Errorf("save preadded comparison status: %w", err)
+	}
+	return tx.Commit()
+}
+
+// ListPreaddedServerResults 读取已经在后台聚合好的页面结果，搜索先在 SQLite 内过滤。
+func (db *DB) ListPreaddedServerResults(region, search string) ([]PreaddedServerResult, error) {
+	region = strings.ToLower(strings.TrimSpace(region))
+	search = strings.ToLower(strings.TrimSpace(search))
+	rows := make([]PreaddedServerResult, 0)
+	query := `SELECT region, plan_code, compared_at, data FROM preadded_server_results`
+	args := []interface{}{}
+	conditions := make([]string, 0, 2)
+	if region != "" && region != "all" {
+		conditions = append(conditions, `region = ?`)
+		args = append(args, region)
+	}
+	if search != "" {
+		conditions = append(conditions, `instr(search_text, ?) > 0`)
+		args = append(args, search)
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
+	}
+	query += ` ORDER BY plan_code ASC, region ASC`
+	if err := db.Select(&rows, query, args...); err != nil {
+		return nil, fmt.Errorf("list preadded server results: %w", err)
+	}
+	return rows, nil
+}
+
+// ListPreaddedServerComparisons 返回所选区域最后一次成功比对信息。
+func (db *DB) ListPreaddedServerComparisons(region string) ([]PreaddedServerComparison, error) {
+	region = strings.ToLower(strings.TrimSpace(region))
+	rows := make([]PreaddedServerComparison, 0, 2)
+	query := `SELECT region, compared_at, item_count FROM preadded_server_comparisons`
+	args := []interface{}{}
+	if region != "" && region != "all" {
+		query += ` WHERE region = ?`
+		args = append(args, region)
+	}
+	query += ` ORDER BY region ASC`
+	if err := db.Select(&rows, query, args...); err != nil {
+		return nil, fmt.Errorf("list preadded comparison status: %w", err)
+	}
+	return rows, nil
+}
+
+func (db *DB) HasPreaddedServerComparison(region string) (bool, error) {
+	var count int
+	if err := db.Get(&count, `SELECT COUNT(*) FROM preadded_server_comparisons WHERE region = ?`, strings.ToLower(strings.TrimSpace(region))); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }

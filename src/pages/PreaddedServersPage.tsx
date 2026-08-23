@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Helmet } from "react-helmet-async";
 import { ChevronLeft, ChevronRight, Database, RefreshCw, Search, Sparkles } from "lucide-react";
 
@@ -10,87 +10,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { usePreaddedServers, type PreaddedServer } from "@/hooks/use-preadded-servers";
+import { usePreaddedServers } from "@/hooks/use-preadded-servers";
 
 type Region = "all" | "eu" | "ca";
 
-type AggregatedDatacenter = {
-  datacenter: string;
-  availability: string;
-  availableVariants: number;
-  reportedVariants: number;
-};
-
-type AggregatedServer = {
-  planCode: string;
-  server: string;
-  regions: Array<"eu" | "ca">;
-  detectedAt: string;
-  variants: PreaddedServer[];
-  memories: string[];
-  storages: string[];
-  systemStorages: string[];
-  datacenters: AggregatedDatacenter[];
-};
-
 const PAGE_SIZE = 20;
-
-function isAvailable(status: string) {
-  return !!status && status !== "unavailable" && status !== "unknown";
-}
-
-function uniqueValues(values: Array<string | undefined>) {
-  return Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => !!value)));
-}
-
-function aggregateServers(items: PreaddedServer[]): AggregatedServer[] {
-  const groups = new Map<string, PreaddedServer[]>();
-  for (const item of items) {
-    const key = item.planCode?.trim().toLowerCase();
-    if (!key) continue;
-    const variants = groups.get(key);
-    if (variants) variants.push(item);
-    else groups.set(key, [item]);
-  }
-
-  return Array.from(groups.values()).map((variants) => {
-    const datacenterGroups = new Map<string, { statuses: string[]; availableVariants: number }>();
-    for (const variant of variants) {
-      for (const dc of variant.datacenters || []) {
-        const code = dc.datacenter?.trim().toLowerCase();
-        if (!code) continue;
-        const group = datacenterGroups.get(code) || { statuses: [], availableVariants: 0 };
-        group.statuses.push(dc.availability || "unknown");
-        if (isAvailable(dc.availability)) group.availableVariants += 1;
-        datacenterGroups.set(code, group);
-      }
-    }
-
-    const datacenters = Array.from(datacenterGroups.entries())
-      .map(([datacenter, group]) => ({
-        datacenter,
-        availability: group.statuses.find(isAvailable) || (group.statuses.includes("unavailable") ? "unavailable" : "unknown"),
-        availableVariants: group.availableVariants,
-        reportedVariants: group.statuses.length,
-      }))
-      .sort((a, b) => a.datacenter.localeCompare(b.datacenter));
-
-    return {
-      planCode: variants[0].planCode.trim(),
-      server: variants.find((item) => item.server)?.server || variants[0].planCode,
-      regions: Array.from(new Set(variants.map((item) => item.region))).sort(),
-      detectedAt: variants.reduce(
-        (latest, item) => (Date.parse(item.detectedAt) > Date.parse(latest) ? item.detectedAt : latest),
-        variants[0].detectedAt,
-      ),
-      variants,
-      memories: uniqueValues(variants.map((item) => item.memory)),
-      storages: uniqueValues(variants.map((item) => item.storage)),
-      systemStorages: uniqueValues(variants.map((item) => item.systemStorage)),
-      datacenters,
-    };
-  });
-}
 
 function statusInfo(status: string) {
   if (status === "1H-low") return "border-warning/30 bg-warning/10 text-warning";
@@ -103,29 +27,18 @@ function statusInfo(status: string) {
 function PreaddedServersPage() {
   const [region, setRegion] = useState<Region>("all");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(1);
-  const query = usePreaddedServers(region);
-  const items = useMemo(() => query.data || [], [query.data]);
-  const grouped = useMemo(() => aggregateServers(items), [items]);
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    if (!term) return grouped;
-    return grouped.filter((item) => {
-      const searchable = [
-        item.planCode,
-        item.server,
-        ...item.regions,
-        ...item.memories,
-        ...item.storages,
-        ...item.systemStorages,
-        ...item.variants.map((variant) => variant.fqn),
-      ];
-      return searchable.filter(Boolean).join(" ").toLowerCase().includes(term);
-    });
-  }, [grouped, search]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const currentPage = Math.min(page, totalPages);
-  const paginated = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  const query = usePreaddedServers(region, page, PAGE_SIZE, debouncedSearch);
+  const items = query.data?.items || [];
+  const total = query.data?.total || 0;
+  const currentPage = query.data?.page || page;
+  const totalPages = query.data?.totalPages || 1;
+  const lastComparedAt = query.data?.lastComparedAt;
 
   return (
     <div className="space-y-6">
@@ -142,35 +55,46 @@ function PreaddedServersPage() {
       />
 
       <Card>
-        <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="relative min-w-0 flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(event) => {
-                setSearch(event.target.value);
-                setPage(1);
-              }}
-              placeholder="搜索型号、服务器、FQN..."
-              className="pl-9"
-            />
+        <CardContent className="space-y-3 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span>
+              最后比对时间：
+              <strong className="ml-1 font-medium text-foreground">
+                {lastComparedAt ? new Date(lastComparedAt).toLocaleString("zh-CN", { hour12: false }) : "尚未完成比对"}
+              </strong>
+            </span>
+            <span>共 {total} 个型号</span>
           </div>
-          <div className="inline-flex w-full rounded-lg border border-border bg-muted/30 p-1 sm:w-auto">
-            {(["all", "eu", "ca"] as const).map((code) => (
-              <Button
-                key={code}
-                type="button"
-                size="sm"
-                variant={region === code ? "default" : "ghost"}
-                className="flex-1 sm:min-w-24"
-                onClick={() => {
-                  setRegion(code);
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
                   setPage(1);
                 }}
-              >
-                {code === "all" ? "全部" : code.toUpperCase()}
-              </Button>
-            ))}
+                placeholder="搜索型号、服务器、配置..."
+                className="pl-9"
+              />
+            </div>
+            <div className="inline-flex w-full rounded-lg border border-border bg-muted/30 p-1 sm:w-auto">
+              {(["all", "eu", "ca"] as const).map((code) => (
+                <Button
+                  key={code}
+                  type="button"
+                  size="sm"
+                  variant={region === code ? "default" : "ghost"}
+                  className="flex-1 sm:min-w-24"
+                  onClick={() => {
+                    setRegion(code);
+                    setPage(1);
+                  }}
+                >
+                  {code === "all" ? "全部" : code.toUpperCase()}
+                </Button>
+              ))}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -188,65 +112,61 @@ function PreaddedServersPage() {
             action={<Button variant="outline" onClick={() => void query.refetch()}><RefreshCw className="h-4 w-4" />重新加载</Button>}
           />
         </Card>
-      ) : filtered.length === 0 ? (
+      ) : items.length === 0 ? (
         <Card>
           <EmptyState
-            icon={grouped.length === 0 ? Database : Search}
-            title={grouped.length === 0 ? "暂无预增服务器" : "没有匹配的结果"}
-            description={grouped.length === 0 ? "后台整点刷新实时可用性并完成比对后，新增型号会显示在这里" : "请修改搜索条件"}
+            icon={total === 0 && !debouncedSearch ? Database : Search}
+            title={total === 0 && !debouncedSearch ? "暂无预增服务器" : "没有匹配的结果"}
+            description={total === 0 && !debouncedSearch ? "后台整点刷新实时可用性并完成比对后，新增型号会显示在这里" : "请修改搜索条件"}
           />
         </Card>
       ) : (
         <>
           <div className="space-y-3">
-          {paginated.map((item) => (
-            <Card key={item.planCode.toLowerCase()} className="transition-colors hover:border-primary/30">
-              <CardContent className="p-4 sm:p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="truncate font-mono text-sm font-semibold text-primary sm:text-base">{item.planCode}</h2>
-                      {item.regions.map((itemRegion) => (
-                        <span key={itemRegion} className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
-                          {itemRegion.toUpperCase()}
+            {items.map((item) => (
+              <Card key={item.planCode.toLowerCase()} className="transition-colors hover:border-primary/30">
+                <CardContent className="p-4 sm:p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="truncate font-mono text-sm font-semibold text-primary sm:text-base">{item.planCode}</h2>
+                        {item.regions.map((itemRegion) => (
+                          <span key={itemRegion} className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
+                            {itemRegion.toUpperCase()}
+                          </span>
+                        ))}
+                        <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          {item.variantCount} 个配置
                         </span>
-                      ))}
-                      <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        {item.variants.length} 个配置
-                      </span>
-                    </div>
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">{item.server}</p>
-                  </div>
-                  <div className="text-right text-[10px] text-muted-foreground">
-                    <div>发现时间</div>
-                    <div>{new Date(item.detectedAt).toLocaleString("zh-CN", { hour12: false })}</div>
-                  </div>
-                </div>
-                <div className="mt-3 grid grid-cols-1 gap-2 border-y border-border/70 py-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
-                  <Spec label="内存选项" value={item.memories.join("、")} />
-                  <Spec label="存储选项" value={item.storages.join("、")} />
-                  {item.systemStorages.length > 0 && <Spec label="系统盘选项" value={item.systemStorages.join("、")} />}
-                </div>
-                <p className="mb-2 mt-3 text-[11px] font-medium text-muted-foreground">数据中心可用配置</p>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
-                  {item.datacenters.map((dc) => (
-                    <div key={dc.datacenter} className={cn("rounded-lg border px-2.5 py-2", statusInfo(dc.availability))}>
-                      <div className="font-mono text-[11px] font-semibold text-foreground">{dc.datacenter.toUpperCase()}</div>
-                      <div className="mt-0.5 text-[10px] font-medium">
-                        {dc.availableVariants}/{dc.reportedVariants} 个配置可用
                       </div>
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">{item.server}</p>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 border-y border-border/70 py-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
+                    <Spec label="内存选项" value={item.memories.join("、")} />
+                    <Spec label="存储选项" value={item.storages.join("、")} />
+                    {item.systemStorages.length > 0 && <Spec label="系统盘选项" value={item.systemStorages.join("、")} />}
+                  </div>
+                  <p className="mb-2 mt-3 text-[11px] font-medium text-muted-foreground">数据中心可用配置</p>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+                    {item.datacenters.map((dc) => (
+                      <div key={dc.datacenter} className={cn("rounded-lg border px-2.5 py-2", statusInfo(dc.availability))}>
+                        <div className="font-mono text-[11px] font-semibold text-foreground">{dc.datacenter.toUpperCase()}</div>
+                        <div className="mt-0.5 text-[10px] font-medium">
+                          {dc.availableVariants}/{dc.reportedVariants} 个配置可用
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
           </div>
           {totalPages > 1 && (
             <ServerPagination
               page={currentPage}
               totalPages={totalPages}
-              total={filtered.length}
+              total={total}
               onPageChange={setPage}
             />
           )}
