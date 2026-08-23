@@ -60,6 +60,67 @@ export interface FeishuRegistrationStatus {
   error?: string;
 }
 
+export interface WeixinStatus {
+  configured: boolean;
+  connected: boolean;
+  polling: boolean;
+  accountId?: string;
+  userId?: string;
+  lastPollAt?: string;
+  lastError?: string;
+}
+
+export interface WeixinLoginSession {
+  sessionId: string;
+  qrContent: string;
+  expiresIn: number;
+  status: "wait";
+}
+
+export interface WeixinLoginStatus {
+  status: "wait" | "scanned" | "confirmed" | "expired" | "error";
+  connected: boolean;
+  accountId?: string;
+  userId?: string;
+  error?: string;
+}
+
+export async function startWeixinLogin() {
+  return (await api.post<WeixinLoginSession>("/weixin/login/start")).data;
+}
+
+export async function pollWeixinLogin(sessionId: string) {
+  return (await api.get<WeixinLoginStatus>(`/weixin/login/${encodeURIComponent(sessionId)}`)).data;
+}
+
+export function useWeixinStatus() {
+  return useQuery({
+    queryKey: ["weixin", "status"],
+    queryFn: async () => (await api.get<WeixinStatus>("/weixin/status")).data,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useSendWeixinTest() {
+  return useMutation({
+    mutationFn: async () => (await api.post("/weixin/test")).data,
+    onSuccess: () => toast.success("微信测试通知已发送"),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "发送微信测试通知失败")),
+  });
+}
+
+export function useDisconnectWeixin() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => (await api.delete("/weixin/config")).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["weixin", "status"] });
+      toast.success("微信 iLink Bot 已解除绑定");
+    },
+    onError: (error: unknown) => toast.error(apiErrorText(error, "解除微信绑定失败")),
+  });
+}
+
 export async function startFeishuRegistration() {
   return (await api.post<FeishuRegistrationSession>("/feishu/registration/start")).data;
 }

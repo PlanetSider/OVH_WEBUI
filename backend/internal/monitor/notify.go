@@ -180,9 +180,9 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		feishuUUID := uuid.NewString()
 		m.AddMessageUUID(feishuUUID, planCode, dc, options, configInfo)
 		feishuActions = append(feishuActions, map[string]interface{}{
-			"tag": "button",
-			"text": map[string]interface{}{"tag": "plain_text", "content": dcDisplayShortName(dc) + " 一键下单"},
-			"type": "primary",
+			"tag":   "button",
+			"text":  map[string]interface{}{"tag": "plain_text", "content": dcDisplayShortName(dc) + " 一键下单"},
+			"type":  "primary",
 			"value": FeishuCardAction("add_to_queue", map[string]interface{}{"uuid": feishuUUID}),
 		})
 		if len(row) >= 2 || idx == len(availableDCs)-1 {
@@ -192,6 +192,7 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 	}
 	replyMarkup := map[string]interface{}{"inline_keyboard": keyboard}
 	FeishuSendDefaultNotification(m.state, "🎉 服务器上架通知", msg.String(), "green", feishuActions)
+	SendWeixinNotification(m.state, msg.String()+"\n\n微信下单：/buy "+planCode+" <机房代码>")
 
 	configDesc := ""
 	if configInfo != nil {
@@ -245,6 +246,7 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 	}
 	msg.WriteString("\n⏰ 时间: " + m.nowBeijing().Format("2006-01-02 15:04:05"))
 	FeishuSendDefaultNotification(m.state, "📦 服务器下架通知", msg.String(), "grey", nil)
+	SendWeixinNotification(m.state, msg.String())
 
 	configDesc := ""
 	if configInfo != nil {
@@ -408,6 +410,7 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 		template, title = "orange", "⚠️ 价格校验失败通知"
 	}
 	FeishuSendDefaultNotification(m.state, title, msg.String(), template, nil)
+	SendWeixinNotification(m.state, msg.String())
 	if telegram.SendMessage(m.state, msg.String(), nil) {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram通知发送成功: %s@%s%s - %s", planCode, datacenter, configDesc, changeType), "monitor")
 	} else {
@@ -422,5 +425,6 @@ func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
 		m.nowBeijing().Format("2006-01-02 15:04:05"))
 	FeishuSendDefaultNotification(m.state, "🆕 新服务器上架通知", msg, "green", nil)
 	telegram.SendMessage(m.state, msg, nil)
+	SendWeixinNotification(m.state, msg)
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
 }

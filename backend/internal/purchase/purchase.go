@@ -9,8 +9,8 @@ import (
 	ovhsdk "github.com/ovh/go-ovh/ovh"
 
 	"github.com/ovh-webui/server/internal/app"
-	"github.com/ovh-webui/server/internal/numconv"
 	"github.com/ovh-webui/server/internal/monitor"
+	"github.com/ovh-webui/server/internal/numconv"
 	"github.com/ovh-webui/server/internal/ovh"
 	"github.com/ovh-webui/server/internal/telegram"
 	"github.com/ovh-webui/server/internal/types"
@@ -415,6 +415,9 @@ func PurchaseServer(state *app.State, item *types.QueueItem) bool {
 	}
 	if monitor.FeishuSendDefaultNotification(state, "🎉 OVH 服务器抢购成功", msg, "green", nil) {
 		state.Logger.Info("已为订单 "+orderID+" 发送飞书成功通知。", "purchase")
+	}
+	if monitor.SendWeixinNotification(state, msg) {
+		state.Logger.Info("已为订单 "+orderID+" 发送微信成功通知。", "purchase")
 	}
 	return true
 }

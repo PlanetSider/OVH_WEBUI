@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	feishuBindingsKV       = "feishu_bindings"
+	feishuBindingsKV        = "feishu_bindings"
 	feishuDefaultBindingKey = "default"
 )
 
@@ -169,10 +169,10 @@ func feishuTenantToken(state *app.State) (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var result struct {
-		Code int `json:"code"`
-		Msg string `json:"msg"`
-		Token string `json:"tenant_access_token"`
-		Expire int `json:"expire"`
+		Code   int    `json:"code"`
+		Msg    string `json:"msg"`
+		Token  string `json:"tenant_access_token"`
+		Expire int    `json:"expire"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return "", err
@@ -431,7 +431,7 @@ func FeishuTextCard(title, text, template string, actions []interface{}) map[str
 		elements = append(elements, map[string]interface{}{"tag": "action", "actions": actions[start:end]})
 	}
 	return map[string]interface{}{
-		"header": map[string]interface{}{"template": template, "title": map[string]interface{}{"tag": "plain_text", "content": title}},
+		"header":   map[string]interface{}{"template": template, "title": map[string]interface{}{"tag": "plain_text", "content": title}},
 		"elements": elements,
 	}
 }
@@ -499,9 +499,19 @@ func NotificationConfigured(state *app.State, accountID string) (bool, string) {
 		if _, ok := FeishuDefaultBinding(state); ok {
 			return true, ""
 		}
+	}
+	if state.Weixin != nil && state.Weixin.Configured() {
+		return true, ""
+	}
+	if FeishuEnabled(state) {
 		return false, "飞书已配置，但尚未绑定全局飞书接收人"
 	}
-	return false, "Telegram 与飞书均未完成配置"
+	return false, "Telegram、飞书与微信均未完成配置"
+}
+
+// SendWeixinNotification 将同一份通知文案发送到全局绑定的微信 iLink 用户。
+func SendWeixinNotification(state *app.State, message string) bool {
+	return state.Weixin != nil && state.Weixin.SendDefault(message)
 }
 
 // FeishuSendDefaultNotification 向全局飞书接收人发送通知。

@@ -1,6 +1,6 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -22,6 +22,11 @@ import {
   useSendFeishuTestCard,
   startFeishuRegistration,
   pollFeishuRegistration,
+  startWeixinLogin,
+  pollWeixinLogin,
+  useWeixinStatus,
+  useSendWeixinTest,
+  useDisconnectWeixin,
   type SettingsConfig,
 } from "@/hooks/use-settings";
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
@@ -52,6 +57,7 @@ const SECTIONS = [
   { id: "accounts", icon: Globe, label: "OVH 账户" },
   { id: "telegram", icon: Send, label: "Telegram" },
   { id: "feishu", icon: MessageSquare, label: "飞书" },
+  { id: "weixin", icon: MessageSquare, label: "微信" },
   { id: "cache", icon: Database, label: "缓存管理" },
 ] as const;
 
@@ -169,6 +175,8 @@ function SettingsPage() {
               <TelegramSection form={form} set={set} onSaveToken={onSave} saving={save.isPending} />
             ) : active === "feishu" ? (
               <FeishuSection form={form} set={set} onSave={onSave} saving={save.isPending} />
+            ) : active === "weixin" ? (
+              <WeixinSection />
             ) : (
               <CacheSection />
             )}
@@ -356,6 +364,155 @@ function FeishuSection({
         {accountStatuses.data && accountStatuses.data.length > 0 && <div className="space-y-1">{accountStatuses.data.map((account) => <div key={account.id} className="flex justify-between text-[12px]"><span>{account.name}</span><Chip tone={account.valid ? "success" : "danger"}>{account.valid ? "正常" : account.error || "失败"}</Chip></div>)}</div>}
       </div>
       <p className="text-[11px] text-muted-foreground">飞书通知与 Telegram 使用同一份默认账户库存、价格和通知文案；每套配置单独发送，并提供冻结生成时账户的一次性下单按钮。私聊机器人任意消息即可更新全局接收人。</p>
+    </Section>
+  );
+}
+
+function maskIdentifier(value?: string) {
+  const text = (value || "").trim();
+  if (!text) return "—";
+  if (text.length <= 12) return text;
+  return `${text.slice(0, 6)}…${text.slice(-4)}`;
+}
+
+function WeixinSection() {
+  const status = useWeixinStatus();
+  const refetchWeixinStatus = status.refetch;
+  const test = useSendWeixinTest();
+  const disconnect = useDisconnectWeixin();
+  const [login, setLogin] = useState<{ sessionId: string; qrContent: string; expiresAt: number } | null>(null);
+  const [loginStatus, setLoginStatus] = useState<"idle" | "starting" | "wait" | "scanned" | "confirmed" | "error">("idle");
+  const [loginError, setLoginError] = useState("");
+  const [qrCodeDataURL, setQRCodeDataURL] = useState("");
+
+  const beginLogin = async () => {
+    setLoginStatus("starting");
+    setLoginError("");
+    try {
+      const result = await startWeixinLogin();
+      setLogin({
+        sessionId: result.sessionId,
+        qrContent: result.qrContent,
+        expiresAt: Date.now() + result.expiresIn * 1000,
+      });
+      setQRCodeDataURL("");
+      await createQRCodeDataURL(result.qrContent).then(setQRCodeDataURL);
+      setLoginStatus("wait");
+    } catch (error) {
+      setLoginStatus("error");
+      setLoginError(error instanceof Error ? error.message : "创建微信扫码会话失败");
+    }
+  };
+
+  useEffect(() => {
+    if (!login || (loginStatus !== "wait" && loginStatus !== "scanned")) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      if (Date.now() >= login.expiresAt) {
+        if (!cancelled) {
+          setLoginStatus("error");
+          setLoginError("二维码已过期，请重新生成");
+        }
+        return;
+      }
+      try {
+        const result = await pollWeixinLogin(login.sessionId);
+        if (cancelled) return;
+        if (result.status === "confirmed") {
+          setLoginStatus("confirmed");
+          void refetchWeixinStatus();
+          toast.success("微信 iLink Bot 已连接");
+          return;
+        }
+        if (result.status === "scanned") {
+          setLoginStatus("scanned");
+        } else if (result.status === "expired" || result.status === "error") {
+          setLoginStatus("error");
+          setLoginError(result.error || "微信扫码授权失败");
+          return;
+        } else {
+          setLoginStatus("wait");
+        }
+        timer = setTimeout(poll, 1500);
+      } catch (error) {
+        if (!cancelled) {
+          setLoginStatus("error");
+          setLoginError(error instanceof Error ? error.message : "查询微信扫码状态失败");
+        }
+      }
+    };
+    timer = setTimeout(poll, 1000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [login, loginStatus, refetchWeixinStatus]);
+
+  const connected = status.data?.configured;
+  return (
+    <Section title="微信 iLink Bot">
+      <div className="rounded-2xl border border-border p-4 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-[13px] font-medium">连接状态</h3>
+            <p className="text-[11px] text-muted-foreground mt-1">通过微信官方 iLink Bot 长轮询连接，不需要公网 Webhook，也无需手填 Token。</p>
+          </div>
+          <Chip tone={connected && status.data?.polling ? "success" : connected ? "warning" : "warning"}>
+            {connected ? (status.data?.polling ? "已连接" : "已配置") : "未连接"}
+          </Chip>
+        </div>
+
+        {connected ? (
+          <div className="rounded-xl border bg-muted/20 p-4 space-y-2 text-[12px]">
+            <InfoRow label="Bot ID" value={<code className="font-mono">{maskIdentifier(status.data?.accountId)}</code>} />
+            <InfoRow label="绑定用户" value={<code className="font-mono">{maskIdentifier(status.data?.userId)}</code>} />
+            <InfoRow label="长轮询" value={status.data?.polling ? <Chip tone="success">运行中</Chip> : <Chip tone="warning">未运行</Chip>} />
+            {status.data?.lastPollAt && <InfoRow label="最近同步" value={new Date(status.data.lastPollAt).toLocaleString("zh-CN")} />}
+            {status.data?.lastError && <div className="text-destructive break-words pt-1">{status.data.lastError}</div>}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-[13px] font-medium flex items-center gap-2"><QrCode className="h-4 w-4" />微信扫码授权</h3>
+                <p className="text-[11px] text-muted-foreground mt-1">扫码后将在微信中创建独立的 iLink Bot 身份，并把扫码者绑定为唯一命令与通知接收人。</p>
+              </div>
+              <Button type="button" size="sm" variant="outline" onClick={() => void beginLogin()} disabled={loginStatus === "starting" || loginStatus === "wait" || loginStatus === "scanned"}>
+                {loginStatus === "starting" ? <Loader2 className="h-4 w-4 animate-spin" /> : <QrCode className="h-4 w-4" />}
+                {loginStatus === "wait" || loginStatus === "scanned" ? "等待确认" : "生成二维码"}
+              </Button>
+            </div>
+            {login && (loginStatus === "wait" || loginStatus === "scanned") && (
+              <div className="rounded-lg bg-background border p-4 text-center space-y-3">
+                {qrCodeDataURL ? (
+                  <img src={qrCodeDataURL} alt="微信 iLink Bot 授权二维码" className="h-64 w-64 max-w-full mx-auto rounded-lg bg-white p-2" />
+                ) : (
+                  <div className="h-64 w-64 max-w-full mx-auto rounded-lg bg-white flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>
+                )}
+                <p className="text-xs text-muted-foreground">{loginStatus === "scanned" ? "已扫码，请在微信中确认授权。" : "请使用微信扫描二维码并确认。二维码在浏览器本地生成。"}</p>
+                <div className="flex items-center justify-center gap-2 text-xs text-primary"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在等待微信确认…</div>
+              </div>
+            )}
+            {loginStatus === "confirmed" && <div className="text-xs text-primary flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />连接成功，长轮询已自动启动。</div>}
+            {loginStatus === "error" && <div className="text-xs text-destructive">{loginError}</div>}
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" onClick={() => test.mutate()} disabled={!connected || test.isPending}>{test.isPending ? "发送中…" : "发送测试通知"}</Button>
+          <Button type="button" variant="destructive" onClick={() => {
+            if (window.confirm("确定解除微信 iLink Bot 绑定？本地 Token、游标和会话上下文会被清除。")) {
+              disconnect.mutate();
+              setLogin(null);
+              setLoginStatus("idle");
+            }
+          }} disabled={!connected || disconnect.isPending}>
+            <Unplug className="h-4 w-4" />{disconnect.isPending ? "解除中…" : "解除绑定"}
+          </Button>
+        </div>
+      </div>
+      <p className="text-[11px] text-muted-foreground">首版支持私聊文本命令和主动通知；不承诺普通微信群可用，也暂不处理图片、语音或文件。连接的是独立的 @im.bot 身份，不会控制你的普通个人微信号。</p>
     </Section>
   );
 }

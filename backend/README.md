@@ -9,7 +9,7 @@ Go (Gin) 实现的后端服务，配套 `../web/` 前端使用。
 - 监控：服务器补货 / VPS 补货 / 配置绑定狙击
 - 已购服务器管理（数十个 OVH 端点：BIOS / 启动模式 / 重装 / 任务 / 网络 / 维护 / 高级选项 等）
 - 账户管理 + 联系人变更
-- Telegram webhook 通知
+- Telegram webhook、飞书与微信 iLink Bot 通知
 
 ## 目录结构
 
@@ -33,6 +33,7 @@ server/
     ├── sniper/          # 配置绑定狙击扫描
     ├── storage/         # JSON 文件读写
     ├── telegram/        # Telegram bot 通知
+    ├── weixin/          # 微信 iLink Bot 扫码、长轮询与发送
     ├── types/           # 核心数据结构
     └── vps/             # VPS 可用性查询
 ```
@@ -109,6 +110,13 @@ GET    /api/ovh/contact-change-requests
 # Telegram
 GET    /api/telegram/get-webhook-info
 POST   /api/telegram/webhook              (OVH bot 回调，白名单)
+
+# 微信 iLink Bot（均需 X-API-Key）
+POST   /api/weixin/login/start
+GET    /api/weixin/login/:sessionId
+GET    /api/weixin/status
+POST   /api/weixin/test
+DELETE /api/weixin/config
 ```
 
 ## OVH 下单流程

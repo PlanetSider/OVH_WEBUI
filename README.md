@@ -12,6 +12,7 @@ OVH 独服与 VPS 的自托管控制台，提供服务器目录、可用性监�
 - Telegram 通知、Webhook、文本下单和一键入队
 - 飞书通知、交互卡片、可用性配置聚合和一键入队
 - 飞书基础配置只需 App ID 和 App Secret；Token / Encrypt Key 为回调安全项
+- 微信 iLink Bot 扫码接入、私聊命令和主动通知（无需公网 Webhook）
 - 多 OVH 账户、默认账户切换、账户凭据验证和账户状态查询
 - 独服电源、重装、硬件、IPMI、网络、IP、防护、续费等控制
 - VPS 电源、快照、重装和任务控制
@@ -154,6 +155,16 @@ https://你的域名/api/feishu/card-action
 
 基础通知只需要 App ID 和 App Secret。需要事件绑定账户或卡片按钮交互时，按飞书应用后台的事件订阅配置填写安全项。
 
+### 微信 iLink Bot
+
+在设置页进入「微信」，点击生成二维码并使用微信扫码确认。系统会通过 iLink Bot API 长轮询收取私聊消息，无需公网 Webhook，也不需要手动填写 Bot Token。
+
+- 扫码会创建独立的 @im.bot 身份，不会接管普通个人微信号。
+- 扫码者会成为唯一绑定用户，可使用 /stock、/price、/monitor、/queue、/buy、/account 和自由文本下单。
+- 独服/VPS 补货、抢购成功等主动通知会发送给绑定用户。
+- 首版只保证私聊文本；普通微信群、图片、语音和文件暂不支持。
+- iLink 凭据、同步游标和 context_token 只保存在 SQLite 中。
+
 ## 本地开发
 
 ### Windows
@@ -211,11 +222,11 @@ docker build -f Dockerfile -t ovh-webui:local .
 |------|------|
 | 网关 API 密钥 | `.env` 的 `API_SECRET_KEY` |
 | OVH 账户凭据 | SQLite `/data`，通过 WebUI 添加 |
-| 队列、历史、监控订阅 | SQLite `/data` |
+| 队列、历史、监控订阅、微信 iLink 凭据 | SQLite `/data` |
 | 日志和缓存 | `/data/logs`、`/data/cache` |
 | Docker 数据目录 | `./data` 绑定到容器 `/data` |
 
-不要把以下内容提交到 Git：`.env`、`backend/.env`、`backend/data/`、OVH 凭据、Telegram Token、飞书 App Secret。
+不要把以下内容提交到 Git：`.env`、`backend/.env`、`backend/data/`、OVH 凭据、Telegram Token、飞书 App Secret、微信 iLink Bot Token。
 
 ## 常用运维命令
 
@@ -261,6 +272,7 @@ X-API-Key: <API_SECRET_KEY>
 - `/api/vps-control/*`：已购 VPS 控制
 - `/api/feishu/*`：飞书绑定、事件和卡片
 - `/api/telegram/*`：Telegram Webhook、命令和下单
+- `/api/weixin/*`：微信扫码、连接状态、测试通知和解绑
 
 完整接口说明见 [`docs/handover/03-API-CONTRACT.md`](./docs/handover/03-API-CONTRACT.md)。
 

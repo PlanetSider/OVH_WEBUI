@@ -24,6 +24,7 @@ import (
 	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/purchase"
 	"github.com/ovh-webui/server/internal/storage"
+	"github.com/ovh-webui/server/internal/weixin"
 )
 
 func main() {
@@ -78,6 +79,13 @@ func main() {
 	// 注意：启动时不要 SaveToDB()。
 	// ReplaceMonitorSubscriptions 会先 DELETE 全表；若加载失败/空读却再写回，会把线上订阅抹掉。
 	console.Info("监控检查间隔已强制设置为: 5秒（全局固定值）")
+
+	// 微信 iLink Bot：使用 Hermes 原生协议的 Go 实现，无需外部 Python 服务或公网 Webhook。
+	weixinManager := weixin.NewManager(state, func(senderID, text string) string {
+		return handlers.HandleWeixinText(state, mon, senderID, text)
+	})
+	state.Weixin = weixinManager
+	weixinManager.Start()
 
 	// Gin
 	if mode := os.Getenv("GIN_MODE"); mode != "" {
@@ -155,6 +163,13 @@ func main() {
 		api.POST("/telegram/webhook", handlers.TelegramWebhook(state, mon))
 		api.POST("/telegram/quick-order", handlers.TelegramQuickOrder(state, mon))
 		api.POST("/telegram/register-commands", handlers.RegisterTelegramCommands(state))
+
+		// 微信 iLink Bot（全部由 WebUI 调用，继续要求 X-API-Key）
+		api.POST("/weixin/login/start", handlers.StartWeixinLogin(weixinManager))
+		api.GET("/weixin/login/:sessionId", handlers.PollWeixinLogin(weixinManager))
+		api.GET("/weixin/status", handlers.GetWeixinStatus(weixinManager))
+		api.POST("/weixin/test", handlers.TestWeixin(weixinManager))
+		api.DELETE("/weixin/config", handlers.DisconnectWeixin(weixinManager))
 
 		// Servers / availability / cache
 		api.GET("/servers", handlers.GetServers(state, mon))
@@ -449,6 +464,7 @@ func main() {
 		state.Logger.Info("收到退出信号，正在优雅关闭…", "system")
 	}
 	stopRealtimeAvailability()
+	weixinManager.Stop()
 
 	// 停监控循环（若实现了 Stop）
 	if mon != nil {

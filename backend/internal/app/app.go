@@ -92,9 +92,19 @@ type State struct {
 	MonitorRunning        bool
 	QueueProcessorRunning bool
 
+	// Weixin 由 iLink 适配器在启动时注入。业务层只依赖最小发送能力，
+	// 避免 app/monitor/purchase 与具体协议实现形成循环依赖。
+	Weixin WeixinNotifier
+
 	// 串行化全表 Replace 落盘，避免并发 SaveHistory/SaveQueue 快照互相覆盖丢数据
 	historyPersistMu sync.Mutex
 	queuePersistMu   sync.Mutex
+}
+
+// WeixinNotifier 是微信 iLink 通知适配器暴露给业务层的最小接口。
+type WeixinNotifier interface {
+	Configured() bool
+	SendDefault(message string) bool
 }
 
 // NewState 构造应用状态。DB 必须已 Open。

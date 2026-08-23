@@ -19,6 +19,9 @@ func accountChannelName(channel string) string {
 	if channel == "feishu" {
 		return "飞书"
 	}
+	if channel == "weixin" {
+		return "微信"
+	}
 	return "Telegram"
 }
 
@@ -123,9 +126,9 @@ func sendFeishuAccountMenu(state *app.State, openID string) error {
 			buttonType = "primary"
 		}
 		actions = append(actions, map[string]interface{}{
-			"tag":  "button",
-			"text": map[string]interface{}{"tag": "plain_text", "content": label},
-			"type": buttonType,
+			"tag":   "button",
+			"text":  map[string]interface{}{"tag": "plain_text", "content": label},
+			"type":  buttonType,
 			"value": monitor.FeishuCardAction("switch_account", map[string]interface{}{"account_id": account.ID}),
 		})
 	}

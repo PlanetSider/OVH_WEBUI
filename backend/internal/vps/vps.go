@@ -28,7 +28,7 @@ var (
 
 const tgRecheckInterval = 5 * time.Minute
 
-// checkTGOrStop 节流后验证 Telegram / 全局飞书，二者任一有效即可继续。
+// checkTGOrStop 节流后验证 Telegram / 全局飞书 / 微信，任一有效即可继续。
 // 返回 true=继续 loop,false=已自停。
 func checkTGOrStop(state *app.State) bool {
 	tgCheckMu.Lock()
@@ -45,8 +45,9 @@ func checkTGOrStop(state *app.State) bool {
 	tgCheckMu.Lock()
 	lastTGCheck = time.Now()
 	tgCheckMu.Unlock()
-	if !tgOK && !feishuOK {
-		state.Logger.Error("Telegram 与飞书通知均失效，自动停止 VPS 监控: "+tgReason, "vps_monitor")
+	weixinOK := state.Weixin != nil && state.Weixin.Configured()
+	if !tgOK && !feishuOK && !weixinOK {
+		state.Logger.Error("Telegram、飞书与微信通知均失效，自动停止 VPS 监控: "+tgReason, "vps_monitor")
 		Stop(state)
 		return false
 	}
@@ -129,11 +130,11 @@ var vpsModelMap = map[string]string{
 }
 
 var statusMap = map[string]string{
-	"available":                       "现货",
-	"out-of-stock":                    "无货",
-	"out-of-stock-preorder-allowed":   "缺货（可预订）",
-	"unavailable":                     "不可用",
-	"unknown":                         "未知",
+	"available":                     "现货",
+	"out-of-stock":                  "无货",
+	"out-of-stock-preorder-allowed": "缺货（可预订）",
+	"unavailable":                   "不可用",
+	"unknown":                       "未知",
 }
 
 // SendSummaryNotification 对应 Python: send_vps_summary_notification
@@ -177,13 +178,14 @@ func SendSummaryNotification(state *app.State, planCode string, dcs []map[string
 		sb.WriteString("\n💡 快去抢购吧！")
 	}
 	tgOK := cfg.TgToken != "" && cfg.TgChatID != "" && telegram.SendMessage(state, sb.String(), nil)
-	feishuOK := monitor.FeishuSendDefaultNotification(state, emoji+" "+title, sb.String(), map[string]string{"available":"green", "initial":"blue"}[changeType], nil)
-	if tgOK || feishuOK {
+	feishuOK := monitor.FeishuSendDefaultNotification(state, emoji+" "+title, sb.String(), map[string]string{"available": "green", "initial": "blue"}[changeType], nil)
+	weixinOK := monitor.SendWeixinNotification(state, sb.String())
+	if tgOK || feishuOK || weixinOK {
 		state.Logger.Info(fmt.Sprintf("✅ VPS汇总通知发送成功: %s (%d个机房)", planCode, len(dcs)), "vps_monitor")
 	} else {
 		state.Logger.Warn(fmt.Sprintf("⚠️ VPS汇总通知发送失败: %s", planCode), "vps_monitor")
 	}
-	return tgOK || feishuOK
+	return tgOK || feishuOK || weixinOK
 }
 
 // MonitorLoop 对应 Python: vps_monitor_loop

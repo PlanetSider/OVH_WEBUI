@@ -212,3 +212,42 @@ CREATE TABLE IF NOT EXISTS feishu_events (
   processed_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_feishu_events_processed ON feishu_events(processed_at);
+
+-- ===========================================
+-- 微信 iLink Bot：凭据、长轮询游标、会话上下文、去重与单实例租约
+-- bot_token 只保存在 SQLite，不通过通用 settings API 返回前端。
+-- ===========================================
+CREATE TABLE IF NOT EXISTS weixin_credentials (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  account_id TEXT NOT NULL,
+  bot_token  TEXT NOT NULL,
+  base_url   TEXT NOT NULL,
+  user_id    TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS weixin_sync_state (
+  account_id TEXT PRIMARY KEY,
+  sync_buf   TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS weixin_context_tokens (
+  account_id    TEXT NOT NULL,
+  user_id       TEXT NOT NULL,
+  context_token TEXT NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (account_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS weixin_seen_messages (
+  message_key TEXT PRIMARY KEY,
+  seen_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_weixin_seen_at ON weixin_seen_messages(seen_at);
+
+CREATE TABLE IF NOT EXISTS weixin_runtime_locks (
+  lock_name  TEXT PRIMARY KEY,
+  owner_id   TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);

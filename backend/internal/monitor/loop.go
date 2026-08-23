@@ -30,7 +30,7 @@ func (m *Monitor) saveKnownServersSnapshot(known map[string]struct{}) {
 	}
 }
 
-// checkTGOrStop 节流后验证 Telegram / 全局飞书，二者任一有效即可继续。
+// checkTGOrStop 节流后验证 Telegram / 全局飞书 / 微信，任一有效即可继续。
 // 返回 true=继续 loop,false=已自停,loop 应该 break。
 func (m *Monitor) checkTGOrStop() bool {
 	m.tgCheckMu.Lock()
@@ -49,8 +49,9 @@ func (m *Monitor) checkTGOrStop() bool {
 	m.tgCheckMu.Lock()
 	m.lastTGCheck = time.Now()
 	m.tgCheckMu.Unlock()
-	if !tgOK && !feishuOK {
-		m.state.Logger.Error("Telegram 与飞书通知均失效，自动停止服务器监控: "+tgReason, "monitor")
+	weixinOK := m.state.Weixin != nil && m.state.Weixin.Configured()
+	if !tgOK && !feishuOK && !weixinOK {
+		m.state.Logger.Error("Telegram、飞书与微信通知均失效，自动停止服务器监控: "+tgReason, "monitor")
 		m.Stop()
 		return false
 	}

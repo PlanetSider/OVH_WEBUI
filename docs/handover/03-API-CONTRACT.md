@@ -42,7 +42,7 @@
 
 - `/api/monitor/*` 独服
 - `/api/vps-monitor/*` VPS
-- 监控通知支持 Telegram 或飞书；飞书可用性通知按内存/存储配置聚合，并提供卡片入队按钮
+- 监控通知支持 Telegram、飞书或微信；飞书可用性通知按内存/存储配置聚合并提供卡片入队按钮，微信使用文本命令下单
 
 ### 飞书
 
@@ -51,6 +51,16 @@
 - `GET/DELETE /api/feishu/binding`
 - `POST /api/feishu/test-card`
 - 基础发送配置只需 `feishuAppId` 与 `feishuAppSecret`；`feishuVerificationToken`、`feishuEncryptKey` 为事件回调安全项，使用回调/按钮交互时建议配置
+
+### 微信 iLink Bot
+
+- `POST /api/weixin/login/start`：创建 8 分钟扫码会话，返回 `sessionId` 和 `qrContent`
+- `GET /api/weixin/login/:sessionId`：查询 `wait|scanned|confirmed|expired|error`
+- `GET /api/weixin/status`：连接、长轮询、Bot ID 和绑定用户 ID；不返回 Token
+- `POST /api/weixin/test`：向扫码绑定用户发送测试文本
+- `DELETE /api/weixin/config`：解除绑定并清除本地 Token、游标、上下文与去重状态
+- 所有微信管理接口都要求 `X-API-Key`；入站消息由后端直接长轮询 iLink，不存在公网回调白名单
+- 首版仅接收绑定用户的私聊文本；群聊和媒体不在契约内
 
 ### 服务器控制
 

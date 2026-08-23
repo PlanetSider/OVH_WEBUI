@@ -9,9 +9,12 @@
 | `backend/data/` | SQLite 中含 OVH 账户 AK/AS/CK、队列、历史 |
 | OVH App Key / Secret / Consumer Key | 可操作账户资源 |
 | Telegram Bot Token | 可冒用 Bot |
+| 微信 iLink Bot Token | 可冒用独立的微信 Bot 身份 |
 | 真实独服主机名（公开仓库） | 资产情报（可选脱敏） |
 
 `.gitignore` 已覆盖 `.env` 与 `backend/data/`。
+
+微信 iLink 的 `bot_token`、绑定用户、同步游标和联系人 `context_token` 保存在 SQLite 独立表中。通用 `/api/settings` 与微信状态接口均不会返回 Token；扫码、状态、测试和解绑接口继续要求 `X-API-Key`。生产环境应限制 `/data` 的文件权限并纳入加密备份策略。
 
 ## 首次部署
 
