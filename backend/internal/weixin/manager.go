@@ -474,7 +474,7 @@ func (m *Manager) processInbound(credentials Credentials, message InboundMessage
 		return
 	}
 	now := time.Now()
-	if messageID := strings.TrimSpace(message.MessageID); messageID != "" {
+	if messageID := strings.TrimSpace(string(message.MessageID)); messageID != "" {
 		duplicate, err := m.store.MarkSeen("id:"+messageID, now, 5*time.Minute)
 		if err != nil || duplicate {
 			return

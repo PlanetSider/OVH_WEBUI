@@ -88,4 +88,19 @@ func TestAPIResultStaleAndRateLimit(t *testing.T) {
 	}
 }
 
+func TestClientAcceptsNumericAndStringMessageIDs(t *testing.T) {
+	for _, payload := range []string{
+		`{"ret":0,"msgs":[{"message_id":1234567890123456789}]}`,
+		`{"ret":0,"msgs":[{"message_id":"1234567890123456789"}]}`,
+	} {
+		var response UpdatesResponse
+		if err := json.Unmarshal([]byte(payload), &response); err != nil {
+			t.Fatalf("decode %s: %v", payload, err)
+		}
+		if got := string(response.Messages[0].MessageID); got != "1234567890123456789" {
+			t.Fatalf("message id = %q", got)
+		}
+	}
+}
+
 func intPointer(value int) *int { return &value }

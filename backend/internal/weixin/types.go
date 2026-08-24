@@ -1,6 +1,8 @@
 package weixin
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -76,8 +78,35 @@ type MessageItem struct {
 	TextItem *TextItem `json:"text_item,omitempty"`
 }
 
+// StringOrNumber 兼容 iLink 对标识字段的两种返回形式。
+// 实际接口中 message_id 可能是 JSON 字符串，也可能是 JSON 数字；
+// 使用 json.Number 保留数字原文，避免大整数经过浮点数转换后失真。
+type StringOrNumber string
+
+func (value *StringOrNumber) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) {
+		*value = ""
+		return nil
+	}
+	if len(data) > 0 && data[0] == '"' {
+		var text string
+		if err := json.Unmarshal(data, &text); err != nil {
+			return err
+		}
+		*value = StringOrNumber(text)
+		return nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err != nil {
+		return err
+	}
+	*value = StringOrNumber(number.String())
+	return nil
+}
+
 type InboundMessage struct {
-	MessageID    string        `json:"message_id"`
+	MessageID    StringOrNumber `json:"message_id"`
 	FromUserID   string        `json:"from_user_id"`
 	ToUserID     string        `json:"to_user_id"`
 	MsgType      int           `json:"msg_type"`
