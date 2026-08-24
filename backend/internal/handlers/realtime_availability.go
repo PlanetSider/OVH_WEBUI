@@ -231,7 +231,8 @@ func positiveQueryInt(raw string, fallback, min, max int) int {
 	return value
 }
 
-// RefreshRealtimeAvailabilityOnce 拉取并保存 EU/CA 两个区域，保存完成后立即计算预增服务器。
+// RefreshRealtimeAvailabilityOnce 按区域获取实时可用性和服务器目录，成功后以同一批次
+// 原子保存快照并计算预增服务器；任一上游失败时保留上一次成功结果。
 func RefreshRealtimeAvailabilityOnce(state *app.State) {
 	for _, region := range []string{"eu", "ca"} {
 		if err := refreshRealtimeAvailabilityRegion(context.Background(), state, region); err != nil {
@@ -241,19 +242,46 @@ func RefreshRealtimeAvailabilityOnce(state *app.State) {
 }
 
 func refreshRealtimeAvailabilityRegion(ctx context.Context, state *app.State, region string) error {
-	region, source, ok := normalizeRealtimeRegion(region)
+	region, _, ok := normalizeRealtimeRegion(region)
 	if !ok {
 		return fmt.Errorf("unsupported region %s", region)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	items, err := fetchRealtimeAvailabilityItems(ctx, region)
 	if err != nil {
 		return err
+	}
+	if items == nil {
+		items = []map[string]interface{}{}
+	}
+	knownPlanCodes, comparisonRegion, err := loadComparisonPlanCodes(ctx, state, region)
+	if err != nil {
+		return fmt.Errorf("load %s comparison catalog: %w", region, err)
+	}
+	preadded := filterPreaddedServerItems(items, knownPlanCodes)
+	aggregated := aggregatePreaddedServerItems(region, preadded)
+	serverPlanCodes := sortedKnownPlanCodes(knownPlanCodes)
+	batchAt := time.Now().UTC().Truncate(time.Second)
+	if err := state.DB.SaveRealtimeAvailabilityBatch(region, batchAt, items, serverPlanCodes, aggregated); err != nil {
+		return err
+	}
+	state.Logger.Info(fmt.Sprintf("实时可用性和服务器目录快照已保存 %s: %d 条，已按同一批次严格对比 %s 服务器列表，预增 %d 个型号", region, len(items), comparisonRegion, len(aggregated)), "availability")
+	return nil
+}
+
+func fetchRealtimeAvailabilityItems(ctx context.Context, region string) ([]map[string]interface{}, error) {
+	_, source, ok := normalizeRealtimeRegion(region)
+	if !ok {
+		return nil, fmt.Errorf("unsupported region %s", region)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "OVH-WebUI-Realtime-Availability")
 	resp, err := realtimeAvailabilityClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -262,69 +290,51 @@ func refreshRealtimeAvailabilityRegion(ctx context.Context, state *app.State, re
 		if detail == "" {
 			detail = http.StatusText(resp.StatusCode)
 		}
-		return fmt.Errorf("OVH availability API returned HTTP %d: %s", resp.StatusCode, detail)
+		return nil, fmt.Errorf("OVH availability API returned HTTP %d: %s", resp.StatusCode, detail)
 	}
 	var items []map[string]interface{}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, realtimeAvailabilityMaxBody)).Decode(&items); err != nil {
-		return fmt.Errorf("invalid response from OVH availability API: %w", err)
+		return nil, fmt.Errorf("invalid response from OVH availability API: %w", err)
 	}
-	if items == nil {
-		items = []map[string]interface{}{}
-	}
-	fetchedAt := time.Now().UTC().Truncate(time.Second)
-	if err := state.DB.SaveAvailabilitySnapshot(region, fetchedAt, items); err != nil {
-		return err
-	}
-	knownPlanCodes, comparisonRegion, err := loadComparisonPlanCodes(ctx, state, region)
-	if err != nil {
-		return fmt.Errorf("load %s comparison catalog: %w", region, err)
-	}
-	comparedAt := time.Now().UTC().Truncate(time.Second)
-	if err := updatePreaddedServers(state, region, items, knownPlanCodes, comparedAt); err != nil {
-		return err
-	}
-	state.Logger.Info(fmt.Sprintf("实时可用性已保存 %s: %d 条，已严格对比 %s 服务器列表", region, len(items), comparisonRegion), "availability")
-	return nil
+	return items, nil
 }
 
+// loadComparisonPlanCodes 只读取本批次在线获取的对应区域目录，不回退到历史目录缓存。
 func loadComparisonPlanCodes(ctx context.Context, state *app.State, region string) (map[string]struct{}, string, error) {
 	comparison, ok := comparisonCatalogForRegion(region)
 	if !ok {
 		return nil, "", fmt.Errorf("unsupported region %s", region)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, comparison.URL, nil)
-	if err == nil {
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("User-Agent", "OVH-WebUI-Preadded-Comparison")
-		if resp, requestErr := realtimeAvailabilityClient.Do(req); requestErr == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				raw, readErr := io.ReadAll(io.LimitReader(resp.Body, realtimeAvailabilityMaxBody))
-				if readErr == nil {
-					if planCodes, parseErr := parseComparisonPlanCodes(raw); parseErr == nil {
-						if saveErr := state.DB.UpsertCatalog(comparison.Subsidiary, string(raw)); saveErr != nil {
-							state.Logger.Warn("保存 "+comparison.Label+" 对比目录失败: "+saveErr.Error(), "availability")
-						}
-						return planCodes, comparison.Label, nil
-					}
-				}
-			}
+	if err != nil {
+		return nil, comparison.Label, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "OVH-WebUI-Preadded-Comparison")
+	resp, err := realtimeAvailabilityClient.Do(req)
+	if err != nil {
+		return nil, comparison.Label, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		detail := strings.TrimSpace(string(body))
+		if detail == "" {
+			detail = http.StatusText(resp.StatusCode)
 		}
+		return nil, comparison.Label, fmt.Errorf("OVH catalog API returned HTTP %d: %s", resp.StatusCode, detail)
 	}
-
-	// 对比目录请求失败时只允许回退到同一 subsidiary 的历史缓存，绝不跨区域取目录。
-	raw, _, cached, cacheErr := state.DB.GetCatalog(comparison.Subsidiary)
-	if cacheErr != nil {
-		return nil, comparison.Label, cacheErr
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, realtimeAvailabilityMaxBody))
+	if err != nil {
+		return nil, comparison.Label, fmt.Errorf("read %s catalog: %w", comparison.Label, err)
 	}
-	if !cached {
-		return nil, comparison.Label, fmt.Errorf("%s catalog unavailable and no same-region cache exists", comparison.Label)
+	planCodes, err := parseComparisonPlanCodes(raw)
+	if err != nil {
+		return nil, comparison.Label, err
 	}
-	planCodes, parseErr := parseComparisonPlanCodes([]byte(raw))
-	if parseErr != nil {
-		return nil, comparison.Label, parseErr
+	if saveErr := state.DB.UpsertCatalog(comparison.Subsidiary, string(raw)); saveErr != nil {
+		state.Logger.Warn("保存 "+comparison.Label+" 对比目录失败: "+saveErr.Error(), "availability")
 	}
-	state.Logger.Warn("使用缓存的 "+comparison.Label+" 目录完成预增服务器比对", "availability")
 	return planCodes, comparison.Label, nil
 }
 
@@ -350,9 +360,9 @@ func parseComparisonPlanCodes(raw []byte) (map[string]struct{}, error) {
 	return known, nil
 }
 
-func updatePreaddedServers(state *app.State, region string, items []map[string]interface{}, known map[string]struct{}, comparedAt time.Time) error {
+func filterPreaddedServerItems(items []map[string]interface{}, known map[string]struct{}) []map[string]interface{} {
 	if len(known) == 0 {
-		return fmt.Errorf("comparison catalog for %s is empty", region)
+		return []map[string]interface{}{}
 	}
 	preadded := make([]map[string]interface{}, 0)
 	for _, item := range items {
@@ -366,8 +376,16 @@ func updatePreaddedServers(state *app.State, region string, items []map[string]i
 		}
 		preadded = append(preadded, item)
 	}
-	aggregated := aggregatePreaddedServerItems(region, preadded)
-	return state.DB.ReplacePreaddedServerResults(region, aggregated, comparedAt)
+	return preadded
+}
+
+func sortedKnownPlanCodes(known map[string]struct{}) []string {
+	planCodes := make([]string, 0, len(known))
+	for planCode := range known {
+		planCodes = append(planCodes, planCode)
+	}
+	sort.Strings(planCodes)
+	return planCodes
 }
 
 func aggregatePreaddedServerItems(region string, items []map[string]interface{}) []db.PreaddedServerPageItem {
@@ -590,40 +608,8 @@ func migrateLegacyPreaddedResults(state *app.State) error {
 			return err
 		}
 		if len(rows) == 0 {
-			// 旧表用“0 行”表达“成功比对但没有预增型号”，改用最新快照和同区域缓存补建状态。
-			snapshot, ok, err := state.DB.LatestAvailabilitySnapshot(region)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				continue
-			}
-			comparison, ok := comparisonCatalogForRegion(region)
-			if !ok {
-				continue
-			}
-			rawCatalog, _, cached, err := state.DB.GetCatalog(comparison.Subsidiary)
-			if err != nil {
-				return err
-			}
-			if !cached {
-				continue
-			}
-			knownPlanCodes, err := parseComparisonPlanCodes([]byte(rawCatalog))
-			if err != nil {
-				state.Logger.Warn("迁移预增服务器时跳过无效的 "+comparison.Label+" 缓存: "+err.Error(), "availability")
-				continue
-			}
-			snapshotItems := make([]map[string]interface{}, 0)
-			if err := json.Unmarshal([]byte(snapshot.Data), &snapshotItems); err != nil {
-				state.Logger.Warn("迁移预增服务器时跳过无效的 "+region+" 快照: "+err.Error(), "availability")
-				continue
-			}
-			comparedAt := time.Now().UTC().Truncate(time.Second)
-			if err := updatePreaddedServers(state, region, snapshotItems, knownPlanCodes, comparedAt); err != nil {
-				return err
-			}
-			state.Logger.Info("已使用本地快照和缓存迁移 "+region+" 预增服务器结果", "availability")
+			// 旧表无法证明“实时可用性”和“服务器目录”属于同一批次，
+			// 不再使用历史目录缓存补建结果，等待新的整点批次重新比对。
 			continue
 		}
 		items := make([]map[string]interface{}, 0, len(rows))
@@ -687,16 +673,24 @@ func ensureRealtimeAvailabilitySnapshots(state *app.State) error {
 	if _, err := state.DB.Exec(`DELETE FROM availability_snapshots WHERE fetched_at < ?`, cutoff); err != nil {
 		return err
 	}
+	if _, err := state.DB.Exec(`DELETE FROM server_plan_snapshots WHERE fetched_at < ?`, cutoff); err != nil {
+		return err
+	}
 	if _, err := state.DB.Exec(`DELETE FROM preadded_servers WHERE detected_at < ?`, cutoff); err != nil {
 		return err
 	}
 	for _, region := range []string{"eu", "ca"} {
-		var fetchedAt int64
-		err := state.DB.Get(&fetchedAt, `SELECT COALESCE(MAX(fetched_at), 0) FROM availability_snapshots WHERE region = ?`, region)
+		availabilitySnapshot, availabilityOK, err := state.DB.LatestAvailabilitySnapshot(region)
 		if err != nil {
 			return err
 		}
-		if fetchedAt == 0 || fetchedAt < cutoff {
+		serverPlanSnapshot, serverPlanOK, err := state.DB.LatestServerPlanSnapshot(region)
+		if err != nil {
+			return err
+		}
+		if !availabilityOK || !serverPlanOK ||
+			availabilitySnapshot.FetchedAt < cutoff || serverPlanSnapshot.FetchedAt < cutoff ||
+			availabilitySnapshot.FetchedAt != serverPlanSnapshot.FetchedAt {
 			needsRefresh = true
 		}
 	}

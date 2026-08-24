@@ -150,8 +150,25 @@ CREATE INDEX IF NOT EXISTS idx_availability_snapshots_fetched_at
   ON availability_snapshots(fetched_at DESC);
 
 -- ===========================================
+-- server_plan_snapshots: 整点比对使用的区域服务器目录 planCode 快照
+-- 与 availability_snapshots 使用同一批次时间写入，按区域只保存最近 7 天。
+-- data 保存已经标准化、去重、排序后的 planCode JSON 数组。
+-- ===========================================
+CREATE TABLE IF NOT EXISTS server_plan_snapshots (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  region     TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL, -- Unix epoch ms；与对应实时可用性快照相同
+  item_count INTEGER NOT NULL DEFAULT 0,
+  data       TEXT NOT NULL      -- planCode JSON 数组
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_server_plan_snapshots_region_time
+  ON server_plan_snapshots(region, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_server_plan_snapshots_fetched_at
+  ON server_plan_snapshots(fetched_at DESC);
+
+-- ===========================================
 -- preadded_servers: 实时可用性中存在但服务器目录没有的条目
--- 每次实时可用性快照完成后按区域整表更新。
+-- 旧版兼容明细表；新流程使用同批次原子写入的 preadded_server_results。
 -- ===========================================
 CREATE TABLE IF NOT EXISTS preadded_servers (
   region      TEXT NOT NULL,

@@ -101,6 +101,41 @@ func TestParseComparisonPlanCodesRejectsInvalidOrEmptyCatalog(t *testing.T) {
 	}
 }
 
+func TestFilterPreaddedServerItemsByPlanCode(t *testing.T) {
+	items := []map[string]interface{}{
+		{"planCode": "  RISE-1  "},
+		{"planCode": "new-plan"},
+		{"planCode": ""},
+		{"server": "missing-plan-code"},
+	}
+	known := map[string]struct{}{"rise-1": {}}
+
+	got := filterPreaddedServerItems(items, known)
+	if len(got) != 1 {
+		t.Fatalf("filterPreaddedServerItems() returned %d items, want 1", len(got))
+	}
+	if got[0]["planCode"] != "new-plan" {
+		t.Fatalf("filterPreaddedServerItems() returned %#v, want new-plan", got[0])
+	}
+}
+
+func TestSortedKnownPlanCodes(t *testing.T) {
+	got := sortedKnownPlanCodes(map[string]struct{}{
+		"rise-2": {},
+		"rise-1": {},
+		"game-1": {},
+	})
+	want := []string{"game-1", "rise-1", "rise-2"}
+	if len(got) != len(want) {
+		t.Fatalf("sortedKnownPlanCodes() returned %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Errorf("sortedKnownPlanCodes()[%d] = %q, want %q", index, got[index], want[index])
+		}
+	}
+}
+
 func TestAggregatePreaddedServerItemsGroupsByPlanCode(t *testing.T) {
 	items := []map[string]interface{}{
 		{

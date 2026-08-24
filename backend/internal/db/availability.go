@@ -4,13 +4,23 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 const availabilityRetention = 7 * 24 * time.Hour
 
 type AvailabilitySnapshot struct {
+	Region    string `db:"region"`
+	FetchedAt int64  `db:"fetched_at"`
+	ItemCount int    `db:"item_count"`
+	Data      string `db:"data"`
+}
+
+type ServerPlanSnapshot struct {
 	Region    string `db:"region"`
 	FetchedAt int64  `db:"fetched_at"`
 	ItemCount int    `db:"item_count"`
@@ -102,6 +112,94 @@ func (db *DB) LatestAvailabilitySnapshot(region string) (AvailabilitySnapshot, b
 	return row, true, nil
 }
 
+// LatestServerPlanSnapshot 返回区域最近一次成功保存的服务器目录 planCode 快照。
+func (db *DB) LatestServerPlanSnapshot(region string) (ServerPlanSnapshot, bool, error) {
+	var row ServerPlanSnapshot
+	err := db.Get(&row, `
+		SELECT region, fetched_at, item_count, data
+		FROM server_plan_snapshots
+		WHERE region = ?
+		ORDER BY fetched_at DESC
+		LIMIT 1`, strings.ToLower(strings.TrimSpace(region)))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ServerPlanSnapshot{}, false, nil
+		}
+		return ServerPlanSnapshot{}, false, err
+	}
+	return row, true, nil
+}
+
+// SaveRealtimeAvailabilityBatch 原子保存同一整点批次的实时可用性、服务器目录 planCode
+// 快照和预增服务器结果。任一写入失败时，旧批次和旧比对结果保持不变。
+func (db *DB) SaveRealtimeAvailabilityBatch(
+	region string,
+	fetchedAt time.Time,
+	availabilityItems []map[string]interface{},
+	serverPlanCodes []string,
+	preadded []PreaddedServerPageItem,
+) error {
+	region = strings.ToLower(strings.TrimSpace(region))
+	availabilityRaw, err := json.Marshal(availabilityItems)
+	if err != nil {
+		return fmt.Errorf("marshal availability batch: %w", err)
+	}
+	normalizedPlanCodes := normalizePlanCodes(serverPlanCodes)
+	serverPlanRaw, err := json.Marshal(normalizedPlanCodes)
+	if err != nil {
+		return fmt.Errorf("marshal server plan snapshot: %w", err)
+	}
+
+	tx, err := db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	fetchedMs := fetchedAt.UnixMilli()
+	if _, err := tx.Exec(
+		`INSERT INTO availability_snapshots(region, fetched_at, item_count, data)
+		 VALUES(?, ?, ?, ?)
+		 ON CONFLICT(region, fetched_at) DO UPDATE SET item_count=excluded.item_count, data=excluded.data`,
+		region, fetchedMs, len(availabilityItems), string(availabilityRaw)); err != nil {
+		return fmt.Errorf("insert availability batch: %w", err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO server_plan_snapshots(region, fetched_at, item_count, data)
+		 VALUES(?, ?, ?, ?)
+		 ON CONFLICT(region, fetched_at) DO UPDATE SET item_count=excluded.item_count, data=excluded.data`,
+		region, fetchedMs, len(normalizedPlanCodes), string(serverPlanRaw)); err != nil {
+		return fmt.Errorf("insert server plan snapshot: %w", err)
+	}
+	if err := replacePreaddedServerResultsTx(tx, region, preadded, fetchedMs); err != nil {
+		return err
+	}
+
+	cutoff := time.Now().Add(-availabilityRetention).UnixMilli()
+	if _, err := tx.Exec(`DELETE FROM availability_snapshots WHERE fetched_at < ?`, cutoff); err != nil {
+		return fmt.Errorf("cleanup availability snapshots: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM server_plan_snapshots WHERE fetched_at < ?`, cutoff); err != nil {
+		return fmt.Errorf("cleanup server plan snapshots: %w", err)
+	}
+	return tx.Commit()
+}
+
+func normalizePlanCodes(planCodes []string) []string {
+	seen := make(map[string]struct{}, len(planCodes))
+	for _, planCode := range planCodes {
+		planCode = strings.ToLower(strings.TrimSpace(planCode))
+		if planCode != "" {
+			seen[planCode] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for planCode := range seen {
+		result = append(result, planCode)
+	}
+	sort.Strings(result)
+	return result
+}
+
 // ReplacePreaddedServers 按区域替换当前快照计算出的预增服务器。
 func (db *DB) ReplacePreaddedServers(region string, items []map[string]interface{}, detectedAt time.Time) error {
 	region = strings.ToLower(strings.TrimSpace(region))
@@ -163,6 +261,13 @@ func (db *DB) ReplacePreaddedServerResults(region string, items []PreaddedServer
 		return err
 	}
 	defer tx.Rollback()
+	if err := replacePreaddedServerResultsTx(tx, region, items, comparedAt.UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func replacePreaddedServerResultsTx(tx *sqlx.Tx, region string, items []PreaddedServerPageItem, comparedAtMs int64) error {
 	if _, err := tx.Exec(`DELETE FROM preadded_server_results WHERE region = ?`, region); err != nil {
 		return fmt.Errorf("clear preadded server results: %w", err)
 	}
@@ -183,7 +288,7 @@ func (db *DB) ReplacePreaddedServerResults(region string, items []PreaddedServer
 			return fmt.Errorf("marshal preadded server result %s: %w", planCode, err)
 		}
 		searchText := strings.ToLower(string(raw))
-		if _, err := stmt.Exec(region, strings.ToLower(planCode), comparedAt.UnixMilli(), searchText, string(raw)); err != nil {
+		if _, err := stmt.Exec(region, strings.ToLower(planCode), comparedAtMs, searchText, string(raw)); err != nil {
 			return fmt.Errorf("insert preadded server result %s: %w", planCode, err)
 		}
 	}
@@ -192,10 +297,10 @@ func (db *DB) ReplacePreaddedServerResults(region string, items []PreaddedServer
 		VALUES(?, ?, ?)
 		ON CONFLICT(region) DO UPDATE SET
 			compared_at = excluded.compared_at,
-			item_count = excluded.item_count`, region, comparedAt.UnixMilli(), len(items)); err != nil {
+			item_count = excluded.item_count`, region, comparedAtMs, len(items)); err != nil {
 		return fmt.Errorf("save preadded comparison status: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // ListPreaddedServerResults 读取已经在后台聚合好的页面结果，搜索先在 SQLite 内过滤。
