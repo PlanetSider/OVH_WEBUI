@@ -12,14 +12,17 @@ export interface SettingsConfig {
   iam?: string;
   tgToken?: string;
   tgChatId?: string;
+  tgNotificationsEnabled?: boolean;
   webhookUrl?: string;
   feishuEnabled?: boolean;
+  feishuNotificationsEnabled?: boolean;
   feishuAppId?: string;
   feishuAppSecret?: string;
   feishuDomain?: "feishu" | "lark";
   feishuConnectionMode?: "webhook" | "long_connection";
   feishuVerificationToken?: string;
   feishuEncryptKey?: string;
+  weixinNotificationsEnabled?: boolean;
 }
 
 export interface FeishuBinding {

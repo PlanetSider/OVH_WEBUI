@@ -69,6 +69,9 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if patch.TgWebhookSecret != "" {
 			newCfg.TgWebhookSecret = patch.TgWebhookSecret
 		}
+		if patch.TgNotificationsEnabled != nil {
+			newCfg.TgNotificationsEnabled = patch.TgNotificationsEnabled
+		}
 		if patch.FeishuAppID != "" {
 			newCfg.FeishuAppID = patch.FeishuAppID
 		}
@@ -86,6 +89,12 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		}
 		if patch.FeishuEncryptKey != "" {
 			newCfg.FeishuEncryptKey = patch.FeishuEncryptKey
+		}
+		if patch.FeishuNotificationsEnabled != nil {
+			newCfg.FeishuNotificationsEnabled = patch.FeishuNotificationsEnabled
+		}
+		if patch.WeixinNotificationsEnabled != nil {
+			newCfg.WeixinNotificationsEnabled = patch.WeixinNotificationsEnabled
 		}
 		// App ID + App Secret 即自动启用飞书发送能力；回调安全项单独校验。
 		newCfg.FeishuEnabled = newCfg.FeishuAppID != "" && newCfg.FeishuAppSecret != ""

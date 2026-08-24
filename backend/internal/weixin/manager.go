@@ -132,6 +132,9 @@ func (m *Manager) SendDefault(message string) bool {
 }
 
 func (m *Manager) SendTest(ctx context.Context) error {
+	if !m.state.Config.Get().IsWeixinNotificationsEnabled() {
+		return fmt.Errorf("微信通知已关闭")
+	}
 	credentials := m.currentCredentials()
 	if credentials.UserID == "" {
 		return fmt.Errorf("微信 iLink Bot 尚未连接")

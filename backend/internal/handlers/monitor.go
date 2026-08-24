@@ -30,6 +30,9 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		var body struct {
 			PlanCode           string   `json:"planCode"`
 			Datacenters        []string `json:"datacenters"`
+			Memories           []string `json:"memories"`
+			Storages           []string `json:"storages"`
+			Networks           []string `json:"networks"`
 			NotifyAvailable    *bool    `json:"notifyAvailable"`
 			NotifyUnavailable  *bool    `json:"notifyUnavailable"`
 			AutoOrder          bool     `json:"autoOrder"`
@@ -75,7 +78,8 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		}
 
 		mon.AddSubscription(body.PlanCode, body.Datacenters, notifyAvailable, notifyUnavailable,
-			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID)
+			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID,
+			body.Memories, body.Storages, body.Networks)
 		mon.SaveToDB()
 
 		if !mon.Running() {
@@ -109,6 +113,9 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		var body struct {
 			NotifyAvailable    *bool  `json:"notifyAvailable"`
 			NotifyUnavailable  *bool  `json:"notifyUnavailable"`
+			Memories           []string `json:"memories"`
+			Storages           []string `json:"storages"`
+			Networks           []string `json:"networks"`
 			AutoOrder          bool   `json:"autoOrder"`
 			AutoOrderAccountID string `json:"autoOrderAccountId"`
 		}
@@ -151,7 +158,8 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 				continue
 			}
 			mon.AddSubscription(pc, []string{}, notifyAvailable, notifyUnavailable,
-				server.Name, nil, nil, body.AutoOrder, 1, body.AutoOrderAccountID)
+				server.Name, nil, nil, body.AutoOrder, 1, body.AutoOrderAccountID,
+				body.Memories, body.Storages, body.Networks)
 			added++
 			state.Logger.Debug("批量添加订阅: "+pc+" ("+server.Name+")", "monitor")
 		}
@@ -219,6 +227,9 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		}
 		var body struct {
 			Datacenters        *[]string `json:"datacenters"`
+			Memories           *[]string `json:"memories"`
+			Storages           *[]string `json:"storages"`
+			Networks           *[]string `json:"networks"`
 			NotifyAvailable    *bool     `json:"notifyAvailable"`
 			NotifyUnavailable  *bool     `json:"notifyUnavailable"`
 			AutoOrder          *bool     `json:"autoOrder"`
@@ -241,6 +252,12 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		if body.Datacenters != nil {
 			dcs = *body.Datacenters
 		}
+		memories := sub.Memories
+		if body.Memories != nil { memories = *body.Memories }
+		storages := sub.Storages
+		if body.Storages != nil { storages = *body.Storages }
+		networks := sub.Networks
+		if body.Networks != nil { networks = *body.Networks }
 		notifyA := sub.NotifyAvailable
 		if body.NotifyAvailable != nil {
 			notifyA = *body.NotifyAvailable
@@ -261,7 +278,8 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		if body.AutoOrderAccountID != nil {
 			accID = *body.AutoOrderAccountID
 		}
-		mon.AddSubscription(planCode, dcs, notifyA, notifyU, sub.ServerName, nil, nil, autoOrder, qty, accID)
+		mon.AddSubscription(planCode, dcs, notifyA, notifyU, sub.ServerName, nil, nil, autoOrder, qty, accID,
+			memories, storages, networks)
 		mon.SaveToDB()
 		state.Logger.Info("更新服务器订阅: "+planCode, "monitor")
 		c.JSON(http.StatusOK, gin.H{"status": "success", "message": "订阅已更新", "planCode": planCode})

@@ -41,15 +41,13 @@ func (m *Monitor) checkTGOrStop() bool {
 	}
 	feishuOK := false
 	if FeishuEnabled(m.state) {
-		if _, bindingOK := FeishuDefaultBinding(m.state); bindingOK {
-			_, feishuOK = m.state.FindAccount("")
-		}
+		_, feishuOK = FeishuDefaultBinding(m.state)
 	}
 	tgOK, tgReason := telegram.VerifyConfig(m.state)
 	m.tgCheckMu.Lock()
 	m.lastTGCheck = time.Now()
 	m.tgCheckMu.Unlock()
-	weixinOK := m.state.Weixin != nil && m.state.Weixin.Configured()
+	weixinOK := m.state.Config.Get().IsWeixinNotificationsEnabled() && m.state.Weixin != nil && m.state.Weixin.Configured()
 	if !tgOK && !feishuOK && !weixinOK {
 		m.state.Logger.Error("Telegram、飞书与微信通知均失效，自动停止服务器监控: "+tgReason, "monitor")
 		m.Stop()

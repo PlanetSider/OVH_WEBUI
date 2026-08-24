@@ -45,7 +45,7 @@ func checkTGOrStop(state *app.State) bool {
 	tgCheckMu.Lock()
 	lastTGCheck = time.Now()
 	tgCheckMu.Unlock()
-	weixinOK := state.Weixin != nil && state.Weixin.Configured()
+	weixinOK := state.Config.Get().IsWeixinNotificationsEnabled() && state.Weixin != nil && state.Weixin.Configured()
 	if !tgOK && !feishuOK && !weixinOK {
 		state.Logger.Error("Telegram、飞书与微信通知均失效，自动停止 VPS 监控: "+tgReason, "vps_monitor")
 		Stop(state)

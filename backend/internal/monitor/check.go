@@ -2,12 +2,14 @@ package monitor
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/ovh-webui/server/internal/catalog"
+	"github.com/ovh-webui/server/internal/ovh"
 )
 
 // notification 单次状态变化通知（内部）
@@ -50,6 +52,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	}
 	lastStatus := sub.LastStatus
 	monitoredDCs := sub.Datacenters
+	serverNetwork := m.serverNetwork(planCode)
 
 	m.state.Logger.Info(fmt.Sprintf("订阅 %s - 监控数据中心: %v", planCode, monitoredDCs), "monitor")
 	m.state.Logger.Info(fmt.Sprintf("订阅 %s - 当前发现 %d 个配置组合", planCode, len(currentAvailability)), "monitor")
@@ -57,6 +60,9 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	for configKey, configData := range currentAvailability {
 		memory := configData.Memory
 		storage := configData.Storage
+		if !matchesMonitorFilters(sub, memory, storage, serverNetwork, configData.Options) {
+			continue
+		}
 		configDisplay := memory + " + " + storage
 
 		configTraceID := uuid.NewString()
@@ -79,7 +85,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 		dcStatusMap := map[string]dcStatus{}
 		priceCheckTasks := []string{}
 		for dc, status := range configData.Datacenters {
-			if len(monitoredDCs) > 0 && !containsString(monitoredDCs, dc) {
+			if len(monitoredDCs) > 0 && !monitorDatacenterMatches(monitoredDCs, dc) {
 				continue
 			}
 			statusKey := dc + "|" + configKey
@@ -409,6 +415,9 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	}
 	// 新配置初始化
 	for configKey, configData := range currentAvailability {
+		if !matchesMonitorFilters(sub, configData.Memory, configData.Storage, serverNetwork, configData.Options) {
+			continue
+		}
 		for dc, status := range configData.Datacenters {
 			statusKey := dc + "|" + configKey
 			if _, ok := lastStatus[statusKey]; !ok {
@@ -419,9 +428,69 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	sub.LastStatus = lastStatus
 }
 
-func containsString(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
+// serverNetwork 返回目录中的基础网络规格。配置组合中的网络 addon 仍通过 options 匹配。
+func (m *Monitor) serverNetwork(planCode string) string {
+	m.state.ServerPlansMu.RLock()
+	defer m.state.ServerPlansMu.RUnlock()
+	for _, plan := range m.state.ServerPlans {
+		if plan.PlanCode == planCode {
+			return plan.Bandwidth
+		}
+	}
+	return ""
+}
+
+func normalizeMonitorValue(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, " ", "")
+	value = strings.ReplaceAll(value, "_", "-")
+	return value
+}
+
+func monitorValueMatches(selected, actual string) bool {
+	s, a := normalizeMonitorValue(selected), normalizeMonitorValue(actual)
+	if s == "" || a == "" {
+		return false
+	}
+	return s == a || strings.Contains(a, s) || strings.Contains(s, a)
+}
+
+func monitorFilterMatches(values []string, actual string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	for _, value := range values {
+		if monitorValueMatches(value, actual) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesMonitorFilters(sub *Subscription, memory, storage, network string, options []string) bool {
+	if !monitorFilterMatches(sub.Memories, memory) || !monitorFilterMatches(sub.Storages, storage) {
+		return false
+	}
+	if len(sub.Networks) == 0 {
+		return true
+	}
+	for _, selected := range sub.Networks {
+		if monitorValueMatches(selected, network) {
+			return true
+		}
+		for _, option := range options {
+			if monitorValueMatches(selected, option) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func monitorDatacenterMatches(list []string, actual string) bool {
+	actualAPI := ovh.ConvertDisplayDCToAPIDC(actual)
+	for _, selected := range list {
+		if ovh.ConvertDisplayDCToAPIDC(selected) == actualAPI {
 			return true
 		}
 	}

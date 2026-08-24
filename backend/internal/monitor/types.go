@@ -53,6 +53,9 @@ type CachedMessage struct {
 type Subscription struct {
 	PlanCode           string                 `json:"planCode"`
 	Datacenters        []string               `json:"datacenters"`
+	Memories           []string               `json:"memories,omitempty"`
+	Storages           []string               `json:"storages,omitempty"`
+	Networks           []string               `json:"networks,omitempty"`
 	NotifyAvailable    bool                   `json:"notifyAvailable"`
 	NotifyUnavailable  bool                   `json:"notifyUnavailable"`
 	LastStatus         map[string]string      `json:"lastStatus"`

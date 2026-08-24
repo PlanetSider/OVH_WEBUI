@@ -10,6 +10,7 @@ import {
   Clock,
   Plus,
   Loader2,
+  Pencil,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -37,6 +38,7 @@ import {
   useRemoveQueueItem,
   useClearQueue,
   useCreateQueueItem,
+  useUpdateQueueItem,
   type QueueItem,
 } from "@/hooks/use-queue";
 import { useServers } from "@/hooks/use-servers";
@@ -59,6 +61,11 @@ const OVH_DATACENTERS = OVH_DC_LIST;
 /** 任务重试间隔默认值（秒），与后端 TASK_RETRY_INTERVAL 保持一致 */
 const DEFAULT_RETRY_INTERVAL = 60;
 
+function displayDatacenterCode(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  return OVH_DATACENTERS.find((dc) => dc.code === normalized || dc.apiCode === normalized)?.code || normalized;
+}
+
 function QueuePage() {
   const queue = useQueueList();
   const toggle = useToggleQueueItem();
@@ -70,6 +77,7 @@ function QueuePage() {
   const createOptions = searchParams.get("options") || undefined;
   const [showClearDialog, setShowClearDialog] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [editingItem, setEditingItem] = useState<QueueItem | null>(null);
   const [prefillPlanCode, setPrefillPlanCode] = useState<string>("");
   const [prefillOptions, setPrefillOptions] = useState<string>("");
 
@@ -138,7 +146,8 @@ function QueuePage() {
                   action: q.status === "running" ? "pause" : "resume",
                 })
               }
-              onDelete={() => remove.mutate(q.id)}
+               onDelete={() => remove.mutate(q.id)}
+               onEdit={() => setEditingItem(q)}
             />
           ))}
         </div>
@@ -166,6 +175,7 @@ function QueuePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <QueueEditDialog item={editingItem} open={!!editingItem} onOpenChange={(open) => !open && setEditingItem(null)} />
 
       <CreateQueueDialog
         open={showCreateDialog}
@@ -559,14 +569,122 @@ function CreateQueueDialog({
   );
 }
 
+function QueueEditDialog({
+  item,
+  open,
+  onOpenChange,
+}: {
+  item: QueueItem | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const servers = useServers();
+  const update = useUpdateQueueItem();
+  const [accountId, setAccountId] = useState("");
+  const [planCode, setPlanCode] = useState("");
+  const [datacenters, setDatacenters] = useState<string[]>([]);
+  const [quantity, setQuantity] = useState("1");
+  const [retryInterval, setRetryInterval] = useState(String(DEFAULT_RETRY_INTERVAL));
+  const [options, setOptions] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!open || !item) return;
+    setAccountId(item.accountId);
+    setPlanCode(item.planCode);
+    setDatacenters([displayDatacenterCode(item.datacenter)]);
+    setQuantity("1");
+    setRetryInterval(String(item.retryInterval || DEFAULT_RETRY_INTERVAL));
+    setOptions(item.options || []);
+  }, [open, item]);
+
+  const server = useMemo(() => (servers.data || []).find((s) => s.planCode === planCode), [servers.data, planCode]);
+  const grouped = useMemo(() => groupOptions(server?.availableOptions || []), [server?.availableOptions]);
+  const optionGroups = [
+    ["memory", "内存"],
+    ["systemStorage", "系统盘"],
+    ["storage", "硬盘"],
+    ["bandwidth", "网络"],
+  ] as const;
+
+  const toggleOption = (value: string) => setOptions((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!item || !accountId || !planCode.trim() || datacenters.length === 0) {
+      toast.error("请填写账户、型号并至少选择一个数据中心");
+      return;
+    }
+    await update.mutateAsync({
+      id: item.id,
+      account_id: accountId,
+      planCode: planCode.trim(),
+      datacenters,
+      quantity: Math.max(1, Number(quantity) || 1),
+      retryInterval: Math.max(1, Number(retryInterval) || DEFAULT_RETRY_INTERVAL),
+      options,
+    });
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[95vw] sm:max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle>编辑抢购任务</DialogTitle>
+          <DialogDescription>修改账户、配置组合、数据中心、数量和重试间隔，保存后任务会从头开始重试。</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+          <div className="space-y-4 overflow-y-auto pr-1">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1.5">OVH 账户 *</label>
+              <AccountSelect value={accountId} onChange={setAccountId} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1.5">服务器型号 *</label>
+              <PlanCodeCombobox value={planCode} onChange={(value) => { setPlanCode(value); setOptions([]); }} servers={servers.data || []} />
+            </div>
+            {optionGroups.map(([key, label]) => {
+              const choices = grouped[key];
+              if (choices.length === 0) return null;
+              return (
+                <div key={key}>
+                  <div className="text-xs font-medium text-muted-foreground mb-1.5">{label}（可多选）</div>
+                  <div className="flex flex-wrap gap-2">
+                    {choices.map((choice) => {
+                      const selected = options.includes(choice.value);
+                      return <button key={choice.value} type="button" onClick={() => toggleOption(choice.value)} className={`rounded-full border px-3 py-1.5 text-xs ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-muted"}`}>{choice.label || choice.value}</button>;
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+            <div>
+              <div className="flex items-center justify-between mb-1.5"><label className="text-xs font-medium text-muted-foreground">数据中心 *</label><Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setDatacenters([])}>清空</Button></div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 rounded-xl border border-border p-3">
+                {OVH_DATACENTERS.map((dc) => { const selected = datacenters.includes(dc.code); return <label key={dc.code} className="flex items-center gap-2 text-xs cursor-pointer"><Checkbox checked={selected} onCheckedChange={() => setDatacenters((current) => selected ? current.filter((code) => code !== dc.code) : [...current, dc.code])} /><span className="font-mono">{dc.code.toUpperCase()}</span></label>; })}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div><label className="block text-xs font-medium text-muted-foreground mb-1.5">每个数据中心数量</label><Input type="number" min={1} max={100} value={quantity} onChange={(event) => setQuantity(event.target.value)} /></div>
+              <div><label className="block text-xs font-medium text-muted-foreground mb-1.5">重试间隔（秒）</label><Input type="number" min={1} value={retryInterval} onChange={(event) => setRetryInterval(event.target.value)} /></div>
+            </div>
+          </div>
+          <DialogFooter className="mt-4 border-t border-border pt-4"><Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={update.isPending}>取消</Button><Button type="submit" disabled={update.isPending}>{update.isPending ? "保存中…" : "保存修改"}</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function QueueRow({
   item,
   onToggle,
   onDelete,
+  onEdit,
 }: {
   item: QueueItem;
   onToggle: () => void;
   onDelete: () => void;
+  onEdit: () => void;
 }) {
   const chip = (() => {
     if (item.status === "running")
@@ -623,6 +741,9 @@ function QueueRow({
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {chip}
+          <Button variant="ghost" size="icon" onClick={onEdit} aria-label="编辑">
+            <Pencil className="w-4 h-4" />
+          </Button>
           {item.status !== "completed" && item.status !== "failed" && (
             <Button variant="ghost" size="icon" onClick={onToggle} aria-label={item.status === "running" ? "暂停" : "恢复"}>
               {item.status === "running" ? <PauseCircle className="w-4 h-4" /> : <PlayCircle className="w-4 h-4" />}

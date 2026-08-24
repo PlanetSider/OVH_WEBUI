@@ -142,6 +142,7 @@ func main() {
 		api.DELETE("/queue/clear", handlers.ClearQueue(state))
 		api.DELETE("/queue/:id", handlers.RemoveQueueItem(state))
 		api.PUT("/queue/:id/status", handlers.UpdateQueueStatus(state))
+		api.PUT("/queue/:id", handlers.UpdateQueueItem(state))
 
 		// Purchase history
 		api.GET("/purchase-history", handlers.GetPurchaseHistory(state))

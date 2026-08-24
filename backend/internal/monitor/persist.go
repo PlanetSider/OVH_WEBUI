@@ -37,6 +37,9 @@ func toDBSub(s *Subscription) types.Subscription {
 	return types.Subscription{
 		PlanCode:           s.PlanCode,
 		Datacenters:        dcs,
+		Memories:           cloneStrings(s.Memories),
+		Storages:           cloneStrings(s.Storages),
+		Networks:           cloneStrings(s.Networks),
 		NotifyAvailable:    s.NotifyAvailable,
 		NotifyUnavailable:  s.NotifyUnavailable,
 		LastStatus:         last,
@@ -72,6 +75,9 @@ func fromDBSub(s types.Subscription) *Subscription {
 	return &Subscription{
 		PlanCode:           s.PlanCode,
 		Datacenters:        dcs,
+		Memories:           cloneStrings(s.Memories),
+		Storages:           cloneStrings(s.Storages),
+		Networks:           cloneStrings(s.Networks),
 		NotifyAvailable:    s.NotifyAvailable,
 		NotifyUnavailable:  s.NotifyUnavailable,
 		LastStatus:         last,

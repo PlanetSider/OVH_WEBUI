@@ -10,10 +10,13 @@ type Config struct {
 	Endpoint    string `json:"endpoint"`
 	TgToken     string `json:"tgToken"`
 	TgChatID    string `json:"tgChatId"`
+	// 通知开关使用指针以兼容旧配置：字段缺失时按开启处理，显式 false 才关闭。
+	TgNotificationsEnabled      *bool `json:"tgNotificationsEnabled,omitempty"`
 	// TgWebhookSecret 用于 setWebhook(secret_token) + 校验 X-Telegram-Bot-Api-Secret-Token。
 	// 防止任意人伪造 POST /api/telegram/webhook 入队。
 	TgWebhookSecret string `json:"tgWebhookSecret,omitempty"`
 	FeishuEnabled bool `json:"feishuEnabled,omitempty"`
+	FeishuNotificationsEnabled *bool `json:"feishuNotificationsEnabled,omitempty"`
 	FeishuAppID string `json:"feishuAppId,omitempty"`
 	FeishuAppSecret string `json:"feishuAppSecret,omitempty"`
 	FeishuDomain string `json:"feishuDomain,omitempty"`
@@ -22,8 +25,25 @@ type Config struct {
 	FeishuConnectionMode string `json:"feishuConnectionMode,omitempty"`
 	FeishuVerificationToken string `json:"feishuVerificationToken,omitempty"`
 	FeishuEncryptKey string `json:"feishuEncryptKey,omitempty"`
+	WeixinNotificationsEnabled *bool `json:"weixinNotificationsEnabled,omitempty"`
 	IAM             string `json:"iam"`
 	Zone            string `json:"zone"`
+}
+
+func notificationsEnabled(flag *bool) bool {
+	return flag == nil || *flag
+}
+
+func (c Config) IsTelegramNotificationsEnabled() bool {
+	return notificationsEnabled(c.TgNotificationsEnabled)
+}
+
+func (c Config) IsFeishuNotificationsEnabled() bool {
+	return notificationsEnabled(c.FeishuNotificationsEnabled)
+}
+
+func (c Config) IsWeixinNotificationsEnabled() bool {
+	return notificationsEnabled(c.WeixinNotificationsEnabled)
 }
 
 // FeishuBinding 记录全局飞书通知接收人；AccountID 固定为 default。
@@ -36,11 +56,15 @@ type FeishuBinding struct {
 
 // DefaultConfig 与 Python 端默认值保持一致
 func DefaultConfig() Config {
+	trueValue := true
 	return Config{
 		Endpoint: "ovh-eu",
 		IAM:      "go-ovh-ie",
 		Zone:     "IE",
 		FeishuConnectionMode: "webhook",
+		TgNotificationsEnabled: &trueValue,
+		FeishuNotificationsEnabled: &trueValue,
+		WeixinNotificationsEnabled: &trueValue,
 	}
 }
 
@@ -169,6 +193,9 @@ type SubscriptionHistoryEntry struct {
 type Subscription struct {
 	PlanCode            string                     `json:"planCode"`
 	Datacenters         []string                   `json:"datacenters"`
+	Memories            []string                   `json:"memories,omitempty"`
+	Storages            []string                   `json:"storages,omitempty"`
+	Networks            []string                   `json:"networks,omitempty"`
 	NotifyAvailable     bool                       `json:"notifyAvailable"`
 	NotifyUnavailable   bool                       `json:"notifyUnavailable"`
 	LastStatus          map[string]string          `json:"lastStatus"`

@@ -49,7 +49,7 @@ func FeishuResetToken() {
 
 func FeishuEnabled(state *app.State) bool {
 	cfg := state.Config.Get()
-	return cfg.FeishuEnabled && cfg.FeishuAppID != "" && cfg.FeishuAppSecret != ""
+	return cfg.FeishuEnabled && cfg.IsFeishuNotificationsEnabled() && cfg.FeishuAppID != "" && cfg.FeishuAppSecret != ""
 }
 
 func FeishuVerifyRequest(state *app.State, body []byte, token, appID, timestamp, nonce, signature string) bool {
@@ -500,7 +500,7 @@ func NotificationConfigured(state *app.State, accountID string) (bool, string) {
 			return true, ""
 		}
 	}
-	if state.Weixin != nil && state.Weixin.Configured() {
+	if state.Config.Get().IsWeixinNotificationsEnabled() && state.Weixin != nil && state.Weixin.Configured() {
 		return true, ""
 	}
 	if FeishuEnabled(state) {
@@ -511,7 +511,7 @@ func NotificationConfigured(state *app.State, accountID string) (bool, string) {
 
 // SendWeixinNotification 将同一份通知文案发送到全局绑定的微信 iLink 用户。
 func SendWeixinNotification(state *app.State, message string) bool {
-	return state.Weixin != nil && state.Weixin.SendDefault(message)
+	return state.Config.Get().IsWeixinNotificationsEnabled() && state.Weixin != nil && state.Weixin.SendDefault(message)
 }
 
 // FeishuSendDefaultNotification 向全局飞书接收人发送通知。

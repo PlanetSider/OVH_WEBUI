@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/common/Skeleton";
 import { Chip } from "@/components/common/Chip";
@@ -176,7 +177,7 @@ function SettingsPage() {
             ) : active === "feishu" ? (
               <FeishuSection form={form} set={set} onSave={onSave} saving={save.isPending} />
             ) : active === "weixin" ? (
-              <WeixinSection />
+              <WeixinSection form={form} set={set} />
             ) : (
               <CacheSection />
             )}
@@ -308,7 +309,13 @@ function FeishuSection({
             <h3 className="text-[13px] font-medium">启用飞书</h3>
             <p className="text-[11px] text-muted-foreground mt-1">只填写 App ID 和 App Secret 即可完成飞书通知配置；Verification Token、Encrypt Key 为事件回调和按钮交互的可选安全项。</p>
           </div>
-          <Chip tone={form.feishuEnabled ? "success" : "warning"}>{form.feishuEnabled ? "已启用" : "待配置"}</Chip>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-xs cursor-pointer">
+              <Checkbox checked={form.feishuNotificationsEnabled !== false} onCheckedChange={(value) => set("feishuNotificationsEnabled", value === true)} />
+              开启飞书通知
+            </label>
+            <Chip tone={form.feishuEnabled ? "success" : "warning"}>{form.feishuEnabled ? "已启用" : "待配置"}</Chip>
+          </div>
         </div>
         <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
           <div className="flex items-start justify-between gap-3">
@@ -386,7 +393,10 @@ function maskIdentifier(value?: string) {
   return `${text.slice(0, 6)}…${text.slice(-4)}`;
 }
 
-function WeixinSection() {
+function WeixinSection({ form, set }: {
+  form: SettingsConfig;
+  set: <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => void;
+}) {
   const status = useWeixinStatus();
   const refetchWeixinStatus = status.refetch;
   const test = useSendWeixinTest();
@@ -469,9 +479,15 @@ function WeixinSection() {
             <h3 className="text-[13px] font-medium">连接状态</h3>
             <p className="text-[11px] text-muted-foreground mt-1">通过微信官方 iLink Bot 长轮询连接，不需要公网 Webhook，也无需手填 Token。</p>
           </div>
-          <Chip tone={connected && status.data?.polling ? "success" : connected ? "warning" : "warning"}>
-            {connected ? (status.data?.polling ? "已连接" : "已配置") : "未连接"}
-          </Chip>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-xs cursor-pointer">
+              <Checkbox checked={form.weixinNotificationsEnabled !== false} onCheckedChange={(value) => set("weixinNotificationsEnabled", value === true)} />
+              开启微信通知
+            </label>
+            <Chip tone={connected && status.data?.polling ? "success" : connected ? "warning" : "warning"}>
+              {connected ? (status.data?.polling ? "已连接" : "已配置") : "未连接"}
+            </Chip>
+          </div>
         </div>
 
         {connected ? (
@@ -535,7 +551,7 @@ function TelegramSection({
   saving,
 }: {
   form: SettingsConfig;
-  set: (k: keyof SettingsConfig, v: string) => void;
+  set: <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => void;
   onSaveToken: () => Promise<void>;
   saving: boolean;
 }) {
@@ -595,6 +611,16 @@ function TelegramSection({
 
   return (
     <Section title="Telegram 通知">
+      <div className="flex items-center justify-between rounded-2xl border border-border p-4">
+        <div>
+          <div className="text-[13px] font-medium">通知通道</div>
+          <p className="text-[11px] text-muted-foreground mt-1">关闭后不会发送库存、监控和系统测试通知，但不会清除 Bot 配置。</p>
+        </div>
+        <label className="flex items-center gap-2 text-xs cursor-pointer">
+          <Checkbox checked={form.tgNotificationsEnabled !== false} onCheckedChange={(value) => set("tgNotificationsEnabled", value === true)} />
+          开启 Telegram 通知
+        </label>
+      </div>
       <Field label="Bot Token" hint="保存设置后写入后端；Webhook 需再点下方「注册 Webhook」才会生效">
         <Input
           type="password"

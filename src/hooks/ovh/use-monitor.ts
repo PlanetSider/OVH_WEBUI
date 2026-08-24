@@ -7,6 +7,9 @@ export interface MonitorSubscription {
   planCode: string;
   serverName?: string;
   datacenters: string[];
+  memories: string[];
+  storages: string[];
+  networks: string[];
   notifyAvailable: boolean;
   notifyUnavailable: boolean;
   autoOrder?: boolean;

@@ -81,6 +81,28 @@ export function useCreateQueueItem() {
   });
 }
 
+/** 编辑已有抢购任务；选择多个数据中心或数量大于 1 时由后端补齐任务副本。 */
+export function useUpdateQueueItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...payload }: {
+      id: string;
+      account_id: string;
+      planCode: string;
+      datacenters: string[];
+      options?: string[];
+      retryInterval?: number;
+      quantity?: number;
+    }) => (await api.put(`/queue/${encodeURIComponent(id)}`, payload)).data as { created?: number },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.queue.list() });
+      qc.invalidateQueries({ queryKey: qk.stats() });
+      toast.success("任务已更新");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || e.response?.data?.message || "更新任务失败"),
+  });
+}
+
 /** 切换任务状态（暂停 / 恢复） */
 export function useToggleQueueItem() {
   const qc = useQueryClient();

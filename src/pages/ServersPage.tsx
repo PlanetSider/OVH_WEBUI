@@ -14,7 +14,7 @@ import { StatusDot } from "@/components/common/StatusDot";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { useServers, useAddToMonitor, type ServerPlan } from "@/hooks/use-servers";
+import { useServers, type ServerPlan } from "@/hooks/use-servers";
 import { useAccountInfo } from "@/hooks/use-account";
 import { useCreateQueueItem } from "@/hooks/use-queue";
 import { useCacheInfo } from "@/hooks/use-settings";
@@ -40,6 +40,7 @@ import { groupOptions, type OptionGroupKey } from "@/lib/option-groups";
 import { OptionGroupSection } from "@/components/common/OptionGroupSection";
 import { OVH_DATACENTERS, lookupDcStatus } from "@/lib/datacenters";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
+import { MonitorSubscriptionDialog } from "@/components/common/MonitorSubscriptionDialog";
 
 /** 服务器列表：卡片网格 + 详情弹窗 */
 /** localStorage key：用户手动选过的 subsidiary（持久化跨刷新） */
@@ -290,7 +291,7 @@ function ServerCard({
   price?: PriceInfo;
   onView: () => void;
 }) {
-  const addMon = useAddToMonitor();
+  const [monitorOpen, setMonitorOpen] = useState(false);
 
   // 静态可用性兜底（首次渲染、实时还没回来时也有数据）
   const staticDcMap = useMemo(() => {
@@ -370,14 +371,7 @@ function ServerCard({
             variant="outline"
             size="sm"
             className="flex-1"
-            disabled={addMon.isPending}
-            onClick={() =>
-              addMon.mutate({
-                planCode: server.planCode,
-                datacenters: OVH_DATACENTERS.map((dc) => dc.code),
-                serverName: server.name,
-              })
-            }
+            onClick={() => setMonitorOpen(true)}
           >
             <Bell className="w-3.5 h-3.5" />
             监控
@@ -388,6 +382,11 @@ function ServerCard({
           </Button>
         </div>
       </CardContent>
+      <MonitorSubscriptionDialog
+        open={monitorOpen}
+        onOpenChange={setMonitorOpen}
+        initialPlanCode={server.planCode}
+      />
     </Card>
   );
 }
@@ -424,9 +423,9 @@ function DetailContent({
   subsidiary: string;
   onClose: () => void;
 }) {
-  const addMon = useAddToMonitor();
   const create = useCreateQueueItem();
   const defaultAcc = useDefaultAccount();
+  const [monitorOpen, setMonitorOpen] = useState(false);
 
   // 抢购表单状态：DC 多选 + 数量 + 重试间隔 + 账户
   const [accountId, setAccountId] = useState("");
@@ -677,17 +676,11 @@ function DetailContent({
         </Button>
         <Button
           variant="outline"
-          disabled={addMon.isPending || create.isPending}
-          onClick={() =>
-            addMon.mutate({
-              planCode: server.planCode,
-              datacenters: OVH_DATACENTERS.map((dc) => dc.code),
-              serverName: server.name,
-            })
-          }
+          disabled={create.isPending}
+          onClick={() => setMonitorOpen(true)}
         >
           <Bell className="w-4 h-4" />
-          加入监控
+          配置监控
         </Button>
         <Button
           disabled={selectedDCs.length === 0 || create.isPending}
@@ -730,6 +723,11 @@ function DetailContent({
           )}
         </Button>
       </DialogFooter>
+      <MonitorSubscriptionDialog
+        open={monitorOpen}
+        onOpenChange={setMonitorOpen}
+        initialPlanCode={server.planCode}
+      />
     </>
   );
 }

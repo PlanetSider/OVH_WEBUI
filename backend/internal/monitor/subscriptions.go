@@ -11,7 +11,7 @@ import (
 // autoOrderAccountID:auto_order 触发时用哪个账户下单;空 = 只通知不下单
 func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyAvailable, notifyUnavailable bool,
 	serverName string, lastStatus map[string]string, history []HistoryEntry, autoOrder bool, quantity int,
-	autoOrderAccountID string) {
+	autoOrderAccountID string, memories, storages, networks []string) {
 
 	m.subsMu.Lock()
 	defer m.subsMu.Unlock()
@@ -23,6 +23,9 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 				datacenters = []string{}
 			}
 			s.Datacenters = datacenters
+			s.Memories = cloneStrings(memories)
+			s.Storages = cloneStrings(storages)
+			s.Networks = cloneStrings(networks)
 			s.NotifyAvailable = notifyAvailable
 			s.NotifyUnavailable = notifyUnavailable
 			s.AutoOrder = autoOrder
@@ -55,6 +58,9 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 	sub := &Subscription{
 		PlanCode:           planCode,
 		Datacenters:        datacenters,
+		Memories:           cloneStrings(memories),
+		Storages:           cloneStrings(storages),
+		Networks:           cloneStrings(networks),
 		NotifyAvailable:    notifyAvailable,
 		NotifyUnavailable:  notifyUnavailable,
 		LastStatus:         lastStatus,
@@ -82,6 +88,13 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 		dcsStr = fmt.Sprintf("%v", datacenters)
 	}
 	m.state.Logger.Info(fmt.Sprintf("添加订阅: %s, 数据中心: %s", displayName, dcsStr), "monitor")
+}
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return append([]string{}, values...)
 }
 
 // RemoveSubscription 对应 Python: remove_subscription

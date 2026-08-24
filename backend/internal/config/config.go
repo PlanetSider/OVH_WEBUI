@@ -40,6 +40,19 @@ func New(database *db.DB) *Store {
 	if s.cfg.FeishuConnectionMode == "" {
 		s.cfg.FeishuConnectionMode = "webhook"
 	}
+	// 旧版本配置没有通知开关字段，缺失/为 null 时默认开启；只有显式 false 才关闭。
+	if s.cfg.TgNotificationsEnabled == nil {
+		v := true
+		s.cfg.TgNotificationsEnabled = &v
+	}
+	if s.cfg.FeishuNotificationsEnabled == nil {
+		v := true
+		s.cfg.FeishuNotificationsEnabled = &v
+	}
+	if s.cfg.WeixinNotificationsEnabled == nil {
+		v := true
+		s.cfg.WeixinNotificationsEnabled = &v
+	}
 	return s
 }
 

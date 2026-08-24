@@ -95,6 +95,9 @@ CREATE TABLE IF NOT EXISTS servers (
 CREATE TABLE IF NOT EXISTS monitor_subscriptions (
   plan_code           TEXT PRIMARY KEY,
   datacenters         TEXT NOT NULL DEFAULT '[]',  -- JSON []string
+  memories            TEXT NOT NULL DEFAULT '[]',  -- JSON []string; empty = all
+  storages            TEXT NOT NULL DEFAULT '[]',  -- JSON []string; empty = all
+  networks            TEXT NOT NULL DEFAULT '[]',  -- JSON []string; empty = all
   notify_available    INTEGER NOT NULL DEFAULT 1,
   notify_unavailable  INTEGER NOT NULL DEFAULT 0,
   last_status         TEXT NOT NULL DEFAULT '{}',  -- JSON map[string]string
@@ -102,7 +105,8 @@ CREATE TABLE IF NOT EXISTS monitor_subscriptions (
   history             TEXT NOT NULL DEFAULT '[]',  -- JSON []HistoryEntry
   server_name         TEXT NOT NULL DEFAULT '',
   auto_order          INTEGER NOT NULL DEFAULT 0,
-  quantity            INTEGER NOT NULL DEFAULT 1
+  quantity            INTEGER NOT NULL DEFAULT 1,
+  auto_order_account_id TEXT NOT NULL DEFAULT ''
 );
 
 -- ===========================================

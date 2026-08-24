@@ -10,6 +10,9 @@ import (
 type monitorSubRow struct {
 	PlanCode           string `db:"plan_code"`
 	DatacentersJSON    string `db:"datacenters"`
+	MemoriesJSON       string `db:"memories"`
+	StoragesJSON       string `db:"storages"`
+	NetworksJSON       string `db:"networks"`
 	NotifyAvailable    int    `db:"notify_available"`
 	NotifyUnavailable  int    `db:"notify_unavailable"`
 	LastStatusJSON     string `db:"last_status"`
@@ -27,6 +30,15 @@ func rowToMonitorSub(r monitorSubRow) types.Subscription {
 	if dcs == nil {
 		dcs = []string{}
 	}
+	memories := []string{}
+	storages := []string{}
+	networks := []string{}
+	_ = json.Unmarshal([]byte(r.MemoriesJSON), &memories)
+	_ = json.Unmarshal([]byte(r.StoragesJSON), &storages)
+	_ = json.Unmarshal([]byte(r.NetworksJSON), &networks)
+	if memories == nil { memories = []string{} }
+	if storages == nil { storages = []string{} }
+	if networks == nil { networks = []string{} }
 	last := map[string]string{}
 	_ = json.Unmarshal([]byte(r.LastStatusJSON), &last)
 	hist := []types.SubscriptionHistoryEntry{}
@@ -34,6 +46,9 @@ func rowToMonitorSub(r monitorSubRow) types.Subscription {
 	return types.Subscription{
 		PlanCode:           r.PlanCode,
 		Datacenters:        dcs,
+		Memories:           memories,
+		Storages:           storages,
+		Networks:           networks,
 		NotifyAvailable:    r.NotifyAvailable == 1,
 		NotifyUnavailable:  r.NotifyUnavailable == 1,
 		LastStatus:         last,
@@ -50,6 +65,15 @@ func monitorSubToRow(s types.Subscription) (monitorSubRow, error) {
 	if s.Datacenters == nil {
 		s.Datacenters = []string{}
 	}
+	if s.Memories == nil {
+		s.Memories = []string{}
+	}
+	if s.Storages == nil {
+		s.Storages = []string{}
+	}
+	if s.Networks == nil {
+		s.Networks = []string{}
+	}
 	if s.LastStatus == nil {
 		s.LastStatus = map[string]string{}
 	}
@@ -60,6 +84,12 @@ func monitorSubToRow(s types.Subscription) (monitorSubRow, error) {
 	if err != nil {
 		return monitorSubRow{}, err
 	}
+	memoriesJSON, err := json.Marshal(s.Memories)
+	if err != nil { return monitorSubRow{}, err }
+	storagesJSON, err := json.Marshal(s.Storages)
+	if err != nil { return monitorSubRow{}, err }
+	networksJSON, err := json.Marshal(s.Networks)
+	if err != nil { return monitorSubRow{}, err }
 	lastJSON, err := json.Marshal(s.LastStatus)
 	if err != nil {
 		return monitorSubRow{}, err
@@ -77,6 +107,9 @@ func monitorSubToRow(s types.Subscription) (monitorSubRow, error) {
 	return monitorSubRow{
 		PlanCode:           s.PlanCode,
 		DatacentersJSON:    string(dcsJSON),
+		MemoriesJSON:       string(memoriesJSON),
+		StoragesJSON:       string(storagesJSON),
+		NetworksJSON:       string(networksJSON),
 		NotifyAvailable:    bi(s.NotifyAvailable),
 		NotifyUnavailable:  bi(s.NotifyUnavailable),
 		LastStatusJSON:     string(lastJSON),
@@ -110,13 +143,16 @@ func (db *DB) UpsertMonitorSubscription(s types.Subscription) error {
 	}
 	_, err = db.NamedExec(`
 		INSERT INTO monitor_subscriptions
-		(plan_code, datacenters, notify_available, notify_unavailable, last_status,
-		 created_at, history, server_name, auto_order, quantity)
+		(plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status,
+		 created_at, history, server_name, auto_order, quantity, auto_order_account_id)
 		VALUES
-		(:plan_code, :datacenters, :notify_available, :notify_unavailable, :last_status,
-		 :created_at, :history, :server_name, :auto_order, :quantity)
+		(:plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status,
+		 :created_at, :history, :server_name, :auto_order, :quantity, :auto_order_account_id)
 		ON CONFLICT(plan_code) DO UPDATE SET
 		  datacenters        = excluded.datacenters,
+		  memories           = excluded.memories,
+		  storages           = excluded.storages,
+		  networks           = excluded.networks,
 		  notify_available   = excluded.notify_available,
 		  notify_unavailable = excluded.notify_unavailable,
 		  last_status        = excluded.last_status,
@@ -149,10 +185,10 @@ func (db *DB) ReplaceMonitorSubscriptions(subs []types.Subscription) error {
 		}
 		_, err = tx.NamedExec(`
 			INSERT INTO monitor_subscriptions
-			(plan_code, datacenters, notify_available, notify_unavailable, last_status,
+			(plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status,
 			 created_at, history, server_name, auto_order, quantity, auto_order_account_id)
 			VALUES
-			(:plan_code, :datacenters, :notify_available, :notify_unavailable, :last_status,
+			(:plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status,
 			 :created_at, :history, :server_name, :auto_order, :quantity, :auto_order_account_id)
 		`, r)
 		if err != nil {

@@ -200,7 +200,8 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID
 	state.ServerPlansMu.RUnlock()
 
 	// 通知数据源始终是当前默认账户；autoOrder=false，不会自动购买。
-	mon.AddSubscription(planCode, dcs, true, false, serverName, nil, nil, false, 0, accountID)
+	mon.AddSubscription(planCode, dcs, true, false, serverName, nil, nil, false, 0, accountID,
+		[]string{}, []string{}, []string{})
 	mon.SaveToDB()
 	if !mon.Running() {
 		mon.Start()

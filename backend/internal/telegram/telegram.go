@@ -19,6 +19,9 @@ import (
 // 返回 (ok, 失败原因)。所有失败原因都是面向终端用户的中文短句。
 func VerifyConfig(state *app.State) (bool, string) {
 	cfg := state.Config.Get()
+	if !cfg.IsTelegramNotificationsEnabled() {
+		return false, "Telegram 通知已关闭"
+	}
 	token := strings.TrimSpace(cfg.TgToken)
 	chatID := strings.TrimSpace(cfg.TgChatID)
 	if token == "" {
@@ -68,6 +71,10 @@ func VerifyConfig(state *app.State) (bool, string) {
 // SendMessage 对应 Python: send_telegram_msg
 func SendMessage(state *app.State, message string, replyMarkup map[string]interface{}) bool {
 	cfg := state.Config.Get()
+	if !cfg.IsTelegramNotificationsEnabled() {
+		state.Logger.Info("Telegram消息未发送: 通知通道已关闭", "telegram")
+		return false
+	}
 	if cfg.TgToken == "" {
 		state.Logger.Warn("Telegram消息未发送: Bot Token未在config中设置", "")
 		return false
