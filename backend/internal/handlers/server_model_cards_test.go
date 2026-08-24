@@ -23,12 +23,12 @@ func testServerPlan() types.ServerPlan {
 			{Datacenter: "ynm", Availability: "24H"},
 		},
 		DefaultOptions: []types.ServerOption{
-			{Value: "ram-32g-ecc"},
+			{Value: "ram-32g-ecc-2133"},
 			{Value: "bandwidth-250"},
 		},
 		AvailableOptions: []types.ServerOption{
-			{Label: "64 GB", Value: "ram-64g-ecc", Family: "memory"},
-			{Label: "32 GB", Value: "ram-32g-ecc", Family: "memory"},
+			{Label: "64 GB", Value: "ram-64g-ecc-2400", Family: "memory"},
+			{Label: "32 GB", Value: "ram-32g-ecc-2133", Family: "memory"},
 			{Label: "500 Mbps", Value: "bandwidth-500", Family: "bandwidth"},
 			{Label: "250 Mbps", Value: "bandwidth-250", Family: "bandwidth"},
 		},
@@ -65,13 +65,22 @@ func TestLooksLikeServerModelQuery(t *testing.T) {
 
 func TestServerPlanSectionsDefaultsAndDatacenters(t *testing.T) {
 	sections := serverPlanSections(nil, testServerPlan())
-	if got := strings.Join(sections[1].Lines, "\n"); !strings.HasPrefix(got, "● 32 GB（默认）") {
+	if sections[1].Title != "内存 / 频率" {
+		t.Fatalf("内存分区标题错误: %q", sections[1].Title)
+	}
+	if got := strings.Join(sections[1].Lines, "\n"); !strings.HasPrefix(got, "● 32 GB · ECC-2133（默认）") {
 		t.Fatalf("默认内存应优先并标记: %q", got)
+	}
+	if sections[2].Title != "存储 / 数据盘" || sections[3].Title != "带宽 / 网络" {
+		t.Fatalf("存储/带宽分区标题错误: %q, %q", sections[2].Title, sections[3].Title)
 	}
 	if got := strings.Join(sections[4].Lines, "\n"); got != "月费: 暂不可用\n安装费: 无\n总价: 暂不可用" {
 		t.Fatalf("价格不可用时应保持三行结构: %q", got)
 	}
 	dcs := strings.Join(sections[5].Lines, "\n")
+	if sections[5].Title != "数据中心 2/12 可用" {
+		t.Fatalf("数据中心可用比例错误: %q", sections[5].Title)
+	}
 	for _, want := range []string{"🟢 GRA", "🔴 RBX", "🟢 MUM"} {
 		if !strings.Contains(dcs, want) {
 			t.Fatalf("数据中心状态缺少 %q: %q", want, dcs)

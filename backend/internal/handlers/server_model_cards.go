@@ -24,6 +24,7 @@ const (
 var (
 	serverModelSpaces      = regexp.MustCompile(`\s+`)
 	serverMemoryOption     = regexp.MustCompile(`(?i)ram-(\d+)g`)
+	serverMemoryFrequency  = regexp.MustCompile(`(?i)(?:^|[-_])((?:no)?ecc-\d+)(?:[-_]|$)`)
 	serverBandwidthOption  = regexp.MustCompile(`(?i)bandwidth-(\d+)`)
 	serverTrafficBandwidth = regexp.MustCompile(`(?i)traffic-(\d+)(tb|gb|mb)-(\d+)`)
 	serverTrafficOption    = regexp.MustCompile(`(?i)traffic-(\d+)(tb|gb|mb)`)
@@ -130,7 +131,11 @@ func formatServerOption(option types.ServerOption, group string) string {
 	switch group {
 	case "memory":
 		if match := serverMemoryOption.FindStringSubmatch(value); match != nil {
-			return match[1] + " GB"
+			memory := match[1] + " GB"
+			if frequency := serverMemoryFrequency.FindStringSubmatch(value); len(frequency) > 1 {
+				memory += " · " + strings.ToUpper(frequency[1])
+			}
+			return memory
 		}
 	case "storage":
 		if formatted := catalog.FormatStorageDisplay(value); formatted != "" && formatted != "默认存储" {
@@ -194,6 +199,17 @@ func serverOptionLines(plan types.ServerPlan, group, fallback string) []string {
 	}
 	if len(options) == 0 {
 		fallback = cleanServerSpec(fallback)
+		if group == "memory" {
+			for _, option := range plan.DefaultOptions {
+				if serverOptionGroup(option) != "memory" {
+					continue
+				}
+				if formatted := strings.TrimSpace(formatServerOption(option, group)); formatted != "" {
+					fallback = formatted
+					break
+				}
+			}
+		}
 		if group == "memory" || group == "storage" || group == "bandwidth" {
 			return []string{"● " + fallback + "（默认）"}
 		}
@@ -272,6 +288,42 @@ func serverDatacenterLines(plan types.ServerPlan) []string {
 	return lines
 }
 
+func serverDatacenterAvailabilitySummary(plan types.ServerPlan) string {
+	available := make(map[string]bool)
+	known := make(map[string]struct{})
+	for _, datacenter := range plan.Datacenters {
+		code := canonicalServerDatacenter(datacenter.Datacenter)
+		if code == "" {
+			continue
+		}
+		known[code] = struct{}{}
+		status := strings.ToLower(strings.TrimSpace(datacenter.Availability))
+		if status != "" && status != "unavailable" && status != "unknown" {
+			available[code] = true
+		}
+	}
+	availableCount := 0
+	for code := range available {
+		if _, ok := known[code]; ok {
+			availableCount++
+		}
+	}
+	total := len(standardServerDatacenters)
+	for code := range known {
+		found := false
+		for _, standard := range standardServerDatacenters {
+			if code == standard {
+				found = true
+				break
+			}
+		}
+		if !found {
+			total++
+		}
+	}
+	return fmt.Sprintf("%d/%d 可用", availableCount, total)
+}
+
 func serverPriceDatacenter(plan types.ServerPlan) string {
 	for _, datacenter := range plan.Datacenters {
 		status := strings.ToLower(strings.TrimSpace(datacenter.Availability))
@@ -324,11 +376,11 @@ func serverPriceSection(state *app.State, plan types.ServerPlan) serverPlanSecti
 func serverPlanSections(state *app.State, plan types.ServerPlan) []serverPlanSection {
 	return []serverPlanSection{
 		{Title: "CPU", Lines: serverOptionLines(plan, "cpu", plan.CPU)},
-		{Title: "内存", Lines: serverOptionLines(plan, "memory", plan.Memory)},
-		{Title: "硬盘", Lines: serverOptionLines(plan, "storage", plan.Storage)},
-		{Title: "带宽", Lines: serverOptionLines(plan, "bandwidth", plan.Bandwidth)},
+		{Title: "内存 / 频率", Lines: serverOptionLines(plan, "memory", plan.Memory)},
+		{Title: "存储 / 数据盘", Lines: serverOptionLines(plan, "storage", plan.Storage)},
+		{Title: "带宽 / 网络", Lines: serverOptionLines(plan, "bandwidth", plan.Bandwidth)},
 		serverPriceSection(state, plan),
-		{Title: "数据中心", Lines: serverDatacenterLines(plan)},
+		{Title: "数据中心 " + serverDatacenterAvailabilitySummary(plan), Lines: serverDatacenterLines(plan)},
 	}
 }
 
