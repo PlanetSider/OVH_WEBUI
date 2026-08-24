@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ovh-webui/server/internal/numconv"
@@ -73,36 +74,79 @@ func (m *Monitor) GetPriceInfoText(accountID, planCode, datacenter string, confi
 	m.state.Logger.Debug(fmt.Sprintf("开始获取价格: plan_code=%s, datacenter=%s, options=%v account=%s",
 		planCode, datacenter, options, accountID), "monitor")
 
-	result := price.GetInternal(m.state, accountID, planCode, datacenter, options)
-	if !result.Success {
-		m.state.Logger.Warn("价格获取失败: "+result.Error, "monitor")
+	display, err := price.GetDisplay(m.state, accountID, planCode, datacenter, options)
+	if err != nil {
+		m.state.Logger.Warn("价格拆分失败: "+err.Error(), "monitor")
+	}
+	if !display.TotalKnown && !display.BreakdownKnown {
 		return ""
 	}
-	if result.Price == nil || result.Price.Prices == nil {
-		return ""
+	text := formatDisplayPrice(display)
+	if text != "" {
+		m.state.Logger.Debug("价格获取成功: "+strings.ReplaceAll(text, "\n", " | "), "monitor")
 	}
-	withTaxRaw := result.Price.Prices["withTax"]
-	if withTaxRaw == nil {
-		m.state.Logger.Warn("价格获取成功但withTax为None", "monitor")
-		return ""
+	return text
+}
+
+// formatDisplayPrice 统一生成上架通知中的价格块。
+// 月费与安装费来自 catalog 的含税价格；首月总价优先使用购物车 summary 的含税总价。
+func formatDisplayPrice(display price.DisplayPrice) string {
+	if !display.BreakdownKnown {
+		if !display.TotalKnown {
+			return ""
+		}
+		return fmt.Sprintf("总价: %s", formatCurrency(display.TotalWithTax, display.Currency))
 	}
-	currency, _ := result.Price.Prices["currencyCode"].(string)
-	if currency == "" {
-		currency = "EUR"
+
+	installText := "无"
+	if display.InstallWithTax > 0 {
+		installText = formatCurrency(display.InstallWithTax, display.Currency)
 	}
-	sym := currency
-	switch currency {
+	total := display.TotalWithTax
+	if !display.TotalKnown {
+		total = display.MonthlyWithTax + display.InstallWithTax
+	}
+	return fmt.Sprintf("月费: %s/月\n安装费: %s\n总价: %s",
+		formatCurrency(display.MonthlyWithTax, display.Currency),
+		installText,
+		formatCurrency(total, display.Currency))
+}
+
+func formatCurrency(value float64, currency string) string {
+	sym := currencySymbol(currency)
+	return fmt.Sprintf("%s%.2f", sym, value)
+}
+
+func currencySymbol(currency string) string {
+	switch strings.ToUpper(strings.TrimSpace(currency)) {
 	case "EUR":
-		sym = "€"
+		return "€"
 	case "USD":
-		sym = "$"
+		return "$"
+	case "CAD":
+		return "CA$"
+	case "GBP":
+		return "£"
+	case "AUD":
+		return "A$"
+	case "SGD":
+		return "S$"
+	case "INR":
+		return "₹"
+	case "PLN":
+		return "zł"
+	case "JPY", "CNY":
+		return "¥"
+	case "KRW":
+		return "₩"
+	case "HKD":
+		return "HK$"
+	default:
+		if currency == "" {
+			return "EUR "
+		}
+		return strings.TrimSpace(currency) + " "
 	}
-	if v, ok := numconv.ToFloat64(withTaxRaw); ok {
-		text := fmt.Sprintf("%s%.2f/月", sym, v)
-		m.state.Logger.Debug("价格获取成功: "+text, "monitor")
-		return text
-	}
-	return ""
 }
 
 // getPriceWithTimeout 带超时的询价

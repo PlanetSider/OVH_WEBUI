@@ -61,6 +61,16 @@ func dcDisplayShortName(dc string) string {
 	return strings.ToUpper(dc)
 }
 
+func appendPriceBlock(msg *strings.Builder, priceText string) {
+	priceText = strings.TrimSpace(priceText)
+	if priceText == "" {
+		return
+	}
+	msg.WriteString("\n💰 价格:\n")
+	msg.WriteString(priceText)
+	msg.WriteString("\n")
+}
+
 // SendAvailabilityAlertGrouped 对应 Python: send_availability_alert_grouped
 func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
 	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string) {
@@ -82,7 +92,7 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 
 	priceText, _ := configInfo["cached_price"].(string)
 	if priceText != "" {
-		msg.WriteString("\n💰 价格: " + priceText + "\n")
+		appendPriceBlock(&msg, priceText)
 	} else if priceErrorMessage != "" {
 		msg.WriteString("\n⚠️ 价格提示：" + priceErrorMessage + "\n")
 	}
@@ -292,7 +302,7 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 			priceText, _ = m.getPriceWithTimeout("", planCode, datacenter, configInfo, 30*time.Second)
 		}
 		if priceText != "" {
-			msg.WriteString("\n💰 价格: " + priceText + "\n")
+			appendPriceBlock(&msg, priceText)
 		}
 		msg.WriteString("状态: " + status + "\n")
 		if durationText != "" {
@@ -344,7 +354,7 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 			msg.WriteString("└─ 存储: " + storage + "\n")
 		}
 		if priceText, ok := configInfo["cached_price"].(string); ok && priceText != "" {
-			msg.WriteString("\n💰 价格: " + priceText + "\n")
+			appendPriceBlock(&msg, priceText)
 		}
 		msg.WriteString("\n状态: 可用性显示有货\n")
 		msg.WriteString("时间: " + pushTime.Format("2006-01-02 15:04:05") + "\n")
