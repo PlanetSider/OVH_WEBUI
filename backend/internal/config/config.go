@@ -38,7 +38,7 @@ func New(database *db.DB) *Store {
 		s.cfg.IAM = "go-ovh-" + strings.ToLower(s.cfg.Zone)
 	}
 	if s.cfg.FeishuConnectionMode == "" {
-		s.cfg.FeishuConnectionMode = "webhook"
+		s.cfg.FeishuConnectionMode = "long_connection"
 	}
 	// 旧版本配置没有通知开关字段，缺失/为 null 时默认开启；只有显式 false 才关闭。
 	if s.cfg.TgNotificationsEnabled == nil {
@@ -70,7 +70,7 @@ func (s *Store) Set(c types.Config) error {
 		c.IAM = "go-ovh-" + strings.ToLower(c.Zone)
 	}
 	if c.FeishuConnectionMode == "" {
-		c.FeishuConnectionMode = "webhook"
+		c.FeishuConnectionMode = "long_connection"
 	}
 	s.cfg = c
 	snapshot := s.cfg

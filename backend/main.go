@@ -77,8 +77,8 @@ func main() {
 	mon.LoadMessageUUIDCacheFromDB()
 	mon.SetCheckInterval(5)
 
-	// 飞书事件接收：默认沿用 Webhook；设置为 long_connection 时启动官方
-	// WebSocket 长连接，消息和卡片按钮仍复用同一套业务处理逻辑。
+	// 飞书事件接收：默认使用官方 WebSocket 长连接；设置为 webhook 时保留
+	// HTTP 回调模式，消息和卡片按钮仍复用同一套业务处理逻辑。
 	feishuConnection := handlers.NewFeishuLongConnectionManager(state, mon)
 	state.FeishuConnection = feishuConnection
 	// 注意：启动时不要 SaveToDB()。

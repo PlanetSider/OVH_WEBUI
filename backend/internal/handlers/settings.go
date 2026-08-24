@@ -116,7 +116,7 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 			newCfg.Zone = "IE"
 		}
 		if newCfg.FeishuConnectionMode == "" {
-			newCfg.FeishuConnectionMode = "webhook"
+			newCfg.FeishuConnectionMode = "long_connection"
 		}
 
 		if err := state.Config.Set(newCfg); err != nil {

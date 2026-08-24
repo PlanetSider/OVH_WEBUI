@@ -18,8 +18,8 @@ import (
 
 // FeishuLongConnectionManager 管理飞书官方 WebSocket 长连接。
 //
-// Webhook 和长连接是两种互斥的事件接收模式：默认仍使用 Webhook，只有
-// FeishuConnectionMode=long_connection 时才会建立 WebSocket。通知发送仍然
+// Webhook 和长连接是两种互斥的事件接收模式：默认使用长连接，只有
+// FeishuConnectionMode=webhook 时才会停用 WebSocket。通知发送仍然
 // 使用 monitor 中的 HTTP Open API，因此切换接收模式不会影响发卡片逻辑。
 type FeishuLongConnectionManager struct {
 	state *app.State
@@ -48,7 +48,7 @@ func (m *FeishuLongConnectionManager) Reconfigure() {
 	cfg := m.state.Config.Get()
 	mode := strings.ToLower(strings.TrimSpace(cfg.FeishuConnectionMode))
 	if mode == "" {
-		mode = "webhook"
+		mode = "long_connection"
 	}
 	want := mode == "long_connection" && cfg.FeishuEnabled && strings.TrimSpace(cfg.FeishuAppID) != "" && strings.TrimSpace(cfg.FeishuAppSecret) != ""
 	configKey := strings.Join([]string{mode, cfg.FeishuAppID, cfg.FeishuAppSecret, cfg.FeishuDomain}, "\x00")

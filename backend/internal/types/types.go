@@ -61,7 +61,7 @@ func DefaultConfig() Config {
 		Endpoint: "ovh-eu",
 		IAM:      "go-ovh-ie",
 		Zone:     "IE",
-		FeishuConnectionMode: "webhook",
+		FeishuConnectionMode: "long_connection",
 		TgNotificationsEnabled: &trueValue,
 		FeishuNotificationsEnabled: &trueValue,
 		WeixinNotificationsEnabled: &trueValue,
