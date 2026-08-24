@@ -38,16 +38,17 @@ var feishuRegistrationSessions = struct {
 
 type feishuRegistrationResponse struct {
 	SupportedAuthMethods []string `json:"supported_auth_methods"`
-	DeviceCode            string   `json:"device_code"`
-	VerificationURI       string   `json:"verification_uri"`
-	VerificationComplete  string   `json:"verification_uri_complete"`
-	ExpireIn              int      `json:"expire_in"`
-	Interval              int      `json:"interval"`
-	ClientID              string   `json:"client_id"`
-	ClientSecret          string   `json:"client_secret"`
-	Error                 string   `json:"error"`
-	ErrorDescription      string   `json:"error_description"`
-	UserInfo              struct {
+	DeviceCode           string   `json:"device_code"`
+	VerificationURI      string   `json:"verification_uri"`
+	VerificationComplete string   `json:"verification_uri_complete"`
+	ExpiresIn            int      `json:"expires_in"`
+	ExpireIn             int      `json:"expire_in"`
+	Interval             int      `json:"interval"`
+	ClientID             string   `json:"client_id"`
+	ClientSecret         string   `json:"client_secret"`
+	Error                string   `json:"error"`
+	ErrorDescription     string   `json:"error_description"`
+	UserInfo             struct {
 		OpenID      string `json:"open_id"`
 		TenantBrand string `json:"tenant_brand"`
 	} `json:"user_info"`
@@ -99,7 +100,7 @@ func trustedFeishuVerificationURL(raw string) (*url.URL, bool) {
 		return nil, false
 	}
 	switch strings.ToLower(verificationURL.Hostname()) {
-	case "accounts.feishu.cn", "accounts.larksuite.com":
+	case "accounts.feishu.cn", "accounts.larksuite.com", "open.feishu.cn", "open.larksuite.com":
 		if verificationURL.Port() == "" || verificationURL.Port() == "443" {
 			return verificationURL, true
 		}
@@ -158,7 +159,10 @@ func StartFeishuRegistration(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "飞书注册会话缺少二维码或设备码"})
 			return
 		}
-		expires := beginResult.ExpireIn
+		expires := beginResult.ExpiresIn
+		if expires <= 0 {
+			expires = beginResult.ExpireIn
+		}
 		if expires <= 0 || expires > 1800 {
 			expires = 600
 		}
@@ -197,7 +201,7 @@ func StartFeishuRegistration(state *app.State) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true, "sessionId": sessionID,
 			"verificationUriComplete": verificationURL.String(),
-			"expiresIn": expires, "interval": interval,
+			"expiresIn":               expires, "interval": interval,
 		})
 	}
 }
