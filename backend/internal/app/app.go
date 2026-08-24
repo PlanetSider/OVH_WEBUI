@@ -92,6 +92,10 @@ type State struct {
 	MonitorRunning        bool
 	QueueProcessorRunning bool
 
+	// FeishuConnection 由启动层注入，避免 app 包依赖具体飞书实现。
+	// 保存设置后会调用 Reconfigure，使长连接配置立即生效。
+	FeishuConnection FeishuConnectionController
+
 	// Weixin 由 iLink 适配器在启动时注入。业务层只依赖最小发送能力，
 	// 避免 app/monitor/purchase 与具体协议实现形成循环依赖。
 	Weixin WeixinNotifier
@@ -105,6 +109,12 @@ type State struct {
 type WeixinNotifier interface {
 	Configured() bool
 	SendDefault(message string) bool
+}
+
+// FeishuConnectionController 是飞书长连接管理器的最小生命周期接口。
+type FeishuConnectionController interface {
+	Reconfigure()
+	Stop()
 }
 
 // NewState 构造应用状态。DB 必须已 Open。

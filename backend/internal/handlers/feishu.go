@@ -164,6 +164,158 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 	}
 }
 
+// claimFeishuEvent 在 Webhook 和长连接之间共用事件幂等记录。
+func claimFeishuEvent(state *app.State, body map[string]interface{}) bool {
+	eventID := feishuEventID(body)
+	if state.DB == nil || eventID == "" {
+		return true
+	}
+	claimed, err := state.DB.TryClaimFeishuEvent(eventID)
+	if err != nil {
+		state.Logger.Warn("飞书 event_id 幂等写入失败: "+err.Error(), "feishu")
+		return true
+	}
+	if !claimed {
+		return false
+	}
+	if len(eventID)%20 == 0 {
+		_, _ = state.DB.CleanupFeishuEvents(float64(time.Now().Add(-feishuEventRetentionDays * 24 * time.Hour).Unix()))
+	}
+	return true
+}
+
+// processFeishuMessage 是长连接消息适配器使用的业务处理入口。
+// body 采用飞书事件 v2 的通用 JSON 结构，与 Webhook 解析保持一致。
+func processFeishuMessage(state *app.State, mon *monitor.Monitor, body map[string]interface{}) {
+	event, _ := body["event"].(map[string]interface{})
+	message, _ := event["message"].(map[string]interface{})
+	chatType, _ := message["chat_type"].(string)
+	contentText, _ := message["content"].(string)
+	var content map[string]interface{}
+	_ = json.Unmarshal([]byte(contentText), &content)
+	text, _ := content["text"].(string)
+	openID := feishuOpenID(body)
+	if openID == "" || chatType != "p2p" {
+		return
+	}
+	if binding, ok := monitor.FeishuDefaultBinding(state); !ok || binding.OpenID != openID {
+		_ = monitor.FeishuSaveDefaultBinding(state, types.FeishuBinding{AccountID: "default", OpenID: openID, Name: openID, UpdatedAt: types.NowISO()})
+	}
+	trimmed := strings.TrimSpace(text)
+	if trimmed != "" && !telegram.AllowRate("feishu:"+openID) {
+		_ = monitor.FeishuSendText(state, openID, "⚠️ 操作过于频繁，请稍后再试")
+		return
+	}
+	accountID := telegram.DefaultAccountID(state)
+	_, bound := monitor.FeishuDefaultBinding(state)
+	if strings.HasPrefix(trimmed, "绑定账户 ") {
+		_ = monitor.FeishuSendText(state, openID, "飞书接收人已全局绑定；命令和通知始终使用当前默认 OVH 账户，无需再指定账户")
+		return
+	}
+	if trimmed == "账户状态" || strings.EqualFold(trimmed, "status") {
+		_ = monitor.FeishuSendText(state, openID, feishuAccountStatusText(state))
+	} else if strings.EqualFold(trimmed, "help") || trimmed == "帮助" || trimmed == "?" {
+		_ = monitor.FeishuSendText(state, openID, telegram.HelpMessage()+"\n当前账户：系统设置中的默认 OVH 账户")
+	} else if cmd := telegram.ParseBotCommand(trimmed); cmd != nil {
+		if cmd.Name == "start" || cmd.Name == "help" {
+			_ = monitor.FeishuSendText(state, openID, telegram.HelpMessage()+"\n当前账户：系统设置中的默认 OVH 账户")
+		} else if cmd.Name == "account" && isAccountSwitchRequest(cmd.Args) {
+			_ = sendFeishuAccountMenu(state, openID)
+		} else if cmd.Name == "account" {
+			_ = monitor.FeishuSendText(state, openID, accountCommandText(state, cmd.Args, "feishu"))
+		} else if !bound {
+			_ = monitor.FeishuSendText(state, openID, "请先在飞书中私聊机器人完成全局接收人绑定")
+		} else if accountID == "" {
+			_ = monitor.FeishuSendText(state, openID, "请先在系统设置中配置默认 OVH 账户")
+		} else {
+			_ = monitor.FeishuSendText(state, openID, dispatchBotCommand(state, mon, cmd, accountID, "feishu"))
+		}
+	} else if plans := findServerPlansByModel(state, trimmed); len(plans) > 0 {
+		if err := sendFeishuServerPlanCards(state, openID, trimmed, plans); err != nil {
+			state.Logger.Warn("发送飞书服务器型号卡片失败: "+err.Error(), "feishu")
+			_ = monitor.FeishuSendText(state, openID, "⚠️ 服务器配置卡片发送失败，请稍后重试")
+		}
+	} else if looksLikeServerModelQuery(trimmed) {
+		_ = monitor.FeishuSendText(state, openID, "⚠️ 服务器列表中未找到型号："+trimmed)
+	} else if feishuLooksLikeOrder(trimmed) {
+		order := telegram.ParseOrderMessage(trimmed)
+		if !bound {
+			_ = monitor.FeishuSendText(state, openID, "请先在飞书中私聊机器人完成全局接收人绑定")
+		} else if accountID == "" {
+			_ = monitor.FeishuSendText(state, openID, "请先在系统设置中配置默认 OVH 账户")
+		} else if order != nil && order.PlanCode != "" {
+			result := telegram.ProcessOrderForAccount(state, accountID, order.PlanCode, order.Datacenter, order.Quantity, order.Options, false)
+			if result.Success {
+				_ = monitor.FeishuSendText(state, openID, fmt.Sprintf("✅ 已加入抢购队列\n\n型号: %s\n机房: %s\n数量: %d\n已创建: %d 个任务", order.PlanCode, feishuDCText(order.Datacenter), telegram.ClampQuantity(order.Quantity), result.CreatedOrders))
+			} else {
+				_ = monitor.FeishuSendText(state, openID, "❌ 下单失败\n\n"+result.Message)
+			}
+		}
+	}
+}
+
+type feishuCardActionResult struct {
+	Type      string
+	Content   string
+	SendText  bool
+	Action    string
+	OpenID    string
+}
+
+// processFeishuCardActionBody 处理 WebSocket 卡片事件，并返回 SDK 所需的 toast 内容。
+func processFeishuCardActionBody(state *app.State, body map[string]interface{}) feishuCardActionResult {
+	action, _ := body["action"].(map[string]interface{})
+	if event, ok := body["event"].(map[string]interface{}); ok {
+		if eventAction, ok := event["action"].(map[string]interface{}); ok {
+			action = eventAction
+		}
+	}
+	value := action["value"]
+	if rawValue, ok := value.(string); ok {
+		_ = json.Unmarshal([]byte(rawValue), &value)
+	}
+	values, _ := value.(map[string]interface{})
+	name, _ := values["action"].(string)
+	openID := feishuOpenID(body)
+	result := feishuCardActionResult{Type: "success", Content: "操作已完成", Action: name, OpenID: openID}
+	if openID != "" && !telegram.AllowRate("feishu-card:"+openID) {
+		result.Type = "warning"
+		result.Content = "操作过于频繁，请稍后再试"
+		return result
+	}
+	switch name {
+	case "ping":
+		result.Content = "飞书交互卡片连接正常"
+	case "switch_account":
+		binding, bound := monitor.FeishuDefaultBinding(state)
+		if !bound || openID == "" || binding.OpenID != openID {
+			result.Content = "当前飞书用户不是全局通知接收人"
+			break
+		}
+		accountID, _ := values["account_id"].(string)
+		account, err := switchDefaultAccount(state, accountID)
+		if err != nil {
+			state.Logger.Warn("飞书切换默认账户失败: "+err.Error(), "feishu")
+			result.Content = "切换失败：" + err.Error()
+		} else {
+			result.Content = "✅ 默认 OVH 账户已切换为：" + accountDisplayName(account)
+			result.SendText = true
+			state.Logger.Info("飞书切换默认 OVH 账户: account="+account.ID+" open_id="+openID, "feishu")
+		}
+	case "add_to_queue":
+		binding, bound := monitor.FeishuDefaultBinding(state)
+		if !bound || openID == "" || binding.OpenID != openID {
+			result.Content = "当前飞书用户不是全局通知接收人"
+		} else {
+			result.Content = feishuEnqueue(state, values)
+			result.SendText = true
+		}
+	default:
+		result.Content = "未知操作，请重新打开最新通知卡片"
+	}
+	return result
+}
+
 func feishuEventID(body map[string]interface{}) string {
 	header, _ := body["header"].(map[string]interface{})
 	if eventID, ok := header["event_id"].(string); ok && eventID != "" {

@@ -264,6 +264,9 @@ func PollFeishuRegistration(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "status": "error", "error": "保存飞书机器人凭据失败"})
 				return
 			}
+			if state.FeishuConnection != nil {
+				state.FeishuConnection.Reconfigure()
+			}
 			monitor.FeishuResetToken()
 			if result.UserInfo.OpenID != "" {
 				_ = monitor.FeishuSaveDefaultBinding(state, types.FeishuBinding{

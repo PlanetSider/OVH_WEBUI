@@ -17,6 +17,9 @@ type Config struct {
 	FeishuAppID string `json:"feishuAppId,omitempty"`
 	FeishuAppSecret string `json:"feishuAppSecret,omitempty"`
 	FeishuDomain string `json:"feishuDomain,omitempty"`
+	// webhook is the backwards-compatible default; long_connection uses the
+	// official Feishu WebSocket client for events and card callbacks.
+	FeishuConnectionMode string `json:"feishuConnectionMode,omitempty"`
 	FeishuVerificationToken string `json:"feishuVerificationToken,omitempty"`
 	FeishuEncryptKey string `json:"feishuEncryptKey,omitempty"`
 	IAM             string `json:"iam"`
@@ -37,6 +40,7 @@ func DefaultConfig() Config {
 		Endpoint: "ovh-eu",
 		IAM:      "go-ovh-ie",
 		Zone:     "IE",
+		FeishuConnectionMode: "webhook",
 	}
 }
 

@@ -349,10 +349,21 @@ function FeishuSection({
             </SelectContent>
           </Select>
         </Field>
+        <Field label="事件接收模式" hint="长连接不需要公网回调地址；切换后请在飞书开放平台将事件订阅方式设为长连接。">
+          <Select value={form.feishuConnectionMode || "webhook"} onValueChange={(value: "webhook" | "long_connection") => set("feishuConnectionMode", value)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="webhook">Webhook（HTTP 回调）</SelectItem>
+              <SelectItem value="long_connection">长连接（WebSocket）</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
         <Field label="Verification Token（可选）"><Input type="password" value={form.feishuVerificationToken || ""} onChange={(e) => set("feishuVerificationToken", e.target.value)} /></Field>
         <Field label="Encrypt Key（可选）" hint="仅在飞书事件订阅启用了加密时填写；发送通知不需要此项。"><Input type="password" value={form.feishuEncryptKey || ""} onChange={(e) => set("feishuEncryptKey", e.target.value)} /></Field>
-        <div className="text-[11px] text-muted-foreground">事件订阅 URL：<code className="font-mono">{origin}/api/feishu/events</code></div>
-        <div className="text-[11px] text-muted-foreground">卡片回调 URL：<code className="font-mono">{origin}/api/feishu/card-action</code></div>
+        {(form.feishuConnectionMode || "webhook") === "webhook" ? <>
+          <div className="text-[11px] text-muted-foreground">事件订阅 URL：<code className="font-mono">{origin}/api/feishu/events</code></div>
+          <div className="text-[11px] text-muted-foreground">卡片回调 URL：<code className="font-mono">{origin}/api/feishu/card-action</code></div>
+        </> : <div className="text-[11px] text-muted-foreground">当前使用长连接：无需填写事件订阅 URL 和卡片回调 URL；飞书开放平台需选择“长连接”接收事件。</div>}
         <div className="flex flex-wrap gap-2">
           <Button type="button" onClick={() => void onSave()} disabled={saving}>{saving ? "保存中…" : "保存飞书配置"}</Button>
           <Button type="button" variant="outline" onClick={() => testCard.mutate()} disabled={testCard.isPending || !binding.data?.bound}>{testCard.isPending ? "发送中…" : "发送测试卡片"}</Button>

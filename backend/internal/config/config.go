@@ -37,6 +37,9 @@ func New(database *db.DB) *Store {
 	if s.cfg.IAM == "" {
 		s.cfg.IAM = "go-ovh-" + strings.ToLower(s.cfg.Zone)
 	}
+	if s.cfg.FeishuConnectionMode == "" {
+		s.cfg.FeishuConnectionMode = "webhook"
+	}
 	return s
 }
 
@@ -52,6 +55,9 @@ func (s *Store) Set(c types.Config) error {
 	s.mu.Lock()
 	if c.IAM == "" {
 		c.IAM = "go-ovh-" + strings.ToLower(c.Zone)
+	}
+	if c.FeishuConnectionMode == "" {
+		c.FeishuConnectionMode = "webhook"
 	}
 	s.cfg = c
 	snapshot := s.cfg

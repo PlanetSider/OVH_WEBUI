@@ -42,6 +42,7 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		patch.FeishuAppID = strings.TrimSpace(patch.FeishuAppID)
 		patch.FeishuAppSecret = strings.TrimSpace(patch.FeishuAppSecret)
 		patch.FeishuDomain = strings.ToLower(strings.TrimSpace(patch.FeishuDomain))
+		patch.FeishuConnectionMode = strings.ToLower(strings.TrimSpace(patch.FeishuConnectionMode))
 		patch.FeishuVerificationToken = strings.TrimSpace(patch.FeishuVerificationToken)
 		patch.FeishuEncryptKey = strings.TrimSpace(patch.FeishuEncryptKey)
 		patch.Endpoint = strings.TrimSpace(patch.Endpoint)
@@ -77,6 +78,9 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if patch.FeishuDomain == "feishu" || patch.FeishuDomain == "lark" {
 			newCfg.FeishuDomain = patch.FeishuDomain
 		}
+		if patch.FeishuConnectionMode == "webhook" || patch.FeishuConnectionMode == "long_connection" {
+			newCfg.FeishuConnectionMode = patch.FeishuConnectionMode
+		}
 		if patch.FeishuVerificationToken != "" {
 			newCfg.FeishuVerificationToken = patch.FeishuVerificationToken
 		}
@@ -102,6 +106,9 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if newCfg.Zone == "" {
 			newCfg.Zone = "IE"
 		}
+		if newCfg.FeishuConnectionMode == "" {
+			newCfg.FeishuConnectionMode = "webhook"
+		}
 
 		if err := state.Config.Set(newCfg); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
@@ -109,6 +116,9 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		}
 		if newCfg.FeishuAppID != prev.FeishuAppID || newCfg.FeishuAppSecret != prev.FeishuAppSecret || newCfg.FeishuDomain != prev.FeishuDomain {
 			monitor.FeishuResetToken()
+		}
+		if state.FeishuConnection != nil {
+			state.FeishuConnection.Reconfigure()
 		}
 		state.Logger.Info("API settings updated in config.json", "system")
 

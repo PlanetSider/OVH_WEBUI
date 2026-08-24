@@ -76,6 +76,11 @@ func main() {
 	mon.LoadFromDB()
 	mon.LoadMessageUUIDCacheFromDB()
 	mon.SetCheckInterval(5)
+
+	// 飞书事件接收：默认沿用 Webhook；设置为 long_connection 时启动官方
+	// WebSocket 长连接，消息和卡片按钮仍复用同一套业务处理逻辑。
+	feishuConnection := handlers.NewFeishuLongConnectionManager(state, mon)
+	state.FeishuConnection = feishuConnection
 	// 注意：启动时不要 SaveToDB()。
 	// ReplaceMonitorSubscriptions 会先 DELETE 全表；若加载失败/空读却再写回，会把线上订阅抹掉。
 	console.Info("监控检查间隔已强制设置为: 5秒（全局固定值）")
@@ -466,6 +471,7 @@ func main() {
 	}
 	stopRealtimeAvailability()
 	weixinManager.Stop()
+	feishuConnection.Stop()
 
 	// 停监控循环（若实现了 Stop）
 	if mon != nil {

@@ -17,6 +17,7 @@ export interface SettingsConfig {
   feishuAppId?: string;
   feishuAppSecret?: string;
   feishuDomain?: "feishu" | "lark";
+  feishuConnectionMode?: "webhook" | "long_connection";
   feishuVerificationToken?: string;
   feishuEncryptKey?: string;
 }
