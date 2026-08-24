@@ -64,12 +64,15 @@ func TestLooksLikeServerModelQuery(t *testing.T) {
 }
 
 func TestServerPlanSectionsDefaultsAndDatacenters(t *testing.T) {
-	sections := serverPlanSections(testServerPlan())
+	sections := serverPlanSections(nil, testServerPlan())
 	if got := strings.Join(sections[1].Lines, "\n"); !strings.HasPrefix(got, "● 32 GB（默认）") {
 		t.Fatalf("默认内存应优先并标记: %q", got)
 	}
-	dcs := strings.Join(sections[4].Lines, "\n")
-	for _, want := range []string{"🔴 GRA", "🟢 RBX", "🔴 MUM"} {
+	if got := strings.Join(sections[4].Lines, "\n"); got != "月费: 暂不可用\n安装费: 无\n总价: 暂不可用" {
+		t.Fatalf("价格不可用时应保持三行结构: %q", got)
+	}
+	dcs := strings.Join(sections[5].Lines, "\n")
+	for _, want := range []string{"🟢 GRA", "🔴 RBX", "🟢 MUM"} {
 		if !strings.Contains(dcs, want) {
 			t.Fatalf("数据中心状态缺少 %q: %q", want, dcs)
 		}
@@ -99,10 +102,10 @@ func TestPaginateServerSectionsPreservesLongText(t *testing.T) {
 }
 
 func TestFeishuServerPlanCardUsesSectionsNotTable(t *testing.T) {
-	card := feishuServerPlanCard("KS-1", testServerPlan(), serverPlanSections(testServerPlan()), 1, 1)
+	card := feishuServerPlanCard("KS-1", testServerPlan(), serverPlanSections(nil, testServerPlan()), 1, 1)
 	elements, ok := card["elements"].([]interface{})
-	if !ok || len(elements) != 5 {
-		t.Fatalf("飞书卡片应包含五个独立配置分区: %+v", card)
+	if !ok || len(elements) != 6 {
+		t.Fatalf("飞书卡片应包含六个独立配置分区: %+v", card)
 	}
 	for _, raw := range elements {
 		element, _ := raw.(map[string]interface{})

@@ -11,6 +11,7 @@ import (
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/monitor"
+	"github.com/ovh-webui/server/internal/price"
 	"github.com/ovh-webui/server/internal/telegram"
 	"github.com/ovh-webui/server/internal/types"
 )
@@ -262,21 +263,71 @@ func serverDatacenterLines(plan types.ServerPlan) []string {
 	codes := append(append([]string{}, standardServerDatacenters...), extra...)
 	lines := make([]string, 0, len(codes))
 	for _, code := range codes {
-		point := "🟢"
+		point := "🔴"
 		if available[code] {
-			point = "🔴"
+			point = "🟢"
 		}
 		lines = append(lines, point+" "+strings.ToUpper(code))
 	}
 	return lines
 }
 
-func serverPlanSections(plan types.ServerPlan) []serverPlanSection {
+func serverPriceDatacenter(plan types.ServerPlan) string {
+	for _, datacenter := range plan.Datacenters {
+		status := strings.ToLower(strings.TrimSpace(datacenter.Availability))
+		if status == "" || status == "unavailable" || status == "unknown" {
+			continue
+		}
+		if code := canonicalServerDatacenter(datacenter.Datacenter); code != "" {
+			return code
+		}
+	}
+	for _, datacenter := range plan.Datacenters {
+		if code := canonicalServerDatacenter(datacenter.Datacenter); code != "" {
+			return code
+		}
+	}
+	return "gra"
+}
+
+func serverPriceSection(state *app.State, plan types.ServerPlan) serverPlanSection {
+	section := serverPlanSection{Title: "💰 价格:"}
+	if state == nil {
+		section.Lines = []string{"月费: 暂不可用", "安装费: 无", "总价: 暂不可用"}
+		return section
+	}
+	options := make([]string, 0, len(plan.DefaultOptions))
+	for _, option := range plan.DefaultOptions {
+		if value := strings.TrimSpace(option.Value); value != "" {
+			options = append(options, value)
+		}
+	}
+	display, err := price.GetDisplay(state, "", plan.PlanCode, serverPriceDatacenter(plan), options)
+	if err != nil && !display.TotalKnown && !display.BreakdownKnown {
+		section.Lines = []string{"月费: 暂不可用", "安装费: 无", "总价: 暂不可用"}
+		return section
+	}
+	formatted := monitor.FormatDisplayPrice(display)
+	if strings.TrimSpace(formatted) == "" {
+		section.Lines = []string{"月费: 暂不可用", "安装费: 无", "总价: 暂不可用"}
+		return section
+	}
+	if !display.BreakdownKnown && display.TotalKnown {
+		// 价格接口只返回总价时，仍保持卡片约定的三行结构，避免飞书/微信出现缺列。
+		section.Lines = []string{"月费: 暂不可用", "安装费: 无", formatted}
+		return section
+	}
+	section.Lines = strings.Split(formatted, "\n")
+	return section
+}
+
+func serverPlanSections(state *app.State, plan types.ServerPlan) []serverPlanSection {
 	return []serverPlanSection{
 		{Title: "CPU", Lines: serverOptionLines(plan, "cpu", plan.CPU)},
 		{Title: "内存", Lines: serverOptionLines(plan, "memory", plan.Memory)},
 		{Title: "硬盘", Lines: serverOptionLines(plan, "storage", plan.Storage)},
 		{Title: "带宽", Lines: serverOptionLines(plan, "bandwidth", plan.Bandwidth)},
+		serverPriceSection(state, plan),
 		{Title: "数据中心", Lines: serverDatacenterLines(plan)},
 	}
 }
@@ -385,7 +436,7 @@ func telegramServerPlanCard(model string, plan types.ServerPlan, sections []serv
 func sendTelegramServerPlanCards(state *app.State, chatID interface{}, replyToMessageID int64, model string, plans []types.ServerPlan) {
 	first := true
 	for _, plan := range plans {
-		pages := paginateServerSections(serverPlanSections(plan), telegramPlanCardMaxRunes)
+		pages := paginateServerSections(serverPlanSections(state, plan), telegramPlanCardMaxRunes)
 		for index, page := range pages {
 			replyTo := int64(0)
 			if first {
@@ -418,7 +469,7 @@ func feishuServerPlanCard(model string, plan types.ServerPlan, sections []server
 
 func sendFeishuServerPlanCards(state *app.State, openID, model string, plans []types.ServerPlan) error {
 	for _, plan := range plans {
-		pages := paginateServerSections(serverPlanSections(plan), feishuPlanCardMaxRunes)
+		pages := paginateServerSections(serverPlanSections(state, plan), feishuPlanCardMaxRunes)
 		for index, page := range pages {
 			card := feishuServerPlanCard(model, plan, page, index+1, len(pages))
 			if err := monitor.FeishuSendCard(state, openID, card); err != nil {

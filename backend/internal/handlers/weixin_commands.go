@@ -28,7 +28,7 @@ func HandleWeixinText(state *app.State, mon *monitor.Monitor, senderID, text str
 		return weixinHelpMessage()
 	}
 	if plans := findServerPlansByModel(state, text); len(plans) > 0 {
-		return weixinServerPlanText(text, plans)
+		return weixinServerPlanText(state, text, plans)
 	}
 	if looksLikeServerModelQuery(text) {
 		return "❌ 服务器列表中未找到型号：" + text
@@ -69,7 +69,7 @@ func weixinHelpMessage() string {
 		"/account switch  请在 WebUI 切换默认账户")
 }
 
-func weixinServerPlanText(model string, plans []types.ServerPlan) string {
+func weixinServerPlanText(state *app.State, model string, plans []types.ServerPlan) string {
 	var builder strings.Builder
 	for planIndex, plan := range plans {
 		if planIndex > 0 {
@@ -77,7 +77,7 @@ func weixinServerPlanText(model string, plans []types.ServerPlan) string {
 			builder.WriteRune(10)
 		}
 		builder.WriteString(strings.TrimSpace(model) + " · " + plan.PlanCode)
-		for _, section := range serverPlanSections(plan) {
+		for _, section := range serverPlanSections(state, plan) {
 			builder.WriteRune(10)
 			builder.WriteRune(10)
 			builder.WriteString(section.Title)

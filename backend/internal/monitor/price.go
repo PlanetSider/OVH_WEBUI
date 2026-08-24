@@ -112,6 +112,11 @@ func formatDisplayPrice(display price.DisplayPrice) string {
 		formatCurrency(total, display.Currency))
 }
 
+// FormatDisplayPrice 对外复用通知价格格式，保证 Telegram、飞书与监控通知口径一致。
+func FormatDisplayPrice(display price.DisplayPrice) string {
+	return formatDisplayPrice(display)
+}
+
 func formatCurrency(value float64, currency string) string {
 	sym := currencySymbol(currency)
 	return fmt.Sprintf("%s%.2f", sym, value)
