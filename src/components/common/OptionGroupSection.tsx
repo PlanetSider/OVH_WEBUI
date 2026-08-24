@@ -27,6 +27,7 @@ export function OptionGroupSection({
   defaultValueSet,
   hasStock,
   onPick,
+  label,
 }: {
   groupKey: OptionGroupKey;
   options: ServerOption[];
@@ -36,13 +37,15 @@ export function OptionGroupSection({
    *  undefined 表示 OVH availability 数据没回,不渲染绿/红点。 */
   hasStock?: (value: string) => boolean;
   onPick: (value: string) => void;
+  /** 某些表单需要把多个硬盘类 family 合并成一个选项组时使用。 */
+  label?: string;
 }) {
   const Icon = ICON_MAP[groupKey];
   return (
     <div>
       <h3 className="text-[13px] font-semibold mb-2.5 flex items-center gap-1.5">
         <Icon className="w-3.5 h-3.5 text-muted-foreground" />
-        {OPTION_GROUP_LABELS[groupKey]}
+        {label || OPTION_GROUP_LABELS[groupKey]}
       </h3>
       <div className="flex flex-wrap gap-2">
         {options.map((opt) => {

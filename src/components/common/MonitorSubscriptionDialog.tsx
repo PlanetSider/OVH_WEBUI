@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Bell, HardDrive, MemoryStick, Network } from "lucide-react";
+import { Bell, MapPin, ShoppingCart } from "lucide-react";
 import { toast } from "sonner";
 import { AccountSelect } from "@/components/common/AccountSelect";
 import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { OptionGroupSection } from "@/components/common/OptionGroupSection";
+import { StatusDot } from "@/components/common/StatusDot";
 import {
   Dialog,
   DialogContent,
@@ -21,23 +23,34 @@ import {
   useUpdateMonitorSubscription,
 } from "@/hooks/use-monitor";
 import { useServers, type ServerOption } from "@/hooks/use-servers";
-import { OVH_DATACENTERS } from "@/lib/datacenters";
-import { groupOptions } from "@/lib/option-groups";
+import { OVH_DATACENTERS, lookupDcStatus } from "@/lib/datacenters";
+import {
+  type OptionGroupKey,
+  groupOptions,
+} from "@/lib/option-groups";
+import {
+  useAvailability,
+  buildVariantIndex,
+  hasStockWithOption,
+  variantDcStatus,
+} from "@/hooks/use-availability";
 
-type FilterChoice = { label: string; value: string };
-
-function uniqueChoices(items: FilterChoice[]) {
+function mergeOptions(options: ServerOption[], defaults: ServerOption[]): ServerOption[] {
   const seen = new Set<string>();
-  return items.filter((item) => {
-    const key = item.value.trim().toLowerCase();
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
+  return [...options, ...defaults].filter((option) => {
+    const value = option.value.trim().toLowerCase();
+    if (!value || seen.has(value)) return false;
+    seen.add(value);
     return true;
   });
 }
 
-function optionChoices(options: ServerOption[]): FilterChoice[] {
-  return options.map((option) => ({ label: option.label || option.value, value: option.value }));
+function fallbackOption(value: string): ServerOption {
+  return { label: value, value };
+}
+
+function isAvailableStatus(status: string | undefined): boolean {
+  return !!status && status !== "unavailable" && status !== "unknown";
 }
 
 function displayDatacenterCode(value: string): string {
@@ -57,6 +70,8 @@ export function MonitorSubscriptionDialog({
   initialPlanCode?: string;
 }) {
   const servers = useServers();
+  const availability = useAvailability();
+  const variantIndex = useMemo(() => buildVariantIndex(availability.data), [availability.data]);
   const monitorList = useMonitorList();
   const create = useCreateMonitorSubscription();
   const update = useUpdateMonitorSubscription();
@@ -77,9 +92,9 @@ export function MonitorSubscriptionDialog({
     if (!open) return;
     setPlanCode(resolvedSubscription?.planCode || initialPlanCode);
     setDatacenters((resolvedSubscription?.datacenters || []).map(displayDatacenterCode));
-    setMemories(resolvedSubscription?.memories || []);
-    setStorages(resolvedSubscription?.storages || []);
-    setNetworks(resolvedSubscription?.networks || []);
+    setMemories((resolvedSubscription?.memories || []).filter(Boolean).slice(0, 1));
+    setStorages((resolvedSubscription?.storages || []).filter(Boolean).slice(0, 1));
+    setNetworks((resolvedSubscription?.networks || []).filter(Boolean).slice(0, 1));
     setNotifyAvailable(resolvedSubscription?.notifyAvailable ?? true);
     setNotifyUnavailable(resolvedSubscription?.notifyUnavailable ?? false);
     setAutoOrder(resolvedSubscription?.autoOrder ?? false);
@@ -92,27 +107,99 @@ export function MonitorSubscriptionDialog({
     [servers.data, planCode]
   );
   const grouped = useMemo(() => groupOptions(server?.availableOptions || []), [server?.availableOptions]);
+  const defaultValues = useMemo(
+    () => {
+      const values = new Set((server?.defaultOptions || []).map((option) => option.value));
+      if ((server?.defaultOptions || []).length === 0) {
+        if (server?.memory) values.add(server.memory);
+        if (server?.storage) values.add(server.storage);
+        if (server?.bandwidth) values.add(server.bandwidth);
+      }
+      return values;
+    },
+    [server?.defaultOptions, server?.memory, server?.storage, server?.bandwidth]
+  );
+  const groupedDefaults = useMemo(() => groupOptions(server?.defaultOptions || []), [server?.defaultOptions]);
   const memoryChoices = useMemo(
-    () => uniqueChoices([
-      ...(server?.memory ? [{ label: `默认 · ${server.memory}`, value: server.memory }] : []),
-      ...optionChoices(grouped.memory),
-    ]),
-    [server?.memory, grouped.memory]
+    () => {
+      const options = mergeOptions(grouped.memory, groupedDefaults.memory);
+      return options.length > 0
+        ? options
+        : server?.memory
+          ? [fallbackOption(server.memory)]
+          : [];
+    },
+    [server?.memory, grouped.memory, groupedDefaults.memory, defaultValues]
   );
   const storageChoices = useMemo(
-    () => uniqueChoices([
-      ...(server?.storage ? [{ label: `默认 · ${server.storage}`, value: server.storage }] : []),
-      ...optionChoices([...grouped.systemStorage, ...grouped.storage]),
-    ]),
-    [server?.storage, grouped.systemStorage, grouped.storage]
+    () => {
+      const options = mergeOptions(
+        [...grouped.systemStorage, ...grouped.storage],
+        [...groupedDefaults.systemStorage, ...groupedDefaults.storage]
+      );
+      return options.length > 0
+        ? options
+        : server?.storage
+          ? [fallbackOption(server.storage)]
+          : [];
+    },
+    [server?.storage, grouped.systemStorage, grouped.storage, groupedDefaults.systemStorage, groupedDefaults.storage, defaultValues]
   );
   const networkChoices = useMemo(
-    () => uniqueChoices([
-      ...(server?.bandwidth ? [{ label: `默认 · ${server.bandwidth}`, value: server.bandwidth }] : []),
-      ...optionChoices(grouped.bandwidth),
-    ]),
-    [server?.bandwidth, grouped.bandwidth]
+    () => {
+      const options = mergeOptions(grouped.bandwidth, groupedDefaults.bandwidth);
+      return options.length > 0
+        ? options
+        : server?.bandwidth
+          ? [fallbackOption(server.bandwidth)]
+          : [];
+    },
+    [server?.bandwidth, grouped.bandwidth, groupedDefaults.bandwidth, defaultValues]
   );
+
+  const variants = server ? variantIndex[server.planCode] : undefined;
+  const selectedOptions = useMemo(
+    () => [...memories, ...storages].filter(Boolean),
+    [memories, storages]
+  );
+  const pickedForAvailability = useMemo(
+    () => ({
+      memory: memories[0] || "",
+      storage: storages[0] || "",
+      bandwidth: networks[0] || "",
+    }),
+    [memories, storages, networks]
+  );
+  const staticDcMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const dc of server?.datacenters || []) map[dc.datacenter.toLowerCase()] = dc.availability;
+    return map;
+  }, [server?.datacenters]);
+  const variantDcMap = useMemo(
+    () => variantDcStatus(variants, selectedOptions),
+    [variants, selectedOptions]
+  );
+  const dcMap = useMemo(() => ({ ...staticDcMap, ...variantDcMap }), [staticDcMap, variantDcMap]);
+  const availableDcCount = useMemo(
+    () => OVH_DATACENTERS.filter((dc) => isAvailableStatus(lookupDcStatus(dcMap, dc))).length,
+    [dcMap]
+  );
+  const totalDatacenters = OVH_DATACENTERS.length;
+  const availabilityRatio = totalDatacenters > 0 ? availableDcCount / totalDatacenters : 0;
+  const optionHasStock = (groupKey: OptionGroupKey, value: string): boolean => {
+    if (!variants || variants.length === 0) return true;
+    if (groupKey === "bandwidth" || groupKey === "vrack" || groupKey === "cpu" || groupKey === "other") return true;
+    return hasStockWithOption(
+      variants,
+      pickedForAvailability,
+      groupKey,
+      value,
+      datacenters.length > 0 ? datacenters : undefined
+    );
+  };
+  const toggleSingle = (setter: React.Dispatch<React.SetStateAction<string[]>>, value: string) => {
+    setter((current) => (current[0] === value ? [] : [value]));
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -155,13 +242,13 @@ export function MonitorSubscriptionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[95vw] sm:max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle>{editing ? "编辑监控任务" : "添加监控任务"}</DialogTitle>
-          <DialogDescription>内存、硬盘、网络和数据中心按组组合匹配；组内多选，组间同时满足。</DialogDescription>
+          <DialogTitle>{editing ? "修改监控任务" : "创建监控任务"}</DialogTitle>
+          <DialogDescription>按配置组合与数据中心监控库存；每个配置组可选择一项，未选择表示不限。</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
           <div className="space-y-5 overflow-y-auto pr-1">
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1.5">服务器型号 *</label>
+              <label className="block text-[13px] font-medium mb-1.5">服务器计划代码 *</label>
               {editing ? (
                 <Input value={planCode} disabled className="font-mono" />
               ) : (
@@ -178,46 +265,131 @@ export function MonitorSubscriptionDialog({
               )}
             </div>
 
-            <FilterPicker icon={<MemoryStick className="h-4 w-4" />} label="内存" choices={memoryChoices} values={memories} onChange={setMemories} />
-            <FilterPicker icon={<HardDrive className="h-4 w-4" />} label="硬盘" choices={storageChoices} values={storages} onChange={setStorages} />
-            <FilterPicker icon={<Network className="h-4 w-4" />} label="网络" choices={networkChoices} values={networks} onChange={setNetworks} />
+            <div className="space-y-4">
+              {memoryChoices.length > 0 && (
+                <OptionGroupSection
+                  groupKey="memory"
+                  options={memoryChoices}
+                  picked={memories[0] || ""}
+                  defaultValueSet={defaultValues}
+                  hasStock={variants && variants.length > 0 ? (value) => optionHasStock("memory", value) : undefined}
+                  onPick={(value) => toggleSingle(setMemories, value)}
+                />
+              )}
+              {storageChoices.length > 0 && (
+                <OptionGroupSection
+                  groupKey="storage"
+                  label="存储 / 数据盘"
+                  options={storageChoices}
+                  picked={storages[0] || ""}
+                  defaultValueSet={defaultValues}
+                  hasStock={variants && variants.length > 0 ? (value) => optionHasStock("storage", value) : undefined}
+                  onPick={(value) => toggleSingle(setStorages, value)}
+                />
+              )}
+              {networkChoices.length > 0 && (
+                <OptionGroupSection
+                  groupKey="bandwidth"
+                  options={networkChoices}
+                  picked={networks[0] || ""}
+                  defaultValueSet={defaultValues}
+                  hasStock={variants && variants.length > 0 ? (value) => optionHasStock("bandwidth", value) : undefined}
+                  onPick={(value) => toggleSingle(setNetworks, value)}
+                />
+              )}
+              {server && memoryChoices.length === 0 && storageChoices.length === 0 && networkChoices.length === 0 && (
+                <p className="text-[11px] text-muted-foreground">该型号没有可选硬件配置，将按默认配置监控。</p>
+              )}
+            </div>
 
             <div>
-              <div className="flex items-center justify-between gap-3 mb-2">
-                <label className="text-xs font-medium text-muted-foreground">数据中心</label>
-                <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setDatacenters([])}>
-                  清空（监控全部）
-                </Button>
+              <div className="flex items-center justify-between mb-2.5 gap-2 flex-wrap">
+                <h3 className="text-[13px] font-semibold flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-muted-foreground" />
+                  数据中心 · 选 {datacenters.length} / {totalDatacenters}
+                </h3>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    {availableDcCount}/{totalDatacenters} 可用 · {Math.round(availabilityRatio * 100)}%
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[11px]"
+                    onClick={() => {
+                      if (datacenters.length > 0) {
+                        setDatacenters([]);
+                        return;
+                      }
+                      setDatacenters(
+                        OVH_DATACENTERS
+                          .filter((dc) => isAvailableStatus(lookupDcStatus(dcMap, dc)))
+                          .map((dc) => dc.code)
+                      );
+                    }}
+                  >
+                    {datacenters.length > 0 ? "清空" : "选可用"}
+                  </Button>
+                </div>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 rounded-2xl border border-border p-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
                 {OVH_DATACENTERS.map((dc) => {
                   const selected = datacenters.includes(dc.code);
+                  const available = isAvailableStatus(lookupDcStatus(dcMap, dc));
                   return (
-                    <label key={dc.code} className="flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1.5 hover:bg-muted/50">
-                      <Checkbox checked={selected} onCheckedChange={() => setDatacenters((current) => selected ? current.filter((code) => code !== dc.code) : [...current, dc.code])} />
-                      <span className="text-xs"><span className="font-mono font-semibold">{dc.code.toUpperCase()}</span> · {dc.name}</span>
-                    </label>
+                    <button
+                      key={dc.code}
+                      type="button"
+                      onClick={() => setDatacenters((current) => selected ? current.filter((code) => code !== dc.code) : [...current, dc.code])}
+                      className={
+                        "text-left border rounded-xl px-3 py-2 flex items-center justify-between transition-colors " +
+                        (selected
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border hover:bg-secondary/50")
+                      }
+                    >
+                      <div className="min-w-0">
+                        <div className="text-[12px] font-bold font-mono">{dc.code.toUpperCase()}</div>
+                        <div className={"text-[10px] truncate " + (selected ? "text-background/70" : "text-muted-foreground")}>
+                          {dc.region} · {dc.name}
+                        </div>
+                      </div>
+                      <StatusDot tone={available ? "success" : "danger"} size="sm" pulse={available && !selected} />
+                    </button>
                   );
                 })}
               </div>
-              <p className="text-[11px] text-muted-foreground mt-1.5">未选择数据中心时监控全部机房。</p>
+              <p className="text-[11px] text-muted-foreground mt-1.5">未选择表示监控全部数据中心。</p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <ToggleCard checked={notifyAvailable} onChange={setNotifyAvailable} label="有货时提醒" />
-              <ToggleCard checked={notifyUnavailable} onChange={setNotifyUnavailable} label="无货时提醒" />
-              <ToggleCard checked={autoOrder} onChange={setAutoOrder} label="有货时自动下单" className="sm:col-span-2" />
+            <div className="border-t border-border pt-4">
+              <h3 className="text-[13px] font-semibold mb-2.5 flex items-center gap-1.5">
+                <Bell className="w-3.5 h-3.5 text-muted-foreground" />
+                提醒方式
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <ToggleCard checked={notifyAvailable} onChange={setNotifyAvailable} label="有货时提醒" />
+                <ToggleCard checked={notifyUnavailable} onChange={setNotifyUnavailable} label="无货时提醒" />
+                <ToggleCard checked={autoOrder} onChange={setAutoOrder} label="有货时自动下单" className="sm:col-span-2" />
+              </div>
             </div>
 
             {autoOrder && (
-              <div className="grid grid-cols-1 sm:grid-cols-[1fr_160px] gap-3 rounded-2xl border border-border p-4">
-                <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1.5">下单账户 *</label>
-                  <AccountSelect value={autoOrderAccountId} onChange={setAutoOrderAccountId} />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1.5">每个匹配机房数量</label>
-                  <Input type="number" min={1} max={100} value={quantity} onChange={(event) => setQuantity(Math.max(1, Number(event.target.value) || 1))} />
+              <div className="border-t border-border pt-4">
+                <h3 className="text-[13px] font-semibold mb-2.5 flex items-center gap-1.5">
+                  <ShoppingCart className="w-3.5 h-3.5 text-muted-foreground" />
+                  抢购参数
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_180px] gap-3">
+                  <div>
+                    <label className="block text-[11px] text-muted-foreground mb-1">OVH 账户 *</label>
+                    <AccountSelect value={autoOrderAccountId} onChange={setAutoOrderAccountId} />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-muted-foreground mb-1">每个数据中心数量</label>
+                    <Input type="number" min={1} max={100} value={quantity} onChange={(event) => setQuantity(Math.max(1, Number(event.target.value) || 1))} />
+                  </div>
                 </div>
               </div>
             )}
@@ -225,41 +397,12 @@ export function MonitorSubscriptionDialog({
           <DialogFooter className="mt-5 border-t border-border pt-4">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>取消</Button>
             <Button type="submit" disabled={pending}>
-              <Bell className="h-4 w-4" />{pending ? "保存中…" : editing ? "保存修改" : "确认添加"}
+              <Bell className="h-4 w-4" />{pending ? "保存中…" : editing ? "保存修改" : "创建任务"}
             </Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function FilterPicker({ icon, label, choices, values, onChange }: {
-  icon: React.ReactNode;
-  label: string;
-  choices: FilterChoice[];
-  values: string[];
-  onChange: (values: string[]) => void;
-}) {
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">{icon}{label}<span className="font-normal">（可多选，未选表示全部）</span></div>
-      {choices.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {choices.map((choice) => {
-            const selected = values.includes(choice.value);
-            return (
-              <button key={choice.value} type="button" onClick={() => onChange(selected ? values.filter((value) => value !== choice.value) : [...values, choice.value])}
-                className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-muted"}`}>
-                {choice.label}
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="text-[11px] text-muted-foreground">选择目录中的服务器型号后可选择具体规格；当前按全部匹配。</p>
-      )}
-    </div>
   );
 }
 

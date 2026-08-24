@@ -11,6 +11,7 @@ import {
   Plus,
   Loader2,
   Pencil,
+  MapPin,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -52,6 +53,7 @@ import {
   useAvailability,
   buildVariantIndex,
   hasStockWithOption,
+  variantDcStatus,
 } from "@/hooks/use-availability";
 
 /** 抢购队列：列表 + 暂停/恢复/删除/清空 + 新建抢购任务 */
@@ -579,13 +581,17 @@ function QueueEditDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const servers = useServers();
+  const availability = useAvailability();
+  const variantIndex = useMemo(() => buildVariantIndex(availability.data), [availability.data]);
   const update = useUpdateQueueItem();
   const [accountId, setAccountId] = useState("");
   const [planCode, setPlanCode] = useState("");
   const [datacenters, setDatacenters] = useState<string[]>([]);
   const [quantity, setQuantity] = useState("1");
   const [retryInterval, setRetryInterval] = useState(String(DEFAULT_RETRY_INTERVAL));
-  const [options, setOptions] = useState<string[]>([]);
+  const [picked, setPicked] = useState<Partial<Record<OptionGroupKey, string>>>({});
+  const [rawOptions, setRawOptions] = useState<string[]>([]);
+  const appliedOptionsForItem = useRef<string | null>(null);
 
   useEffect(() => {
     if (!open || !item) return;
@@ -594,25 +600,84 @@ function QueueEditDialog({
     setDatacenters([displayDatacenterCode(item.datacenter)]);
     setQuantity("1");
     setRetryInterval(String(item.retryInterval || DEFAULT_RETRY_INTERVAL));
-    setOptions(item.options || []);
+    setPicked({});
+    setRawOptions(item.options || []);
+    appliedOptionsForItem.current = null;
   }, [open, item]);
 
   const server = useMemo(() => (servers.data || []).find((s) => s.planCode === planCode), [servers.data, planCode]);
   const grouped = useMemo(() => groupOptions(server?.availableOptions || []), [server?.availableOptions]);
-  const optionGroups = [
-    ["memory", "内存"],
-    ["systemStorage", "系统盘"],
-    ["storage", "硬盘"],
-    ["bandwidth", "网络"],
-  ] as const;
+  const defaultValueSet = useMemo(
+    () => new Set((server?.defaultOptions || []).map((option) => option.value)),
+    [server?.defaultOptions]
+  );
+  const variants = server ? variantIndex[server.planCode] : undefined;
+  const selectedOptions = useMemo(() => {
+    if (server) {
+      const fqnGroups: OptionGroupKey[] = ["memory", "systemStorage", "storage"];
+      return fqnGroups.map((groupKey) => picked[groupKey]).filter(Boolean) as string[];
+    }
+    return rawOptions;
+  }, [server, picked, rawOptions]);
+  const staticDcMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const dc of server?.datacenters || []) map[dc.datacenter.toLowerCase()] = dc.availability;
+    return map;
+  }, [server?.datacenters]);
+  const variantDcMap = useMemo(
+    () => variantDcStatus(variants, selectedOptions),
+    [variants, selectedOptions]
+  );
+  const dcMap = useMemo(() => ({ ...staticDcMap, ...variantDcMap }), [staticDcMap, variantDcMap]);
+  const isAvailable = (status: string | undefined) => !!status && status !== "unavailable" && status !== "unknown";
+  const availableDcCodes = useMemo(
+    () => OVH_DATACENTERS.filter((dc) => isAvailable(dcMap[dc.code] || (dc.apiCode ? dcMap[dc.apiCode] : undefined))).map((dc) => dc.code),
+    [dcMap]
+  );
+  const availableDcCount = availableDcCodes.length;
+  const totalDatacenters = OVH_DATACENTERS.length;
+  const optionHasStock = (groupKey: OptionGroupKey, value: string): boolean => {
+    if (!variants || variants.length === 0) return true;
+    if (groupKey === "bandwidth" || groupKey === "vrack" || groupKey === "cpu" || groupKey === "other") return true;
+    return hasStockWithOption(
+      variants,
+      picked as Record<string, string>,
+      groupKey,
+      value,
+      datacenters.length > 0 ? datacenters : undefined
+    );
+  };
 
-  const toggleOption = (value: string) => setOptions((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
+  useEffect(() => {
+    if (!open || !item || !server || server.planCode !== planCode || appliedOptionsForItem.current === item.id) return;
+    const wanted = new Set(item.options || []);
+    const consumed = new Set<string>();
+    const next: Partial<Record<OptionGroupKey, string>> = {};
+    (Object.keys(grouped) as OptionGroupKey[]).forEach((groupKey) => {
+      const hit = grouped[groupKey].find((option) => wanted.has(option.value));
+      if (hit) {
+        next[groupKey] = hit.value;
+        consumed.add(hit.value);
+      }
+    });
+    setPicked(next);
+    setRawOptions((item.options || []).filter((value) => !consumed.has(value)));
+    appliedOptionsForItem.current = item.id;
+  }, [open, item, server, planCode, grouped]);
+
+  const toggleDC = (code: string) => {
+    setDatacenters((current) => current.includes(code) ? current.filter((value) => value !== code) : [...current, code]);
+  };
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!item || !accountId || !planCode.trim() || datacenters.length === 0) {
       toast.error("请填写账户、型号并至少选择一个数据中心");
       return;
     }
+    const options = server
+      ? [...(Object.values(picked).filter(Boolean) as string[]), ...rawOptions]
+      : rawOptions;
     await update.mutateAsync({
       id: item.id,
       account_id: accountId,
@@ -627,45 +692,77 @@ function QueueEditDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[95vw] sm:max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+      <DialogContent className="w-[95vw] sm:max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle>编辑抢购任务</DialogTitle>
-          <DialogDescription>修改账户、配置组合、数据中心、数量和重试间隔，保存后任务会从头开始重试。</DialogDescription>
+          <DialogTitle>修改抢购任务</DialogTitle>
+          <DialogDescription>按照创建抢购任务的方式修改账户、配置组合、数据中心数量和重试间隔。</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-          <div className="space-y-4 overflow-y-auto pr-1">
+          <div className="space-y-5 overflow-y-auto pr-1">
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1.5">OVH 账户 *</label>
+              <label className="block text-[13px] font-medium mb-1.5">OVH 账户 *</label>
               <AccountSelect value={accountId} onChange={setAccountId} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1.5">服务器型号 *</label>
-              <PlanCodeCombobox value={planCode} onChange={(value) => { setPlanCode(value); setOptions([]); }} servers={servers.data || []} />
+              <label className="block text-[13px] font-medium mb-1.5">服务器计划代码 *</label>
+              <PlanCodeCombobox value={planCode} onChange={(value) => { setPlanCode(value); setPicked({}); setRawOptions([]); appliedOptionsForItem.current = item?.id || null; }} servers={servers.data || []} />
             </div>
-            {optionGroups.map(([key, label]) => {
-              const choices = grouped[key];
-              if (choices.length === 0) return null;
-              return (
-                <div key={key}>
-                  <div className="text-xs font-medium text-muted-foreground mb-1.5">{label}（可多选）</div>
-                  <div className="flex flex-wrap gap-2">
-                    {choices.map((choice) => {
-                      const selected = options.includes(choice.value);
-                      return <button key={choice.value} type="button" onClick={() => toggleOption(choice.value)} className={`rounded-full border px-3 py-1.5 text-xs ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-muted"}`}>{choice.label || choice.value}</button>;
-                    })}
-                  </div>
+            <div className="space-y-4">
+              {(["memory", "systemStorage", "storage", "bandwidth"] as OptionGroupKey[]).map((groupKey) => {
+                const choices = grouped[groupKey];
+                if (choices.length === 0) return null;
+                return (
+                  <OptionGroupSection
+                    key={groupKey}
+                    groupKey={groupKey}
+                    options={choices}
+                    picked={picked[groupKey] || ""}
+                    defaultValueSet={defaultValueSet}
+                    hasStock={variants && variants.length > 0 ? (value) => optionHasStock(groupKey, value) : undefined}
+                    onPick={(value) => setPicked((current) => ({ ...current, [groupKey]: current[groupKey] === value ? "" : value }))}
+                  />
+                );
+              })}
+              {rawOptions.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  <span className="text-[11px] text-muted-foreground">其他配置:</span>
+                  {rawOptions.map((value) => <Chip key={value} tone="default" className="font-mono">{value}</Chip>)}
                 </div>
-              );
-            })}
+              )}
+            </div>
             <div>
-              <div className="flex items-center justify-between mb-1.5"><label className="text-xs font-medium text-muted-foreground">数据中心 *</label><Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setDatacenters([])}>清空</Button></div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 rounded-xl border border-border p-3">
-                {OVH_DATACENTERS.map((dc) => { const selected = datacenters.includes(dc.code); return <label key={dc.code} className="flex items-center gap-2 text-xs cursor-pointer"><Checkbox checked={selected} onCheckedChange={() => setDatacenters((current) => selected ? current.filter((code) => code !== dc.code) : [...current, dc.code])} /><span className="font-mono">{dc.code.toUpperCase()}</span></label>; })}
+              <div className="flex items-center justify-between mb-2.5 gap-2 flex-wrap">
+                <h3 className="text-[13px] font-semibold flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-muted-foreground" />
+                  数据中心 · 选 {datacenters.length} / {totalDatacenters}
+                </h3>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-muted-foreground">{availableDcCount}/{totalDatacenters} 可用 · {Math.round((availableDcCount / totalDatacenters) * 100)}%</span>
+                  <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => setDatacenters(datacenters.length > 0 ? [] : availableDcCodes)}>
+                    {datacenters.length > 0 ? "清空" : "选可用"}
+                  </Button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
+                {OVH_DATACENTERS.map((dc) => {
+                  const selected = datacenters.includes(dc.code);
+                  const status = dcMap[dc.code] || (dc.apiCode ? dcMap[dc.apiCode] : undefined);
+                  const available = isAvailable(status);
+                  return (
+                    <button key={dc.code} type="button" onClick={() => toggleDC(dc.code)} className={"text-left border rounded-xl px-3 py-2 flex items-center justify-between transition-colors " + (selected ? "border-foreground bg-foreground text-background" : "border-border hover:bg-secondary/50")}>
+                      <div className="min-w-0">
+                        <div className="text-[12px] font-bold font-mono">{dc.code.toUpperCase()}</div>
+                        <div className={"text-[10px] truncate " + (selected ? "text-background/70" : "text-muted-foreground")}>{dc.region} · {dc.name}</div>
+                      </div>
+                      <StatusDot tone={available ? "success" : "danger"} size="sm" pulse={available && !selected} />
+                    </button>
+                  );
+                })}
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div><label className="block text-xs font-medium text-muted-foreground mb-1.5">每个数据中心数量</label><Input type="number" min={1} max={100} value={quantity} onChange={(event) => setQuantity(event.target.value)} /></div>
-              <div><label className="block text-xs font-medium text-muted-foreground mb-1.5">重试间隔（秒）</label><Input type="number" min={1} value={retryInterval} onChange={(event) => setRetryInterval(event.target.value)} /></div>
+              <div><label className="block text-[11px] text-muted-foreground mb-1">每个数据中心数量</label><Input type="number" min={1} max={100} value={quantity} onChange={(event) => setQuantity(event.target.value)} /></div>
+              <div><label className="block text-[11px] text-muted-foreground mb-1">重试间隔（秒）</label><Input type="number" min={1} value={retryInterval} onChange={(event) => setRetryInterval(event.target.value)} /></div>
             </div>
           </div>
           <DialogFooter className="mt-4 border-t border-border pt-4"><Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={update.isPending}>取消</Button><Button type="submit" disabled={update.isPending}>{update.isPending ? "保存中…" : "保存修改"}</Button></DialogFooter>
