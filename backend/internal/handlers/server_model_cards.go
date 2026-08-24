@@ -236,6 +236,21 @@ var standardServerDatacenters = []string{
 	"gra", "sbg", "rbx", "bhs", "mum", "waw", "fra", "lon", "hil", "vin", "sgp", "syd",
 }
 
+var standardServerDatacenterLocations = map[string]string{
+	"gra": "法国 · 格拉夫尼茨",
+	"sbg": "法国 · 斯特拉斯堡",
+	"rbx": "法国 · 鲁贝",
+	"bhs": "加拿大 · 博阿尔诺",
+	"mum": "印度 · 孟买",
+	"waw": "波兰 · 华沙",
+	"fra": "德国 · 法兰克福",
+	"lon": "英国 · 伦敦",
+	"hil": "美国西部 · 俄勒冈",
+	"vin": "美国东部 · 弗吉尼亚",
+	"sgp": "新加坡 · 新加坡",
+	"syd": "澳大利亚 · 悉尼",
+}
+
 func canonicalServerDatacenter(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "ynm" {
@@ -247,6 +262,29 @@ func canonicalServerDatacenter(value string) string {
 		}
 	}
 	return value
+}
+
+func serverDatacenterLocations(plan types.ServerPlan) map[string]string {
+	locations := make(map[string]string, len(standardServerDatacenterLocations))
+	for code, location := range standardServerDatacenterLocations {
+		locations[code] = location
+	}
+	for _, datacenter := range plan.Datacenters {
+		code := canonicalServerDatacenter(datacenter.Datacenter)
+		if code == "" {
+			continue
+		}
+		region := strings.TrimSpace(datacenter.Region)
+		name := strings.TrimSpace(datacenter.DCName)
+		if region == "" || strings.EqualFold(region, "unknown") || region == "未知" {
+			continue
+		}
+		if name == "" || strings.EqualFold(name, "unknown") || name == "未知" {
+			continue
+		}
+		locations[code] = region + " · " + name
+	}
+	return locations
 }
 
 func serverDatacenterLines(plan types.ServerPlan) []string {
@@ -277,13 +315,18 @@ func serverDatacenterLines(plan types.ServerPlan) []string {
 	}
 	sort.Strings(extra)
 	codes := append(append([]string{}, standardServerDatacenters...), extra...)
+	locations := serverDatacenterLocations(plan)
 	lines := make([]string, 0, len(codes))
 	for _, code := range codes {
 		point := "🔴"
 		if available[code] {
 			point = "🟢"
 		}
-		lines = append(lines, point+" "+strings.ToUpper(code))
+		line := point + " " + strings.ToUpper(code)
+		if location := strings.TrimSpace(locations[code]); location != "" {
+			line += "    " + location
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }

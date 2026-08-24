@@ -81,7 +81,11 @@ func TestServerPlanSectionsDefaultsAndDatacenters(t *testing.T) {
 	if sections[5].Title != "数据中心 2/12 可用" {
 		t.Fatalf("数据中心可用比例错误: %q", sections[5].Title)
 	}
-	for _, want := range []string{"🟢 GRA", "🔴 RBX", "🟢 MUM"} {
+	for _, want := range []string{
+		"🟢 GRA    法国 · 格拉夫尼茨",
+		"🔴 RBX    法国 · 鲁贝",
+		"🟢 MUM    印度 · 孟买",
+	} {
 		if !strings.Contains(dcs, want) {
 			t.Fatalf("数据中心状态缺少 %q: %q", want, dcs)
 		}
