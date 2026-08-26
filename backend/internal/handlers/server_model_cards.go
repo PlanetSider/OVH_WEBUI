@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ovh-webui/server/internal/app"
@@ -19,17 +21,26 @@ import (
 const (
 	telegramPlanCardMaxRunes = 900
 	feishuPlanCardMaxRunes  = 1800
+	serverModelRefreshDelay = 5 * time.Minute
 )
 
 var (
 	serverModelSpaces      = regexp.MustCompile(`\s+`)
+	serverModelDashSpaces  = regexp.MustCompile(`\s*-\s*`)
+	serverModelSpaceJoin   = regexp.MustCompile(`(?i)^([a-z][a-z0-9]*)\s+(\d[a-z0-9-]*)$`)
 	serverMemoryOption     = regexp.MustCompile(`(?i)ram-(\d+)g`)
 	serverMemoryFrequency  = regexp.MustCompile(`(?i)(?:^|[-_])((?:no)?ecc-\d+)(?:[-_]|$)`)
 	serverBandwidthOption  = regexp.MustCompile(`(?i)bandwidth-(\d+)`)
 	serverTrafficBandwidth = regexp.MustCompile(`(?i)traffic-(\d+)(tb|gb|mb)-(\d+)`)
 	serverTrafficOption    = regexp.MustCompile(`(?i)traffic-(\d+)(tb|gb|mb)`)
 	serverModelQuery       = regexp.MustCompile(`(?i)^[a-z][a-z0-9]*-\d[a-z0-9-]*$`)
-	serverModelIdentifier  = regexp.MustCompile(`(?i)\b[a-z][a-z0-9]*-\d[a-z0-9-]*\b`)
+	serverModelIdentifier  = regexp.MustCompile(`(?i)\b[a-z][a-z0-9]*\s*-\s*\d[a-z0-9-]*\b`)
+	serverModelDashes      = strings.NewReplacer("‐", "-", "‑", "-", "‒", "-", "–", "-", "—", "-", "﹘", "-", "﹣", "-", "－", "-")
+	serverModelPlanAliases = map[string]map[string]struct{}{
+		"ks-1": {"24sk102": {}, "26sk10b-v1": {}},
+	}
+	serverModelRefreshMu   sync.Mutex
+	serverModelLastRefresh time.Time
 )
 
 type serverPlanSection struct {
@@ -38,11 +49,17 @@ type serverPlanSection struct {
 }
 
 func normalizeServerModel(value string) string {
-	return strings.ToLower(serverModelSpaces.ReplaceAllString(strings.TrimSpace(value), " "))
+	value = strings.ToLower(strings.TrimSpace(serverModelDashes.Replace(value)))
+	value = serverModelDashSpaces.ReplaceAllString(value, "-")
+	value = serverModelSpaces.ReplaceAllString(value, " ")
+	if match := serverModelSpaceJoin.FindStringSubmatch(value); match != nil {
+		value = match[1] + "-" + match[2]
+	}
+	return value
 }
 
 func looksLikeServerModelQuery(value string) bool {
-	return serverModelQuery.MatchString(strings.TrimSpace(value))
+	return serverModelQuery.MatchString(normalizeServerModel(value))
 }
 
 func serverModelCandidates(plan types.ServerPlan) []string {
@@ -56,42 +73,69 @@ func serverModelCandidates(plan types.ServerPlan) []string {
 	// 部分 OVH 目录会在型号前加系列名，例如 "Kimsufi Essential | KS-1 | ..."。
 	// 从完整名称和描述中提取型号标识，避免漏匹配后被普通文本路径误当成下单请求。
 	for _, value := range []string{plan.Name, plan.Description} {
+		value = serverModelDashes.Replace(value)
 		candidates = append(candidates, serverModelIdentifier.FindAllString(value, -1)...)
 	}
 	return candidates
 }
 
-// findServerPlansByModel 按服务器列表中的型号精确匹配，忽略大小写和连续空格。
-// 不用模糊包含匹配，避免把普通文本或 planCode 误当成型号查询。
-func findServerPlansByModel(state *app.State, model string) []types.ServerPlan {
+func appendServerPlansByPlanCode(target []types.ServerPlan, seen map[string]struct{}, plans []types.ServerPlan) []types.ServerPlan {
+	for _, plan := range plans {
+		key := strings.ToLower(strings.TrimSpace(plan.PlanCode))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		target = append(target, plan)
+	}
+	return target
+}
+
+func serverPlanCatalogSnapshot(state *app.State) []types.ServerPlan {
+	if state == nil {
+		return nil
+	}
+	plans := make([]types.ServerPlan, 0)
+	seen := make(map[string]struct{})
+	state.ServerPlansMu.RLock()
+	plans = appendServerPlansByPlanCode(plans, seen, state.ServerPlans)
+	state.ServerPlansMu.RUnlock()
+	if state.ServerCache != nil {
+		if cachedPlans, _ := state.ServerCache.Get(); len(cachedPlans) > 0 {
+			plans = appendServerPlansByPlanCode(plans, seen, cachedPlans)
+		}
+	}
+	if state.DB != nil {
+		if storedPlans, err := state.DB.ListServers(); err == nil {
+			plans = appendServerPlansByPlanCode(plans, seen, storedPlans)
+		}
+	}
+	return plans
+}
+
+func matchServerPlansByModel(plans []types.ServerPlan, model string) []types.ServerPlan {
 	want := normalizeServerModel(model)
 	if want == "" {
 		return nil
 	}
-	state.ServerPlansMu.RLock()
-	plans := make([]types.ServerPlan, len(state.ServerPlans))
-	copy(plans, state.ServerPlans)
-	state.ServerPlansMu.RUnlock()
-	if len(plans) == 0 && state.DB != nil {
-		if storedPlans, err := state.DB.ListServers(); err == nil {
-			plans = storedPlans
-		}
-	}
-
+	aliases := serverModelPlanAliases[want]
 	result := make([]types.ServerPlan, 0)
 	seen := make(map[string]struct{})
 	for _, plan := range plans {
-		matched := false
+		key := strings.ToLower(strings.TrimSpace(plan.PlanCode))
+		_, matched := aliases[key]
 		for _, candidate := range serverModelCandidates(plan) {
 			if normalizeServerModel(candidate) == want {
 				matched = true
 				break
 			}
 		}
-		if !matched || strings.TrimSpace(plan.PlanCode) == "" {
+		if !matched || key == "" {
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(plan.PlanCode))
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -102,6 +146,48 @@ func findServerPlansByModel(state *app.State, model string) []types.ServerPlan {
 		return strings.ToLower(result[i].PlanCode) < strings.ToLower(result[j].PlanCode)
 	})
 	return result
+}
+
+func refreshServerPlansForModelQuery(state *app.State) {
+	if state == nil || state.OVH == nil || state.Logger == nil || !state.HasAnyAccount() {
+		return
+	}
+	serverModelRefreshMu.Lock()
+	defer serverModelRefreshMu.Unlock()
+	if !serverModelLastRefresh.IsZero() && time.Since(serverModelLastRefresh) < serverModelRefreshDelay {
+		return
+	}
+	serverModelLastRefresh = time.Now()
+	refreshed := catalog.LoadServerList(state)
+	if len(refreshed) == 0 {
+		return
+	}
+	state.ServerPlansMu.Lock()
+	state.ServerPlans = refreshed
+	state.ServerPlansMu.Unlock()
+	if state.ServerCache != nil {
+		state.ServerCache.Set(refreshed)
+	}
+	if state.DB != nil {
+		if err := state.SaveServers(); err != nil {
+			state.Logger.Warn("保存型号查询刷新后的服务器目录失败: "+err.Error(), "")
+		}
+	}
+}
+
+// findServerPlansByModel 按服务器列表中的型号精确匹配，忽略大小写和横线格式差异。
+// 本地目录未命中时按需刷新一次；不用模糊包含匹配，避免把普通文本误当成型号查询。
+func findServerPlansByModel(state *app.State, model string) []types.ServerPlan {
+	if !looksLikeServerModelQuery(model) {
+		return nil
+	}
+	plans := matchServerPlansByModel(serverPlanCatalogSnapshot(state), model)
+	expected := len(serverModelPlanAliases[normalizeServerModel(model)])
+	if len(plans) > 0 && (expected == 0 || len(plans) >= expected) {
+		return plans
+	}
+	refreshServerPlansForModelQuery(state)
+	return matchServerPlansByModel(serverPlanCatalogSnapshot(state), model)
 }
 
 func serverOptionGroup(option types.ServerOption) string {

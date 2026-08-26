@@ -38,7 +38,7 @@ func testServerPlan() types.ServerPlan {
 func TestFindServerPlansByModel(t *testing.T) {
 	state := &app.State{ServerPlans: []types.ServerPlan{
 		testServerPlan(),
-		{PlanCode: "26sk10b-v1", Name: "Kimsufi Essential | KS-1 | AMD Ryzen"},
+		{PlanCode: "26sk10b-v1", Name: "Kimsufi Essential"},
 		{PlanCode: "24sk103", Name: "KS-2 | Intel Xeon"},
 	}}
 	plans := findServerPlansByModel(state, " ks-1 ")
@@ -48,10 +48,39 @@ func TestFindServerPlansByModel(t *testing.T) {
 	if got := findServerPlansByModel(state, "KS"); len(got) != 0 {
 		t.Fatalf("不应模糊匹配型号: %+v", got)
 	}
+	for _, value := range []string{"KS-1", "ks - 1", "KS 1", "KS‑1"} {
+		got := findServerPlansByModel(state, value)
+		if len(got) != 2 || got[0].PlanCode != "24sk102" || got[1].PlanCode != "26sk10b-v1" {
+			t.Fatalf("型号输入格式 %q 的匹配结果错误: %+v", value, got)
+		}
+	}
+	namePlan := types.ServerPlan{PlanCode: "24sk103", Name: "Kimsufi Essential | KS - 2 | Intel Xeon"}
+	if got := matchServerPlansByModel([]types.ServerPlan{namePlan}, "KS-2"); len(got) != 1 || got[0].PlanCode != "24sk103" {
+		t.Fatalf("应从带系列前缀的目录名称中提取型号: %+v", got)
+	}
+}
+
+func TestFindServerPlansByModelMergesCache(t *testing.T) {
+	state := &app.State{
+		ServerPlans: []types.ServerPlan{{PlanCode: "24sk102", Name: "Kimsufi Essential"}},
+		ServerCache: app.NewServerListCache(),
+	}
+	state.ServerCache.Set([]types.ServerPlan{{PlanCode: "26sk10b-v1", Name: "Kimsufi Essential"}})
+
+	plans := findServerPlansByModel(state, "KS-1")
+	if len(plans) != 2 || plans[0].PlanCode != "24sk102" || plans[1].PlanCode != "26sk10b-v1" {
+		t.Fatalf("应合并内存目录和服务器缓存: %+v", plans)
+	}
+}
+
+func TestFindServerPlansByModelWithoutRuntimeDoesNotRefresh(t *testing.T) {
+	if plans := findServerPlansByModel(&app.State{}, "KS-1"); len(plans) != 0 {
+		t.Fatalf("空运行态不应生成不存在的服务器配置: %+v", plans)
+	}
 }
 
 func TestLooksLikeServerModelQuery(t *testing.T) {
-	for _, value := range []string{"KS-1", "rise-2", "GAME-1-A"} {
+	for _, value := range []string{"KS-1", "ks - 1", "KS 1", "KS‑1", "rise-2", "GAME-1-A"} {
 		if !looksLikeServerModelQuery(value) {
 			t.Fatalf("应识别为型号查询: %q", value)
 		}
@@ -59,6 +88,14 @@ func TestLooksLikeServerModelQuery(t *testing.T) {
 	for _, value := range []string{"24sk102", "26sk10b-v1", "KS-1 gra", "hello"} {
 		if looksLikeServerModelQuery(value) {
 			t.Fatalf("不应识别为型号查询: %q", value)
+		}
+	}
+}
+
+func TestNormalizeServerModel(t *testing.T) {
+	for _, value := range []string{"KS-1", "ks - 1", "KS 1", "KS‐1", "KS‑1", "KS－1"} {
+		if got := normalizeServerModel(value); got != "ks-1" {
+			t.Fatalf("型号归一化错误: %q => %q", value, got)
 		}
 	}
 }
