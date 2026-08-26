@@ -367,24 +367,6 @@ func serverDatacenterAvailabilitySummary(plan types.ServerPlan) string {
 	return fmt.Sprintf("%d/%d 可用", availableCount, total)
 }
 
-func serverPriceDatacenter(plan types.ServerPlan) string {
-	for _, datacenter := range plan.Datacenters {
-		status := strings.ToLower(strings.TrimSpace(datacenter.Availability))
-		if status == "" || status == "unavailable" || status == "unknown" {
-			continue
-		}
-		if code := canonicalServerDatacenter(datacenter.Datacenter); code != "" {
-			return code
-		}
-	}
-	for _, datacenter := range plan.Datacenters {
-		if code := canonicalServerDatacenter(datacenter.Datacenter); code != "" {
-			return code
-		}
-	}
-	return "gra"
-}
-
 func serverPriceSection(state *app.State, plan types.ServerPlan) serverPlanSection {
 	section := serverPlanSection{Title: "💰 价格:"}
 	if state == nil {
@@ -397,19 +379,16 @@ func serverPriceSection(state *app.State, plan types.ServerPlan) serverPlanSecti
 			options = append(options, value)
 		}
 	}
-	display, err := price.GetDisplay(state, "", plan.PlanCode, serverPriceDatacenter(plan), options)
-	if err != nil && !display.TotalKnown && !display.BreakdownKnown {
+	// 型号查询与服务器列表使用同一份公开 catalog 价格。不要先创建购物车：
+	// 购物车询价会受指定机房库存影响，导致明明列表有价格、消息卡片却显示不可用。
+	display, err := price.GetCatalogDisplay(state, "", plan.PlanCode, options)
+	if err != nil || !display.BreakdownKnown {
 		section.Lines = []string{"月费: 暂不可用", "安装费: 无", "总价: 暂不可用"}
 		return section
 	}
 	formatted := monitor.FormatDisplayPrice(display)
 	if strings.TrimSpace(formatted) == "" {
 		section.Lines = []string{"月费: 暂不可用", "安装费: 无", "总价: 暂不可用"}
-		return section
-	}
-	if !display.BreakdownKnown && display.TotalKnown {
-		// 价格接口只返回总价时，仍保持卡片约定的三行结构，避免飞书/微信出现缺列。
-		section.Lines = []string{"月费: 暂不可用", "安装费: 无", formatted}
 		return section
 	}
 	section.Lines = strings.Split(formatted, "\n")
