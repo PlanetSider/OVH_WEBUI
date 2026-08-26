@@ -38,7 +38,7 @@ func testServerPlan() types.ServerPlan {
 func TestFindServerPlansByModel(t *testing.T) {
 	state := &app.State{ServerPlans: []types.ServerPlan{
 		testServerPlan(),
-		{PlanCode: "26sk10b-v1", Name: "KS-1 | AMD Ryzen"},
+		{PlanCode: "26sk10b-v1", Name: "Kimsufi Essential | KS-1 | AMD Ryzen"},
 		{PlanCode: "24sk103", Name: "KS-2 | Intel Xeon"},
 	}}
 	plans := findServerPlansByModel(state, " ks-1 ")

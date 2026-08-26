@@ -29,6 +29,7 @@ var (
 	serverTrafficBandwidth = regexp.MustCompile(`(?i)traffic-(\d+)(tb|gb|mb)-(\d+)`)
 	serverTrafficOption    = regexp.MustCompile(`(?i)traffic-(\d+)(tb|gb|mb)`)
 	serverModelQuery       = regexp.MustCompile(`(?i)^[a-z][a-z0-9]*-\d[a-z0-9-]*$`)
+	serverModelIdentifier  = regexp.MustCompile(`(?i)\b[a-z][a-z0-9]*-\d[a-z0-9-]*\b`)
 )
 
 type serverPlanSection struct {
@@ -51,6 +52,11 @@ func serverModelCandidates(plan types.ServerPlan) []string {
 	}
 	if index := strings.Index(plan.Description, "|"); index >= 0 {
 		candidates = append(candidates, plan.Description[:index])
+	}
+	// 部分 OVH 目录会在型号前加系列名，例如 "Kimsufi Essential | KS-1 | ..."。
+	// 从完整名称和描述中提取型号标识，避免漏匹配后被普通文本路径误当成下单请求。
+	for _, value := range []string{plan.Name, plan.Description} {
+		candidates = append(candidates, serverModelIdentifier.FindAllString(value, -1)...)
 	}
 	return candidates
 }
