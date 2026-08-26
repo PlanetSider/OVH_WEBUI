@@ -47,15 +47,31 @@ type catalogPricing struct {
 	Capacities   []string `json:"capacities"`
 }
 
-// GetDisplay 先按现有逻辑询价，再从公开 catalog 拆出月费和一次性安装费。
-// catalog 读取优先复用 SQLite 缓存，避免监控每次询价都额外直连 OVH。
+// GetDisplay 询价后从公开 catalog 拆出月费和一次性安装费。
+// catalog 读取优先复用 SQLite 缓存，避免每次都额外直连 OVH。
 func GetDisplay(state *app.State, accountID, planCode, datacenter string, options []string) (DisplayPrice, error) {
 	result := GetInternal(state, accountID, planCode, datacenter, options)
+	return GetDisplayFromResult(state, accountID, planCode, options, result)
+}
+
+// GetCatalogDisplay 只读取公开 catalog，计算与服务器列表相同口径的月费和
+// 安装费。它不创建购物车，因此可在实时询价失败时继续为通知提供目录价格。
+func GetCatalogDisplay(state *app.State, accountID, planCode string, options []string) (DisplayPrice, error) {
+	return getDisplayFromCatalog(state, accountID, planCode, options, DisplayPrice{Currency: "EUR"})
+}
+
+// GetDisplayFromResult 复用已经完成的购物车询价结果，再从公开 catalog
+// 拆出月费和安装费。监控流程使用此函数，避免为了生成通知再次创建购物车。
+func GetDisplayFromResult(state *app.State, accountID, planCode string, options []string, result Result) (DisplayPrice, error) {
 	if !result.Success {
 		return DisplayPrice{}, fmt.Errorf("价格查询失败: %s", result.Error)
 	}
 
 	display := displayPriceFromSummary(result.Price)
+	return getDisplayFromCatalog(state, accountID, planCode, options, display)
+}
+
+func getDisplayFromCatalog(state *app.State, accountID, planCode string, options []string, display DisplayPrice) (DisplayPrice, error) {
 	client, err := state.OVH.ClientFor(accountID)
 	if err != nil {
 		return display, fmt.Errorf("获取 OVH 客户端失败: %w", err)

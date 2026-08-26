@@ -37,9 +37,9 @@ func optionsFromConfig(configInfo map[string]interface{}) []string {
 	return options
 }
 
-// verifyPriceAvailable 进程内询价（不再 HTTP 自调 /api/internal/monitor/price）。
-// accountID 为空时用默认账户。
-func (m *Monitor) verifyPriceAvailable(accountID, planCode, datacenter string, configInfo map[string]interface{}) (bool, string) {
+// verifyPriceAvailable 完成一次购物车价格校验，并返回可直接用于通知的价格文案。
+// 返回值依次为：价格文案、价格校验是否通过、失败原因。
+func (m *Monitor) verifyPriceAvailable(accountID, planCode, datacenter string, configInfo map[string]interface{}) (string, bool, string) {
 	options := optionsFromConfig(configInfo)
 	result := price.GetInternal(m.state, accountID, planCode, datacenter, options)
 	if !result.Success {
@@ -48,24 +48,51 @@ func (m *Monitor) verifyPriceAvailable(accountID, planCode, datacenter string, c
 			errMsg = "未知错误"
 		}
 		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
-		return false, errMsg
+		return m.getCatalogPriceInfoText(accountID, planCode, options), false, errMsg
 	}
 	if result.Price == nil {
 		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - price字段缺失", planCode, datacenter), "monitor")
-		return false, "price字段缺失"
+		return m.getCatalogPriceInfoText(accountID, planCode, options), false, "price字段缺失"
 	}
 	withTax := result.Price.Prices["withTax"]
 	if withTax == nil {
 		errMsg := "withTax无效(<nil>)"
 		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
-		return false, errMsg
+		return m.getCatalogPriceInfoText(accountID, planCode, options), false, errMsg
 	}
 	if v, ok := numconv.ToFloat64(withTax); ok && v == 0 {
 		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - withTax无效(0)", planCode, datacenter), "monitor")
-		return false, "withTax无效(0)"
+		return m.getCatalogPriceInfoText(accountID, planCode, options), false, "withTax无效(0)"
+	}
+	display, displayErr := price.GetDisplayFromResult(m.state, accountID, planCode, options, result)
+	priceText := ""
+	if displayErr != nil {
+		m.state.Logger.Warn("价格目录拆分失败: "+displayErr.Error(), "monitor")
+	}
+	if display.TotalKnown || display.BreakdownKnown {
+		priceText = formatNotificationPrice(display)
 	}
 	m.state.Logger.Debug(fmt.Sprintf("价格校验通过: %s@%s - 含税价格: %v", planCode, datacenter, withTax), "monitor")
-	return true, ""
+	return priceText, true, ""
+}
+
+// getCatalogPriceInfoText 与服务器列表使用相同的公开 catalog 价格口径。
+// 购物车失败时仍可显示月费和安装费，但不伪造首月实际总价。
+func (m *Monitor) getCatalogPriceInfoText(accountID, planCode string, options []string) string {
+	display, err := price.GetCatalogDisplay(m.state, accountID, planCode, options)
+	if err != nil {
+		m.state.Logger.Warn("价格目录获取失败: "+err.Error(), "monitor")
+		return ""
+	}
+	if !display.BreakdownKnown {
+		return ""
+	}
+	installText := "无"
+	if display.InstallWithTax > 0 {
+		installText = formatCurrency(display.InstallWithTax, display.Currency)
+	}
+	return fmt.Sprintf("月费: %s/月\n安装费: %s\n首月总价: 暂不可用",
+		formatCurrency(display.MonthlyWithTax, display.Currency), installText)
 }
 
 // GetPriceInfoText 进程内询价并格式化为通知文案
@@ -81,21 +108,25 @@ func (m *Monitor) GetPriceInfoText(accountID, planCode, datacenter string, confi
 	if !display.TotalKnown && !display.BreakdownKnown {
 		return ""
 	}
-	text := formatDisplayPrice(display)
+	text := formatNotificationPrice(display)
 	if text != "" {
 		m.state.Logger.Debug("价格获取成功: "+strings.ReplaceAll(text, "\n", " | "), "monitor")
 	}
 	return text
 }
 
-// formatDisplayPrice 统一生成上架通知中的价格块。
+// formatNotificationPrice 统一生成监控通知中的价格块。
 // 月费与安装费来自 catalog 的含税价格；首月总价优先使用购物车 summary 的含税总价。
-func formatDisplayPrice(display price.DisplayPrice) string {
+func formatNotificationPrice(display price.DisplayPrice) string {
+	return formatPriceWithTotalLabel(display, "首月总价")
+}
+
+func formatPriceWithTotalLabel(display price.DisplayPrice, totalLabel string) string {
 	if !display.BreakdownKnown {
 		if !display.TotalKnown {
 			return ""
 		}
-		return fmt.Sprintf("总价: %s", formatCurrency(display.TotalWithTax, display.Currency))
+		return fmt.Sprintf("%s: %s", totalLabel, formatCurrency(display.TotalWithTax, display.Currency))
 	}
 
 	installText := "无"
@@ -106,15 +137,17 @@ func formatDisplayPrice(display price.DisplayPrice) string {
 	if !display.TotalKnown {
 		total = display.MonthlyWithTax + display.InstallWithTax
 	}
-	return fmt.Sprintf("月费: %s/月\n安装费: %s\n总价: %s",
+	return fmt.Sprintf("月费: %s/月\n安装费: %s\n%s: %s",
 		formatCurrency(display.MonthlyWithTax, display.Currency),
 		installText,
+		totalLabel,
 		formatCurrency(total, display.Currency))
 }
 
-// FormatDisplayPrice 对外复用通知价格格式，保证 Telegram、飞书与监控通知口径一致。
+// FormatDisplayPrice 保持服务器型号卡片的既有“总价”字段格式。
+// 监控通知请使用内部 formatNotificationPrice，避免改变卡片兼容性。
 func FormatDisplayPrice(display price.DisplayPrice) string {
-	return formatDisplayPrice(display)
+	return formatPriceWithTotalLabel(display, "总价")
 }
 
 func formatCurrency(value float64, currency string) string {

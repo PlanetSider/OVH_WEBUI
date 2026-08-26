@@ -93,8 +93,11 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 	priceText, _ := configInfo["cached_price"].(string)
 	if priceText != "" {
 		appendPriceBlock(&msg, priceText)
-	} else if priceErrorMessage != "" {
-		msg.WriteString("\n⚠️ 价格提示：" + priceErrorMessage + "\n")
+	} else {
+		appendPriceBlock(&msg, unavailablePriceText())
+		if priceErrorMessage != "" {
+			msg.WriteString("\n⚠️ 价格提示：" + priceErrorMessage + "\n")
+		}
 	}
 
 	msg.WriteString(fmt.Sprintf("\n✅ 有货的机房 (%d个):\n", len(availableDCs)))
@@ -297,12 +300,15 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 		}
 		priceText, _ := configInfo["cached_price"].(string)
 		if priceText == "" {
+			accountID, _ := configInfo["accountId"].(string)
 			// 1:1 对应 Python server_monitor.py:1331-1392：用 30 秒超时保护，
 			// 否则在 OVH 价格 API 卡死时整个通知会阻塞
-			priceText, _ = m.getPriceWithTimeout("", planCode, datacenter, configInfo, 30*time.Second)
+			priceText, _ = m.getPriceWithTimeout(accountID, planCode, datacenter, configInfo, 30*time.Second)
 		}
 		if priceText != "" {
 			appendPriceBlock(&msg, priceText)
+		} else {
+			appendPriceBlock(&msg, unavailablePriceText())
 		}
 		msg.WriteString("状态: " + status + "\n")
 		if durationText != "" {
@@ -355,6 +361,8 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 		}
 		if priceText, ok := configInfo["cached_price"].(string); ok && priceText != "" {
 			appendPriceBlock(&msg, priceText)
+		} else {
+			appendPriceBlock(&msg, unavailablePriceText())
 		}
 		msg.WriteString("\n状态: 可用性显示有货\n")
 		msg.WriteString("时间: " + pushTime.Format("2006-01-02 15:04:05") + "\n")
@@ -430,11 +438,24 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 
 // SendNewServerAlert 对应 Python: send_new_server_alert
 func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
-	msg := fmt.Sprintf("🆕 新服务器上架通知！\n\n型号: %v\n名称: %v\nCPU: %v\n内存: %v\n存储: %v\n带宽: %v\n时间: %s\n\n💡 快去查看详情！",
+	planCode, _ := server["planCode"].(string)
+	priceText := ""
+	if planCode != "" {
+		priceText = m.getCatalogPriceInfoText("", planCode, nil)
+	}
+	msg := fmt.Sprintf("🆕 新服务器上架通知！\n\n型号: %v\n名称: %v\nCPU: %v\n内存: %v\n存储: %v\n带宽: %v\n",
 		server["planCode"], server["name"], server["cpu"], server["memory"], server["storage"], server["bandwidth"],
-		m.nowBeijing().Format("2006-01-02 15:04:05"))
+	)
+	if priceText == "" {
+		priceText = unavailablePriceText()
+	}
+	msg += "\n💰 价格:\n" + priceText + "\n\n⏰ 发现时间: " + m.nowBeijing().Format("2006-01-02 15:04:05") + "\n\n💡 快去查看详情！"
 	FeishuSendDefaultNotification(m.state, "🆕 新服务器上架通知", msg, "green", nil)
 	telegram.SendMessage(m.state, msg, nil)
 	SendWeixinNotification(m.state, msg)
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
+}
+
+func unavailablePriceText() string {
+	return "月费: 暂不可用\n安装费: 暂不可用\n首月总价: 暂不可用"
 }

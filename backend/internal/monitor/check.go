@@ -28,6 +28,12 @@ type notification struct {
 	durationText     string
 }
 
+type monitorPriceCheck struct {
+	text string
+	ok   bool
+	err  string
+}
+
 func (n notification) oldStatusJSON() interface{} {
 	if !n.hasOld {
 		return nil
@@ -97,7 +103,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 		}
 
 		// 并发价格校验
-		priceCheckResults := map[string][2]interface{}{}
+		priceCheckResults := map[string]monitorPriceCheck{}
 		if len(priceCheckTasks) > 0 {
 			var pcMu sync.Mutex
 			var wg sync.WaitGroup
@@ -112,9 +118,9 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				go func(dc string) {
 					defer wg.Done()
 					defer func() { <-sem }()
-					ok, errMsg := m.verifyPriceAvailable(m.resolvePriceAccount(sub), planCode, dc, configInfo)
+					priceText, ok, errMsg := m.verifyPriceAvailable(notificationAccountID, planCode, dc, configInfo)
 					pcMu.Lock()
-					priceCheckResults[dc] = [2]interface{}{ok, errMsg}
+					priceCheckResults[dc] = monitorPriceCheck{text: priceText, ok: ok, err: errMsg}
 					pcMu.Unlock()
 					if ok {
 						m.state.Logger.Info(fmt.Sprintf("%s@%s [%s] 价格校验通过 [config-trace:%s]",
@@ -137,8 +143,8 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 
 			if ds.status != "unavailable" {
 				if v, ok := priceCheckResults[dc]; ok {
-					okBool, _ := v[0].(bool)
-					errStr, _ := v[1].(string)
+					okBool := v.ok
+					errStr := v.err
 					if !okBool {
 						actualStatus = "price_check_failed"
 						priceCheckFailed = true
@@ -249,33 +255,34 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			lastStatus[ds.statusKey] = actualStatus
 		}
 
-		// 价格查询（同一配置只查一次）
+		// 价格校验阶段已经完成购物车询价；直接复用结果，避免通知发送前
+		// 再创建一次购物车。月费和安装费来自 catalog，首月总价来自购物车。
 		var priceText string
 		var priceFetchError string
 		hasAvail := false
 		for _, n := range notifications {
 			if n.changeType == "available" {
 				hasAvail = true
-				break
-			}
-		}
-		if hasAvail {
-			firstDC := ""
-			for _, n := range notifications {
-				if n.changeType == "available" && n.status != "unavailable" {
-					firstDC = n.dc
+				if checked, ok := priceCheckResults[n.dc]; ok {
+					if checked.text != "" {
+						priceText = checked.text
+					}
+					if checked.err != "" && priceFetchError == "" {
+						priceFetchError = checked.err
+					}
+				}
+				if priceText != "" {
 					break
 				}
 			}
-			if firstDC != "" {
-				priceText, priceFetchError = m.getPriceWithTimeout(m.resolvePriceAccount(sub), planCode, firstDC, configInfo, 30*time.Second)
-				if priceText != "" {
-					m.state.Logger.Debug(fmt.Sprintf("配置 %s 价格获取成功: %s，将在所有通知中复用", configDisplay, priceText), "monitor")
-				} else {
-					m.state.Logger.Warn(fmt.Sprintf("配置 %s 价格获取失败，通知中不包含价格信息", configDisplay), "monitor")
-					if priceFetchError == "" {
-						priceFetchError = "价格接口未返回结果"
-					}
+		}
+		if hasAvail {
+			if priceText != "" {
+				m.state.Logger.Debug(fmt.Sprintf("配置 %s 复用价格校验结果: %s", configDisplay, priceText), "monitor")
+			} else {
+				m.state.Logger.Warn(fmt.Sprintf("配置 %s 价格结果为空，通知中将显示价格不可用", configDisplay), "monitor")
+				if priceFetchError == "" {
+					priceFetchError = "价格接口未返回结果"
 				}
 			}
 		}
@@ -358,7 +365,10 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 		for _, n := range priceFailed {
 			m.state.Logger.Info(fmt.Sprintf("准备发送价格校验失败提醒: %s@%s [%s] - 可用性有货但价格校验失败",
 				planCode, n.dc, configDisplay), "monitor")
-			priceTextFailed := m.GetPriceInfoText(m.resolvePriceAccount(sub), planCode, n.dc, configInfo)
+			priceTextFailed := ""
+			if checked, ok := priceCheckResults[n.dc]; ok {
+				priceTextFailed = checked.text
+			}
 			configInfoFailed := copyMap(configInfo)
 			if priceTextFailed != "" {
 				configInfoFailed["cached_price"] = priceTextFailed
