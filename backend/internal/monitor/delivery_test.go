@@ -38,6 +38,18 @@ func testNotificationState(t *testing.T, telegramEnabled, feishuEnabled bool) *a
 	return &app.State{Config: store, DB: database}
 }
 
+func disableNotificationChannels(t *testing.T, store *config.Store) {
+	t.Helper()
+	cfg := store.Get()
+	disabled := false
+	cfg.TgNotificationsEnabled = &disabled
+	cfg.FeishuNotificationsEnabled = &disabled
+	cfg.WeixinNotificationsEnabled = &disabled
+	if err := store.Set(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPendingChannelsDistinguishMissingFromExplicitEmpty(t *testing.T) {
 	sub := &Subscription{PendingNotifyChannels: map[string][]string{"empty": {}}}
 	defaults := []string{NotificationChannelTelegram}
@@ -123,6 +135,7 @@ func TestCheckNewServersPersistsAwaitingNotificationWithoutEnabledChannels(t *te
 		Config: config.New(database),
 		Logger: logger.New(t.TempDir()+"/monitor.log.json", nil),
 	}
+	disableNotificationChannels(t, state.Config)
 	monitor := New(state)
 	monitor.LoadFromDB()
 	monitor.CheckNewServers([]map[string]interface{}{{
@@ -174,6 +187,7 @@ func TestAwaitingNotificationIsDeliveredAfterChannelEnabled(t *testing.T) {
 		DB: database, Config: store,
 		Logger: logger.New(t.TempDir()+"/monitor.log.json", nil),
 	}
+	disableNotificationChannels(t, store)
 	entry, err := NewPurchaseSuccessNotification(types.QueueItem{
 		ID: "task-late-channel", PlanCode: "24sk102", Datacenter: "gra",
 	}, "order-late-channel", "", nil)

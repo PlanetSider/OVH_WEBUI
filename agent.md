@@ -72,18 +72,21 @@ python scripts/smoke_test.py
 
 ### 验证记录与环境限制
 
-每次验证应记录实际执行的命令、结果和环境限制，不要把“未执行”写成“通过”。截至 2026-08-28，本项目已完成以下非 Go 验证：
+每次验证应记录实际执行的命令、结果和环境限制，不要把“未执行”写成“通过”。截至 2026-08-29，本项目已完成以下验证（含 Git 提交状态）：
 
 - `npm exec tsc -- --noEmit --pretty false`：通过。
 - 使用不加载受限 `vite.config.ts` 临时文件的 Vite API 完成生产构建：通过；构建输出中的本地资源引用已检查。标准 `npm run build` 若因当前工作区无法写入 `vite.config.ts.timestamp-*.mjs` 而失败，应标记为环境权限限制，而不是代码构建失败。
 - `npm ls --depth=0 --all`：通过，未发现缺失或 invalid 依赖。
 - `scripts/*.py` 使用 `compile()` 做无 `.pyc` 语法检查：通过；PowerShell 初始化、后端启动和开发启动脚本解析：通过。
 - `git diff --check`：通过。
+- 历史 Git 提交与推送：提交 `25b66aa fix: harden monitoring purchase and account workflows` 已推送至 `origin/main`。
+- 使用免安装 Go 1.25 执行 `go test ./... -count=1`：全部后端测试包通过；项目脚本 `npm run test:unit:backend` 也通过。
+- 执行 `go build .`：Go 编译完成，但当前 Windows 环境拒绝写入默认输出 `backend/server.exe`；改用可写临时路径执行 `go build -o D:\Codex\OVH\server-go-build-test.exe .` 通过，临时文件已清理。
 - `.env`、`backend/.env`、`backend/data/` 和 SQLite 文件不得进入 Git；验证时只检查文件名、忽略规则和跟踪状态，不输出真实密钥或账户信息。
 
 以下项目可能因环境而无法得出有效结论，必须明确记录原因：
 
-- Go 工具链未安装或用户明确要求暂缓时，不执行 Go 测试；后续恢复后运行 `npm run test:unit:backend` 或 `cd backend; go test ./...`。
+- Go 标准构建输出：当前 Windows 环境执行 `go build .` 时无法创建默认 `backend/server.exe`；显式输出到可写路径已通过，换用允许写入可执行文件的环境后可补跑标准命令。
 - 后端未运行（`127.0.0.1:19998` 连接被拒绝）时，`smoke_test.py`/`full_functional_test.py` 只能记录为未完成，不能判定接口失败。启动后端且获得明确测试账户授权后，才可执行真实 API 烟测。
 - 未安装 Docker 时，不执行 `docker compose config`、`docker build` 或容器健康检查；Docker 可用后再补验。
 - npm registry 审计接口不可达时，`npm audit` 结果只能记为网络/registry 限制，不能推断“无漏洞”。
@@ -91,12 +94,18 @@ python scripts/smoke_test.py
 
 监控、通知和抢购流程验证仍以静态审查及单元测试为主：不得调用真实抢购、重装、电源、网络或其他有副作用的 OVH 接口，除非用户在当前任务中明确授权。通知 outbox 当前为至少一次投递语义，多实例或进程崩溃场景可能重复通知，这是已知架构限制，不能在报告中表述为“恰好一次”。
 
-### 当前审查待办
+### 当前审查待办与已知限制
 
-- 账户删除：删除不存在的账户时，`db.DeleteAccount` 的普通错误尚未统一映射为 `db.ErrAccountNotFound`，因此 `DeleteAccountByID` 目前可能返回 500；后续如修复，应补充 handler/DB 测试并确认返回 404。
-- 通知 outbox：当前设计保证至少一次投递；若产品要求跨进程去重或恰好一次效果，需要另行设计数据库 claim/lease、幂等键和发送状态迁移，不能仅通过重试逻辑宣称已解决。
-- OVH SDK：`CallAPIWithContext` 在正式请求前可能先发起无 context 的 `/auth/time` 请求；这是 SDK 行为，取消语义验证时应记录该限制。
-- 真实 OVH 账户、服务器库存、抢购和破坏性控制操作均未在本地验证环境执行；相关结论只能来自 mock、单元测试和静态审查。
+以下事项仍需在具备对应工具、服务或授权的环境中补验；不要将其误报为已通过：
+
+- Go 后端：完整 `go test ./... -count=1` 已通过；标准 `go build .` 的默认输出仍受 Windows 权限限制，详见上方验证记录。
+- 后端运行时：当前未启动 `127.0.0.1:19998`，因此 smoke/full functional 测试尚未完成；启动后端并取得明确测试账户授权后再执行。
+- 标准前端构建：`npm run build` 曾受工作区无法写入 Vite 临时文件限制；替代构建已通过，换用可写环境后应补跑标准命令。
+- ESLint：`npm run lint` 当前仍有 216 项历史问题（191 error、25 warning），主要涉及 `any`、Hook 依赖、`require()` 等；除非用户明确要求，不扩大为无关重构。
+- Docker 与依赖审计：Docker 未安装；npm registry 审计接口不可达，不能据此推断镜像或依赖安全结论。
+- 账户删除、PurchaseServer、队列公平性和监控恢复路径：当前 Go 单元测试已完成；真实 OVH 抢购、重装、电源、网络等副作用操作不得自动执行。
+- 通知 outbox：当前保证至少一次投递，多进程或进程崩溃后可能重复通知；若要求跨进程去重/恰好一次效果，需要单独设计 claim/lease、幂等键和状态迁移。
+- OVH SDK：`CallAPIWithContext` 在正式请求前可能先发起无 context 的 `/auth/time` 请求，取消语义验证时需保留这一限制。
 
 ## 修改约定
 
