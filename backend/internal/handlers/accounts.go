@@ -383,7 +383,8 @@ func SetDefaultAccountByID(state *app.State) gin.HandlerFunc {
 		var previousDefault types.OVHAccount
 		var hadPreviousDefault bool
 		err := state.WithAccountMutationRollback(func() error {
-			if _, ok, err := state.DB.GetAccount(id); err != nil {
+			_, ok, err := state.DB.GetAccount(id)
+			if err != nil {
 				return err
 			} else if !ok {
 				return accountNotFound
