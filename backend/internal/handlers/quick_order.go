@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,52 +17,40 @@ import (
 	"github.com/ovh-webui/server/internal/types"
 )
 
-// quickOrderMu 串行化 quick-order 入队的逻辑,避免并发同 plan@dc 重复入队
-var quickOrderMu sync.Mutex
-
 func enqueueQuickOrder(state *app.State, accountID, planCode, datacenter string, options []string, fromMonitor, skipDuplicateCheck bool) error {
-	quickOrderMu.Lock()
-	defer quickOrderMu.Unlock()
-	if !(fromMonitor && skipDuplicateCheck) {
-		fp := fingerprint(options)
-		state.QueueMu.Lock()
-		for _, item := range state.Queue {
-			if item.AccountID == accountID && item.PlanCode == planCode && item.Datacenter == datacenter &&
-				(item.Status == "running" || item.Status == "pending" || item.Status == "paused") &&
-				fingerprint(item.Options) == fp {
-				state.QueueMu.Unlock()
-				return fmt.Errorf("已存在相同配置的购买任务，稍后再试")
-			}
-		}
-		state.QueueMu.Unlock()
-
-		nowTS := time.Now().Unix()
-		state.HistoryMu.Lock()
-		for index := len(state.History) - 1; index >= 0; index-- {
-			history := state.History[index]
-			if history.AccountID == accountID && history.PlanCode == planCode && history.Datacenter == datacenter && history.Status == "success" && fingerprint(history.Options) == fp {
-				if timestamp, err := time.Parse(time.RFC3339Nano, history.PurchaseTime); err == nil && nowTS-timestamp.Unix() < 120 {
-					state.HistoryMu.Unlock()
-					return fmt.Errorf("刚刚已成功下过同配置订单，稍后再试")
-				}
-			}
-		}
-		state.HistoryMu.Unlock()
-	}
-
 	now := types.NowISO()
+	fp := fingerprint(options)
 	item := types.QueueItem{
 		ID: uuid.NewString(), AccountID: accountID, PlanCode: planCode, Datacenter: datacenter,
 		Options: options, Status: "running", RetryCount: 0, MaxRetries: 3, RetryInterval: 2,
 		CreatedAt: now, UpdatedAt: now, LastCheckTime: 0, QuickOrder: true, Priority: 100,
 	}
-	state.QueueMu.Lock()
-	state.Queue = append([]types.QueueItem{item}, state.Queue...)
-	state.QueueMu.Unlock()
-	if err := state.SaveQueue(); err != nil {
-		return err
-	}
-	return nil
+	return state.MutateQueueWithHistoryForAccount(accountID, func(queue []types.QueueItem, history []types.PurchaseHistoryEntry) ([]types.QueueItem, error) {
+		if len(queue) >= app.MaxQueueItems {
+			return nil, fmt.Errorf("队列已满（上限 %d）", app.MaxQueueItems)
+		}
+		if !(fromMonitor && skipDuplicateCheck) {
+			nowTS := time.Now().Unix()
+			for index := len(history) - 1; index >= 0; index-- {
+				entry := history[index]
+				if entry.AccountID != accountID || entry.PlanCode != planCode || entry.Datacenter != datacenter ||
+					entry.Status != "success" || fingerprint(entry.Options) != fp {
+					continue
+				}
+				if timestamp, err := time.Parse(time.RFC3339Nano, entry.PurchaseTime); err == nil && nowTS-timestamp.Unix() < 120 {
+					return nil, fmt.Errorf("刚刚已成功下过同配置订单，稍后再试")
+				}
+			}
+			for _, existing := range queue {
+				if existing.AccountID == accountID && existing.PlanCode == planCode && existing.Datacenter == datacenter &&
+					(existing.Status == "running" || existing.Status == "pending" || existing.Status == "paused") &&
+					fingerprint(existing.Options) == fp {
+					return nil, fmt.Errorf("已存在相同配置的购买任务，稍后再试")
+				}
+			}
+		}
+		return append([]types.QueueItem{item}, queue...), nil
+	})
 }
 
 // QuickOrder POST /api/queue/quick-order
@@ -93,10 +81,17 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 		}
 		options := body.Options
 		if len(options) == 0 {
-			availByConfig := catalog.CheckServerAvailabilityWithConfigs(state, body.PlanCode, body.AccountID)
+			availabilityResult, availabilityErr := catalog.CheckServerAvailabilityWithConfigsStrict(state, body.PlanCode, body.AccountID)
+			if availabilityErr != nil {
+				err := "无法安全获取指定配置库存：" + availabilityErr.Error()
+				state.Logger.Warn("[quick_order] "+err, "quick_order")
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err})
+				return
+			}
+			availByConfig := availabilityResult.Configs
 			for _, cfg := range availByConfig {
 				if dcStatus, ok := cfg.Datacenters[body.Datacenter]; ok &&
-					dcStatus != "unavailable" && dcStatus != "unknown" && len(cfg.Options) > 0 {
+					catalog.AvailabilityExplicitlyAvailable(dcStatus) && len(cfg.Options) > 0 {
 					options = append(options, cfg.Options...)
 					break
 				}
@@ -130,7 +125,7 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "该组合暂无有效价格，暂不支持下单"})
 			return
 		}
-		if f, ok := numconv.ToFloat64(withTaxRaw); ok && f == 0 {
+		if f, ok := numconv.ToFloat64(withTaxRaw); !ok || math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
 			state.Logger.Warn("快速下单前价格缺失或无效: "+body.PlanCode+"@"+body.Datacenter, "quick_order")
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "该组合暂无有效价格，暂不支持下单"})
 			return

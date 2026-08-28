@@ -19,9 +19,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { toast } from "sonner";
-import { AccountSelect } from "@/components/common/AccountSelect";
-import { AccountChip } from "@/components/common/AccountChip";
 import {
   Select,
   SelectContent,
@@ -273,18 +270,6 @@ function VPSRow({
               {sub.monitorWindows && <Chip tone="info">Windows</Chip>}
               {sub.notifyAvailable && <Chip tone="success">有货提醒</Chip>}
               {sub.notifyUnavailable && <Chip tone="warning">无货提醒</Chip>}
-              {sub.autoOrder && sub.autoOrderAccountId ? (
-                <>
-                  <Chip tone="solid">
-                    自动下单
-                    {sub.quantity && sub.quantity > 1 ? ` ×${sub.quantity}` : ""}
-                  </Chip>
-                  <span className="text-[11px] text-muted-foreground">→</span>
-                  <AccountChip accountId={sub.autoOrderAccountId} />
-                </>
-              ) : sub.autoOrder ? (
-                <Chip tone="warning">已勾自动下单但未选账户(只通知)</Chip>
-              ) : null}
             </div>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
@@ -396,9 +381,6 @@ function AddVPSDialog({
   const [monitorWindows, setMonitorWindows] = useState(true);
   const [notifyAvailable, setNotifyAvailable] = useState(true);
   const [notifyUnavailable, setNotifyUnavailable] = useState(false);
-  const [autoOrder, setAutoOrder] = useState(false);
-  const [quantity, setQuantity] = useState(1);
-  const [autoOrderAccountId, setAutoOrderAccountId] = useState("");
 
   const reset = () => {
     setVpsModel(VPS_MODELS[0].value);
@@ -408,9 +390,6 @@ function AddVPSDialog({
     setMonitorWindows(true);
     setNotifyAvailable(true);
     setNotifyUnavailable(false);
-    setAutoOrder(false);
-    setQuantity(1);
-    setAutoOrderAccountId("");
   };
 
   const submit = (e: React.FormEvent) => {
@@ -420,10 +399,6 @@ function AddVPSDialog({
       .map((d) => d.trim())
       .filter(Boolean);
 
-    if (autoOrder && !autoOrderAccountId) {
-      toast.error("开启自动下单时必须选 OVH 账户");
-      return;
-    }
     create.mutate(
       {
         planCode: vpsModel,
@@ -433,9 +408,6 @@ function AddVPSDialog({
         monitorWindows,
         notifyAvailable,
         notifyUnavailable,
-        autoOrder,
-        quantity: autoOrder ? quantity : undefined,
-        autoOrderAccountId: autoOrder ? autoOrderAccountId : "",
       },
       {
         onSuccess: () => {
@@ -469,7 +441,10 @@ function AddVPSDialog({
                   Telegram 通知未配置或无效
                 </div>
                 <div className="text-amber-800/80 dark:text-amber-200/80 mt-0.5 break-words">
-                  {tgVerify.data?.reason || "请先在设置页配置可用的 Telegram Bot Token 和 Chat ID"}
+                  {tgVerify.data?.reason || "如已配置飞书或微信，可继续使用 VPS 库存通知"}
+                </div>
+                <div className="text-amber-800/80 dark:text-amber-200/80 mt-0.5">
+                  若飞书或微信已配置有效，仍可直接提交。
                 </div>
                 <Link
                   to="/settings"
@@ -550,7 +525,7 @@ function AddVPSDialog({
           </div>
 
           <div>
-            <p className="text-xs font-medium text-muted-foreground mb-2">通知与下单</p>
+            <p className="text-xs font-medium text-muted-foreground mb-2">库存通知</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <label className="flex items-center gap-2.5 cursor-pointer rounded-xl border border-border px-3.5 py-2.5 hover:bg-muted/40 transition-colors">
                 <Checkbox
@@ -566,41 +541,8 @@ function AddVPSDialog({
                 />
                 <span className="text-sm">无货时提醒</span>
               </label>
-              <label className="flex items-center gap-2.5 cursor-pointer rounded-xl border border-border px-3.5 py-2.5 hover:bg-muted/40 transition-colors sm:col-span-2">
-                <Checkbox checked={autoOrder} onCheckedChange={(v) => setAutoOrder(!!v)} />
-                <span className="text-sm">有货时自动下单</span>
-              </label>
             </div>
           </div>
-
-          {autoOrder && (
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                  下单账户 <span className="text-destructive">*</span>
-                </label>
-                <AccountSelect value={autoOrderAccountId} onChange={setAutoOrderAccountId} />
-                <p className="text-[11px] text-muted-foreground mt-1">不选账户 = 只通知不下单</p>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                  下单数量
-                </label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={quantity}
-                  onChange={(e) => {
-                    const v = Number(e.target.value);
-                    if (Number.isFinite(v)) {
-                      setQuantity(Math.max(1, Math.min(100, Math.floor(v))));
-                    }
-                  }}
-                />
-              </div>
-            </div>
-          )}
 
           <DialogFooter>
             <Button
@@ -615,10 +557,9 @@ function AddVPSDialog({
             </Button>
             <Button
               type="submit"
-              disabled={create.isPending || tgBlocked || tgVerify.isPending}
-              title={tgBlocked ? "Telegram 通知无效,无法添加订阅" : undefined}
+              disabled={create.isPending}
             >
-              {create.isPending ? "提交中…" : tgVerify.isPending ? "校验通知…" : "确认添加"}
+              {create.isPending ? "提交中…" : "确认添加"}
             </Button>
           </DialogFooter>
         </form>

@@ -138,7 +138,7 @@ type PurchaseHistoryEntry struct {
 	PlanCode       string     `json:"planCode"`
 	Datacenter     string     `json:"datacenter"`
 	Options        []string   `json:"options"`
-	Status         string     `json:"status"` // success / failed
+	Status         string     `json:"status"` // success / failed / uncertain
 	OrderID        string     `json:"orderId"`
 	OrderURL       string     `json:"orderUrl"`
 	ErrorMessage   *string    `json:"errorMessage"`
@@ -199,6 +199,10 @@ type Subscription struct {
 	NotifyAvailable     bool                       `json:"notifyAvailable"`
 	NotifyUnavailable   bool                       `json:"notifyUnavailable"`
 	LastStatus          map[string]string          `json:"lastStatus"`
+	ConfirmedStatus     map[string]string          `json:"confirmedStatus,omitempty"`
+	PendingOrder        map[string]int             `json:"pendingOrder,omitempty"`
+	PendingNotify       map[string]string          `json:"pendingNotify,omitempty"`
+	PendingNotifyChannels map[string][]string      `json:"pendingNotifyChannels,omitempty"`
 	CreatedAt           string                     `json:"createdAt"`
 	History             []SubscriptionHistoryEntry `json:"history"`
 	ServerName          string                     `json:"serverName,omitempty"`
@@ -218,9 +222,25 @@ type VPSSubscription struct {
 	NotifyAvailable     bool                   `json:"notifyAvailable"`
 	NotifyUnavailable   bool                   `json:"notifyUnavailable"`
 	LastStatus          map[string]string      `json:"lastStatus"`
+	PendingNotify       map[string]string      `json:"pendingNotify,omitempty"`
+	PendingNotifyChannels map[string][]string  `json:"pendingNotifyChannels,omitempty"`
 	History             []map[string]interface{} `json:"history"`
 	CreatedAt           string                 `json:"createdAt"`
-	AutoOrderAccountID  string                 `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
+	AutoOrderAccountID  string                 `json:"autoOrderAccountId,omitempty"` // 旧版本兼容，不再对外创建
+}
+
+// NotificationOutboxEntry 是待发送通知的持久化记录。Channels 保存尚未成功的目标渠道；
+// 发送成功后只删除对应渠道，避免一个渠道失败导致整个事件丢失。
+type NotificationOutboxEntry struct {
+	ID               string   `json:"id"`
+	EventKey         string   `json:"eventKey"`
+	Kind             string   `json:"kind"`
+	Payload          string   `json:"payload"`
+	Channels         []string `json:"channels"`
+	AwaitingChannels bool     `json:"awaitingChannels,omitempty"`
+	DecodeError      string   `json:"decodeError,omitempty"`
+	CreatedAt        string   `json:"createdAt"`
+	UpdatedAt        string   `json:"updatedAt"`
 }
 
 // CacheInfo 服务器列表缓存信息

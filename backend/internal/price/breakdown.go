@@ -1,6 +1,7 @@
 package price
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -54,24 +55,55 @@ func GetDisplay(state *app.State, accountID, planCode, datacenter string, option
 	return GetDisplayFromResult(state, accountID, planCode, options, result)
 }
 
+// GetDisplayWithContext 是 GetDisplay 的可取消版本，供监控等有超时要求的
+// 调用方使用；目录拆价仍复用缓存/公开 catalog。
+func GetDisplayWithContext(ctx context.Context, state *app.State, accountID, planCode, datacenter string, options []string) (DisplayPrice, error) {
+	result := GetInternalWithContext(ctx, state, accountID, planCode, datacenter, options)
+	return GetDisplayFromResultWithContext(ctx, state, accountID, planCode, options, result)
+}
+
 // GetCatalogDisplay 只读取公开 catalog，计算与服务器列表相同口径的月费和
 // 安装费。它不创建购物车，因此可在实时询价失败时继续为通知提供目录价格。
 func GetCatalogDisplay(state *app.State, accountID, planCode string, options []string) (DisplayPrice, error) {
-	return getDisplayFromCatalog(state, accountID, planCode, options, DisplayPrice{Currency: "EUR"})
+	return getDisplayFromCatalog(context.Background(), state, accountID, planCode, options, DisplayPrice{Currency: "EUR"})
 }
 
 // GetDisplayFromResult 复用已经完成的购物车询价结果，再从公开 catalog
 // 拆出月费和安装费。监控流程使用此函数，避免为了生成通知再次创建购物车。
 func GetDisplayFromResult(state *app.State, accountID, planCode string, options []string, result Result) (DisplayPrice, error) {
+	return GetDisplayFromResultWithContext(context.Background(), state, accountID, planCode, options, result)
+}
+
+// GetDisplayFromResultWithContext 在拆分购物车结果时也让公开 catalog 请求
+// 继承调用方的 deadline，避免购物车已完成后 catalog 刷新继续无限阻塞。
+func GetDisplayFromResultWithContext(ctx context.Context, state *app.State, accountID, planCode string, options []string, result Result) (DisplayPrice, error) {
 	if !result.Success {
 		return DisplayPrice{}, fmt.Errorf("价格查询失败: %s", result.Error)
 	}
+	if result.Price == nil {
+		return DisplayPrice{}, fmt.Errorf("价格查询成功但结果缺少 price")
+	}
+	if raw := result.Price.Prices["withTax"]; raw == nil {
+		return DisplayPrice{}, fmt.Errorf("价格查询成功但结果缺少有效含税价格")
+	} else if !validPriceValue(raw) {
+		return DisplayPrice{}, fmt.Errorf("价格查询成功但含税价格格式无效")
+	}
 
 	display := displayPriceFromSummary(result.Price)
-	return getDisplayFromCatalog(state, accountID, planCode, options, display)
+	return getDisplayFromCatalog(ctx, state, accountID, planCode, options, display)
 }
 
-func getDisplayFromCatalog(state *app.State, accountID, planCode string, options []string, display DisplayPrice) (DisplayPrice, error) {
+func getDisplayFromCatalog(ctx context.Context, state *app.State, accountID, planCode string, options []string, display DisplayPrice) (DisplayPrice, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return display, err
+	}
+	planCode = strings.TrimSpace(planCode)
+	if planCode == "" {
+		return display, fmt.Errorf("缺少 planCode")
+	}
 	client, err := state.OVH.ClientFor(accountID)
 	if err != nil {
 		return display, fmt.Errorf("获取 OVH 客户端失败: %w", err)
@@ -81,7 +113,7 @@ func getDisplayFromCatalog(state *app.State, accountID, planCode string, options
 	if acc, ok := state.FindAccount(accountID); ok && acc.Zone != "" {
 		subsidiary = acc.Zone
 	}
-	catalog, err := loadPublicCatalog(state, client, subsidiary)
+	catalog, err := loadPublicCatalog(ctx, state, client, subsidiary)
 	if err != nil {
 		return display, err
 	}
@@ -124,7 +156,10 @@ func displayPriceFromSummary(info *PriceInfo) DisplayPrice {
 	return display
 }
 
-func loadPublicCatalog(state *app.State, client *ovhsdk.Client, subsidiary string) (*publicCatalog, error) {
+func loadPublicCatalog(ctx context.Context, state *app.State, client *ovhsdk.Client, subsidiary string) (*publicCatalog, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	subsidiary = strings.ToUpper(strings.TrimSpace(subsidiary))
 	if subsidiary == "" {
 		subsidiary = "IE"
@@ -143,7 +178,7 @@ func loadPublicCatalog(state *app.State, client *ovhsdk.Client, subsidiary strin
 	}
 
 	var raw map[string]interface{}
-	if err := client.Get("/order/catalog/public/eco?ovhSubsidiary="+subsidiary, &raw); err != nil {
+	if err := client.GetWithContext(ctx, "/order/catalog/public/eco?ovhSubsidiary="+subsidiary, &raw); err != nil {
 		if staleRaw != "" {
 			if catalog, parseErr := parsePublicCatalog([]byte(staleRaw)); parseErr == nil {
 				return catalog, nil
@@ -205,24 +240,39 @@ func calculateFromCatalog(catalog *publicCatalog, planCode string, options []str
 	}
 	install := installationPricing(plan.Pricings)
 
-	for _, optionCode := range options {
-		optionCode = strings.TrimSpace(optionCode)
-		if optionCode == "" {
-			continue
-		}
+	for _, optionCode := range normalizeOptionCodes(options) {
 		addon, exists := addons[optionCode]
 		if !exists {
-			continue
+			// 请求的 addon 必须能在公开 catalog 中解析；静默跳过会
+			// 生成少算月费的成功结果，进而误导监控/通知。
+			return catalogAmount{}, catalogAmount{}, false
 		}
-		if addonMonthly, ok := monthlyPricing(addon.Pricings); ok {
-			monthly.price += addonMonthly.price
-			monthly.tax += addonMonthly.tax
+		addonMonthly, ok := monthlyPricing(addon.Pricings)
+		if !ok {
+			return catalogAmount{}, catalogAmount{}, false
 		}
+		monthly.price += addonMonthly.price
+		monthly.tax += addonMonthly.tax
 		addonInstall := installationPricing(addon.Pricings)
 		install.price += addonInstall.price
 		install.tax += addonInstall.tax
 	}
 	return monthly, install, true
+}
+
+// normalizeOptionCodes 清理机器人/HTTP 输入中可能携带的空白选项。
+// 空选项不是有效 addon；重复值保留，以维持调用方的数量语义。
+func normalizeOptionCodes(options []string) []string {
+	if len(options) == 0 {
+		return nil
+	}
+	clean := make([]string, 0, len(options))
+	for _, option := range options {
+		if option = strings.TrimSpace(option); option != "" {
+			clean = append(clean, option)
+		}
+	}
+	return clean
 }
 
 func monthlyPricing(pricings []catalogPricing) (catalogAmount, bool) {

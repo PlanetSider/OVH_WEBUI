@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,83 +12,145 @@ import (
 // autoOrderAccountID:auto_order 触发时用哪个账户下单;空 = 只通知不下单
 func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyAvailable, notifyUnavailable bool,
 	serverName string, lastStatus map[string]string, history []HistoryEntry, autoOrder bool, quantity int,
-	autoOrderAccountID string, memories, storages, networks []string) {
-
-	m.subsMu.Lock()
-	defer m.subsMu.Unlock()
-
-	for _, s := range m.subscriptions {
-		if s.PlanCode == planCode {
-			m.state.Logger.Warn(fmt.Sprintf("订阅已存在: %s，将更新配置（不会重置状态，避免重复通知）", planCode), "monitor")
-			if datacenters == nil {
-				datacenters = []string{}
-			}
-			s.Datacenters = datacenters
-			s.Memories = cloneStrings(memories)
-			s.Storages = cloneStrings(storages)
-			s.Networks = cloneStrings(networks)
-			s.NotifyAvailable = notifyAvailable
-			s.NotifyUnavailable = notifyUnavailable
-			s.AutoOrder = autoOrder
-			if autoOrder {
-				if quantity < 1 {
-					quantity = 1
+	autoOrderAccountID string, memories, storages, networks []string) error {
+	return m.MutateSubscriptions(func(subscriptions []*Subscription) ([]*Subscription, error) {
+		for _, s := range subscriptions {
+			if s.PlanCode == planCode {
+				m.state.Logger.Warn(fmt.Sprintf("订阅已存在: %s，将更新配置", planCode), "monitor")
+				filtersChanged := !sameStringSlice(s.Datacenters, datacenters) ||
+					!sameStringSlice(s.Memories, memories) ||
+					!sameStringSlice(s.Storages, storages) ||
+					!sameStringSlice(s.Networks, networks)
+				accountChanged := s.AutoOrderAccountID != autoOrderAccountID
+				if datacenters == nil {
+					datacenters = []string{}
 				}
-				s.Quantity = quantity
-			} else {
-				s.Quantity = 0
+				s.Datacenters = cloneStrings(datacenters)
+				s.Memories = cloneStrings(memories)
+				s.Storages = cloneStrings(storages)
+				s.Networks = cloneStrings(networks)
+				if filtersChanged || accountChanged {
+					resetTracking(s)
+				}
+				s.NotifyAvailable = notifyAvailable
+				s.NotifyUnavailable = notifyUnavailable
+				s.AutoOrder = autoOrder
+				if autoOrder {
+					if quantity < 1 {
+						quantity = 1
+					}
+					s.Quantity = quantity
+				} else {
+					s.Quantity = 0
+					s.PendingOrder = map[string]int{}
+				}
+				clearDisabledPendingNotify(s, notifyAvailable, notifyUnavailable)
+				s.ServerName = serverName
+				s.AutoOrderAccountID = autoOrderAccountID
+				if s.History == nil {
+					s.History = []HistoryEntry{}
+				}
+				return subscriptions, nil
 			}
-			s.ServerName = serverName
-			s.AutoOrderAccountID = autoOrderAccountID
-			if s.History == nil {
-				s.History = []HistoryEntry{}
-			}
-			return
 		}
-	}
 
-	if datacenters == nil {
-		datacenters = []string{}
-	}
-	if lastStatus == nil {
-		lastStatus = map[string]string{}
-	}
-	if history == nil {
-		history = []HistoryEntry{}
-	}
-	sub := &Subscription{
-		PlanCode:           planCode,
-		Datacenters:        datacenters,
-		Memories:           cloneStrings(memories),
-		Storages:           cloneStrings(storages),
-		Networks:           cloneStrings(networks),
-		NotifyAvailable:    notifyAvailable,
-		NotifyUnavailable:  notifyUnavailable,
-		LastStatus:         lastStatus,
-		CreatedAt:          time.Now().Format(time.RFC3339Nano),
-		History:            history,
-		AutoOrderAccountID: autoOrderAccountID,
-	}
-	if autoOrder {
-		if quantity < 1 {
-			quantity = 1
+		if datacenters == nil {
+			datacenters = []string{}
 		}
-		sub.AutoOrder = true
-		sub.Quantity = quantity
+		if lastStatus == nil {
+			lastStatus = map[string]string{}
+		}
+		if history == nil {
+			history = []HistoryEntry{}
+		}
+		sub := &Subscription{
+			PlanCode:           planCode,
+			Datacenters:        datacenters,
+			Memories:           cloneStrings(memories),
+			Storages:           cloneStrings(storages),
+			Networks:           cloneStrings(networks),
+			NotifyAvailable:    notifyAvailable,
+			NotifyUnavailable:  notifyUnavailable,
+			LastStatus:         lastStatus,
+			ConfirmedStatus:    map[string]string{},
+			PendingOrder:       map[string]int{},
+			PendingNotify:      map[string]string{},
+			PendingNotifyChannels: map[string][]string{},
+			CreatedAt:          time.Now().Format(time.RFC3339Nano),
+			History:            history,
+			AutoOrderAccountID: autoOrderAccountID,
+		}
+		if autoOrder {
+			if quantity < 1 {
+				quantity = 1
+			}
+			sub.AutoOrder = true
+			sub.Quantity = quantity
+		}
+		if serverName != "" {
+			sub.ServerName = serverName
+		}
+		subscriptions = append(subscriptions, sub)
+		displayName := planCode
+		if serverName != "" {
+			displayName = planCode + " (" + serverName + ")"
+		}
+		dcsStr := "全部"
+		if len(datacenters) > 0 {
+			dcsStr = fmt.Sprintf("%v", datacenters)
+		}
+		m.state.Logger.Info(fmt.Sprintf("添加订阅: %s, 数据中心: %s", displayName, dcsStr), "monitor")
+		return subscriptions, nil
+	})
+}
+
+// resetTracking 丢弃旧筛选条件/账户对应的库存基线。筛选条件或账户改变后，
+// 旧 statusKey 不能拿来和新查询结果比较，否则会把旧配置误报为下架或补货。
+func resetTracking(s *Subscription) {
+	s.LastStatus = map[string]string{}
+	s.ConfirmedStatus = map[string]string{}
+	s.PendingOrder = map[string]int{}
+	s.PendingNotify = map[string]string{}
+	s.PendingNotifyChannels = map[string][]string{}
+}
+
+// ResetSubscriptionTracking 供 HTTP 更新入口在筛选条件或账户变化时重建基线。
+func ResetSubscriptionTracking(s *Subscription) {
+	resetTracking(s)
+}
+
+// clearDisabledPendingNotify 删除已经关闭的通知类型，避免关闭开关后旧事件仍被重试。
+func clearDisabledPendingNotify(s *Subscription, notifyAvailable, notifyUnavailable bool) bool {
+	if s.PendingNotify == nil {
+		s.PendingNotify = map[string]string{}
 	}
-	if serverName != "" {
-		sub.ServerName = serverName
+	changed := false
+	for key, status := range s.PendingNotify {
+		if (!notifyAvailable && (status == "available" || status == "price_check_failed")) ||
+			(!notifyUnavailable && status == "unavailable") {
+			delete(s.PendingNotify, key)
+			delete(s.PendingNotifyChannels, key)
+			changed = true
+		}
 	}
-	m.subscriptions = append(m.subscriptions, sub)
-	displayName := planCode
-	if serverName != "" {
-		displayName = planCode + " (" + serverName + ")"
+	return changed
+}
+
+// ClearDisabledPendingNotifications 供更新入口清理已关闭渠道对应的待通知事件。
+func ClearDisabledPendingNotifications(s *Subscription, notifyAvailable, notifyUnavailable bool) {
+	clearDisabledPendingNotify(s, notifyAvailable, notifyUnavailable)
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	dcsStr := "全部"
-	if len(datacenters) > 0 {
-		dcsStr = fmt.Sprintf("%v", datacenters)
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
 	}
-	m.state.Logger.Info(fmt.Sprintf("添加订阅: %s, 数据中心: %s", displayName, dcsStr), "monitor")
+	return true
 }
 
 func cloneStrings(values []string) []string {
@@ -98,32 +161,31 @@ func cloneStrings(values []string) []string {
 }
 
 // RemoveSubscription 对应 Python: remove_subscription
-func (m *Monitor) RemoveSubscription(planCode string) bool {
-	m.subsMu.Lock()
-	defer m.subsMu.Unlock()
-	original := len(m.subscriptions)
-	kept := make([]*Subscription, 0, len(m.subscriptions))
-	for _, s := range m.subscriptions {
-		if s.PlanCode != planCode {
-			kept = append(kept, s)
+func (m *Monitor) RemoveSubscription(planCode string) error {
+	return m.MutateSubscriptions(func(subscriptions []*Subscription) ([]*Subscription, error) {
+		kept := make([]*Subscription, 0, len(subscriptions))
+		for _, s := range subscriptions {
+			if s.PlanCode != planCode {
+				kept = append(kept, s)
+			}
 		}
-	}
-	m.subscriptions = kept
-	if len(m.subscriptions) < original {
-		m.state.Logger.Info("删除订阅: "+planCode, "monitor")
-		return true
-	}
-	return false
+		if len(kept) < len(subscriptions) {
+			m.state.Logger.Info("删除订阅: "+planCode, "monitor")
+			return kept, nil
+		}
+		return nil, errors.New("订阅不存在")
+	})
 }
 
 // ClearSubscriptions 对应 Python: clear_subscriptions
-func (m *Monitor) ClearSubscriptions() int {
-	m.subsMu.Lock()
-	defer m.subsMu.Unlock()
-	count := len(m.subscriptions)
-	m.subscriptions = []*Subscription{}
-	m.state.Logger.Info(fmt.Sprintf("清空所有订阅 (%d 项)", count), "monitor")
-	return count
+func (m *Monitor) ClearSubscriptions() (int, error) {
+	count := 0
+	err := m.MutateSubscriptions(func(subscriptions []*Subscription) ([]*Subscription, error) {
+		count = len(subscriptions)
+		m.state.Logger.Info(fmt.Sprintf("清空所有订阅 (%d 项)", count), "monitor")
+		return []*Subscription{}, nil
+	})
+	return count, err
 }
 
 // FindSubscription 按 planCode 查找
@@ -132,7 +194,7 @@ func (m *Monitor) FindSubscription(planCode string) *Subscription {
 	defer m.subsMu.Unlock()
 	for _, s := range m.subscriptions {
 		if s.PlanCode == planCode {
-			return s
+			return cloneSubscription(s)
 		}
 	}
 	return nil
@@ -141,7 +203,11 @@ func (m *Monitor) FindSubscription(planCode string) *Subscription {
 // SetKnownServers 用于从持久化恢复
 func (m *Monitor) SetKnownServers(set map[string]struct{}) {
 	m.subsMu.Lock()
+	if set == nil {
+		set = map[string]struct{}{}
+	}
 	m.knownServers = set
+	m.knownServersInitialized = true
 	m.subsMu.Unlock()
 }
 
@@ -276,26 +342,60 @@ func (m *Monitor) cleanupExpiredCaches() {
 	}
 }
 
-// AddMessageUUID 缓存按钮对应的配置（内存 + SQLite 双写）
-func (m *Monitor) AddMessageUUID(id, planCode, datacenter string, options []string, configInfo map[string]interface{}) {
+// AddMessageUUID 持久化并缓存按钮对应的配置。SQLite 是一次性消费和
+// 重启恢复的事实来源，因此必须先成功写库，再发布内存缓存；写库失败时
+// 调用方不得把这个 UUID 放进已经发送给用户的按钮。
+func (m *Monitor) AddMessageUUID(id, planCode, datacenter string, options []string, configInfo map[string]interface{}) error {
 	ts := float64(time.Now().Unix())
 	if options == nil {
 		options = []string{}
 	}
+	if m == nil || m.state == nil || m.state.DB == nil {
+		return fmt.Errorf("按钮持久化服务不可用")
+	}
+	if err := m.state.DB.UpsertTelegramButton(id, planCode, datacenter, options, configInfo, ts); err != nil {
+		return err
+	}
+	cachedConfig := cloneConfigInfo(configInfo)
 	m.cacheLock.Lock()
 	m.messageUUIDCache[id] = &CachedMessage{
 		PlanCode:   planCode,
 		Datacenter: datacenter,
 		Options:    append([]string{}, options...),
-		ConfigInfo: configInfo,
+		ConfigInfo: cachedConfig,
 		Timestamp:  ts,
 	}
 	m.cacheLock.Unlock()
+	return nil
+}
 
-	if m.state.DB != nil {
-		if err := m.state.DB.UpsertTelegramButton(id, planCode, datacenter, options, configInfo, ts); err != nil {
-			m.state.Logger.Warn("持久化 TG 一键下单按钮失败: "+err.Error(), "monitor")
+// cloneConfigInfo 隔离按钮缓存中的配置快照。通知构建结束后，调用方仍可能
+// 复用或修改 configInfo；按钮必须保留发送当时冻结的账户和选项。
+func cloneConfigInfo(source map[string]interface{}) map[string]interface{} {
+	if source == nil {
+		return map[string]interface{}{}
+	}
+	out := make(map[string]interface{}, len(source))
+	for key, value := range source {
+		out[key] = cloneConfigValue(value)
+	}
+	return out
+}
+
+func cloneConfigValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return cloneConfigInfo(typed)
+	case []interface{}:
+		items := make([]interface{}, len(typed))
+		for i, item := range typed {
+			items[i] = cloneConfigValue(item)
 		}
+		return items
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
 	}
 }
 

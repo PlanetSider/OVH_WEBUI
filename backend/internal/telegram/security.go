@@ -22,7 +22,7 @@ const (
 	MaxOrdersPerRequest   = 10  // 单次请求最多创建的队列项
 	MaxConfigsWhenNoOpts  = 1   // 未指定 options 时最多取 N 套配置
 	MaxDCsWhenNoDC        = 1   // 未指定机房时最多取 N 个机房（避免全机房扇出）
-	MaxQueueLen           = 200 // 全局队列长度硬顶
+	MaxQueueLen           = app.MaxQueueItems // 全局队列长度硬顶
 	MaxTelegramBodyBytes  = 64 * 1024
 	UpdateIDRetentionDays = 7
 	RateLimitWindow       = 10 * time.Second
@@ -240,18 +240,22 @@ func RecentSuccessDuplicate(state *app.State, planCode, datacenter string, optio
 
 // RecentSuccessDuplicateForAccount 多账户下按 accountID 精确检查近期成功订单。
 func RecentSuccessDuplicateForAccount(state *app.State, accountID, planCode, datacenter string, options []string) bool {
-	fp := OptionsFingerprint(options)
-	nowTS := time.Now().Unix()
 	state.HistoryMu.Lock()
 	defer state.HistoryMu.Unlock()
-	for i := len(state.History) - 1; i >= 0; i-- {
-		h := state.History[i]
+	return recentSuccessDuplicateInHistory(state.History, accountID, planCode, datacenter, options, time.Now().Unix())
+}
+
+// recentSuccessDuplicateInHistory 在调用方已经持有 HistoryMu（或已经取得
+// 同一历史快照）时执行近期成功去重。把判断逻辑拆出来，供队列与历史同一
+// 临界区的原子入队入口复用，避免“先查历史、后写队列”的竞态窗口。
+func recentSuccessDuplicateInHistory(history []types.PurchaseHistoryEntry, accountID, planCode, datacenter string, options []string, nowTS int64) bool {
+	fp := OptionsFingerprint(options)
+	for i := len(history) - 1; i >= 0; i-- {
+		h := history[i]
 		if (accountID == "" || h.AccountID == accountID) && h.PlanCode == planCode && h.Datacenter == datacenter && h.Status == "success" &&
 			OptionsFingerprint(h.Options) == fp {
-			if t, err := time.Parse(time.RFC3339Nano, h.PurchaseTime); err == nil {
-				if nowTS-t.Unix() < 120 {
-					return true
-				}
+			if t, err := time.Parse(time.RFC3339Nano, h.PurchaseTime); err == nil && nowTS-t.Unix() < 120 {
+				return true
 			}
 		}
 	}

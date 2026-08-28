@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -9,9 +10,14 @@ import (
 	"github.com/ovh-webui/server/internal/price"
 )
 
-// resolvePriceAccount 询价账户始终使用当前默认账户，与 TG / 飞书命令的数据源一致。
-// AutoOrderAccountID 只决定自动下单账户，不再隐式改变目录、库存和通知数据源。
+// resolvePriceAccount 自动下单订阅必须用指定账户做库存与购物车询价，
+// 否则可能以默认账户的区域/价格判断后让另一个账户下单。普通订阅仍用默认账户。
 func (m *Monitor) resolvePriceAccount(sub *Subscription) string {
+	if sub != nil && sub.AutoOrder && sub.AutoOrderAccountID != "" {
+		if _, ok := m.state.FindAccount(sub.AutoOrderAccountID); ok {
+			return sub.AutoOrderAccountID
+		}
+	}
 	acc, ok := m.state.FindAccount("")
 	if ok {
 		return acc.ID
@@ -97,11 +103,15 @@ func (m *Monitor) getCatalogPriceInfoText(accountID, planCode string, options []
 
 // GetPriceInfoText 进程内询价并格式化为通知文案
 func (m *Monitor) GetPriceInfoText(accountID, planCode, datacenter string, configInfo map[string]interface{}) string {
+	return m.getPriceInfoTextWithContext(context.Background(), accountID, planCode, datacenter, configInfo)
+}
+
+func (m *Monitor) getPriceInfoTextWithContext(ctx context.Context, accountID, planCode, datacenter string, configInfo map[string]interface{}) string {
 	options := optionsFromConfig(configInfo)
 	m.state.Logger.Debug(fmt.Sprintf("开始获取价格: plan_code=%s, datacenter=%s, options=%v account=%s",
 		planCode, datacenter, options, accountID), "monitor")
 
-	display, err := price.GetDisplay(m.state, accountID, planCode, datacenter, options)
+	display, err := price.GetDisplayWithContext(ctx, m.state, accountID, planCode, datacenter, options)
 	if err != nil {
 		m.state.Logger.Warn("价格拆分失败: "+err.Error(), "monitor")
 	}
@@ -189,26 +199,29 @@ func currencySymbol(currency string) string {
 
 // getPriceWithTimeout 带超时的询价
 func (m *Monitor) getPriceWithTimeout(accountID, planCode, datacenter string, configInfo map[string]interface{}, timeout time.Duration) (string, string) {
-	type res struct {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	type result struct {
 		text string
 	}
-	ch := make(chan res, 1)
+	resultCh := make(chan result, 1)
 	start := time.Now()
 	go func() {
-		text := m.GetPriceInfoText(accountID, planCode, datacenter, configInfo)
-		ch <- res{text: text}
+		resultCh <- result{text: m.getPriceInfoTextWithContext(ctx, accountID, planCode, datacenter, configInfo)}
 	}()
 	select {
-	case r := <-ch:
-		if r.text == "" {
+	case result := <-resultCh:
+		if result.text == "" {
 			elapsed := time.Since(start).Seconds()
+			if ctx.Err() != nil {
+				return "", fmt.Sprintf("价格接口超时（等待%.1f秒）", elapsed)
+			}
 			return "", fmt.Sprintf("价格接口未返回结果（耗时%.1f秒）", elapsed)
 		}
-		return r.text, ""
-	case <-time.After(timeout):
+		return result.text, ""
+	case <-ctx.Done():
 		elapsed := time.Since(start).Seconds()
-		errMsg := fmt.Sprintf("价格接口超时（等待%.1f秒）", elapsed)
-		m.state.Logger.Warn("价格获取超时，发送不带价格的通知。后台请求将继续运行直到完成。", "monitor")
-		return "", errMsg
+		m.state.Logger.Warn("价格获取超时，已请求取消后台请求，发送不带价格的通知。", "monitor")
+		return "", fmt.Sprintf("价格接口超时（等待%.1f秒）", elapsed)
 	}
 }

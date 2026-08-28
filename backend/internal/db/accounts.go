@@ -2,10 +2,19 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/ovh-webui/server/internal/types"
 )
+
+// ErrUnresolvedCheckoutAttempts 表示账户仍有关联的 checkout 结果待人工核对。
+// 此时删除凭据会让后续核单更困难，也会破坏防重复下单审计链。
+var ErrUnresolvedCheckoutAttempts = errors.New("账户存在结果未确认的结账记录，暂不能删除")
+
+// ErrAccountNotFound 表示目标账户在数据库中不存在。调用方可据此将
+// 并发删除/更新导致的不存在情况稳定映射为 404，而不是误报为服务器故障。
+var ErrAccountNotFound = errors.New("账户不存在")
 
 type accountRow struct {
 	ID          string `db:"id"`
@@ -153,9 +162,19 @@ func (db *DB) SetDefaultAccount(id string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("account %s not found", id)
+		return fmt.Errorf("%w: %s", ErrAccountNotFound, id)
 	}
 	return tx.Commit()
+}
+
+// ClearDefaultAccount 清除默认账户标记。正常业务始终应保留一个默认账户；
+// 该方法仅用于账户变更发布失败时，把数据库准确回滚到“变更前没有默认账户”
+// 的异常旧状态，避免为了回滚而擅自选择另一账户。
+func (db *DB) ClearDefaultAccount() error {
+	if _, err := db.Exec(`UPDATE ovh_accounts SET is_default = 0`); err != nil {
+		return fmt.Errorf("clear default account: %w", err)
+	}
+	return nil
 }
 
 // DeleteAccount 级联删除:queue / history / config_sniper_tasks 全部清掉关联记录,
@@ -172,9 +191,17 @@ func (db *DB) DeleteAccount(id string) error {
 	var wasDefault int
 	if err := tx.Get(&wasDefault, `SELECT is_default FROM ovh_accounts WHERE id = ?`, id); err != nil {
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("account %s not found", id)
+			return fmt.Errorf("%w: %s", ErrAccountNotFound, id)
 		}
 		return err
+	}
+
+	var unresolvedAttempts int
+	if err := tx.Get(&unresolvedAttempts, `SELECT COUNT(*) FROM checkout_attempts WHERE account_id = ? AND order_id = ''`, id); err != nil {
+		return fmt.Errorf("count unresolved checkout attempts: %w", err)
+	}
+	if unresolvedAttempts > 0 {
+		return fmt.Errorf("%w（%d 条）；请先在 OVH 后台核对订单和购物车", ErrUnresolvedCheckoutAttempts, unresolvedAttempts)
 	}
 
 	if _, err := tx.Exec(`DELETE FROM history WHERE account_id = ?`, id); err != nil {

@@ -149,3 +149,75 @@ func (db *DB) ClearQueue() (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// EnqueueMonitorOrdersAndSaveSubscription 在同一 SQLite 事务内保存监控订阅
+// 的最新库存/待下单状态，并插入由本次补货边沿生成的队列任务。这样无论
+// 进程在事务前、事务中还是事务后退出，都不会出现队列已写入但订阅仍会
+// 再次触发同一批任务的窗口。
+func (db *DB) EnqueueMonitorOrdersAndSaveSubscription(sub types.Subscription, items []types.QueueItem, maxQueueItems int) error {
+	subRow, err := monitorSubToRow(sub)
+	if err != nil {
+		return err
+	}
+	queueRows := make([]queueRow, 0, len(items))
+	for _, item := range items {
+		row, err := queueItemToRow(item)
+		if err != nil {
+			return err
+		}
+		queueRows = append(queueRows, row)
+	}
+
+	tx, err := db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var currentCount int
+	if err := tx.Get(&currentCount, `SELECT COUNT(*) FROM queue`); err != nil {
+		return fmt.Errorf("count queue before monitor enqueue: %w", err)
+	}
+	if maxQueueItems > 0 && currentCount+len(queueRows) > maxQueueItems {
+		return fmt.Errorf("队列容量不足（当前 %d，本次 %d，上限 %d）", currentCount, len(queueRows), maxQueueItems)
+	}
+
+	if _, err := tx.NamedExec(`
+		INSERT INTO monitor_subscriptions
+		(plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
+		 created_at, history, server_name, auto_order, quantity, auto_order_account_id)
+		VALUES
+		(:plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
+		 :created_at, :history, :server_name, :auto_order, :quantity, :auto_order_account_id)
+		ON CONFLICT(plan_code) DO UPDATE SET
+		  datacenters = excluded.datacenters, memories = excluded.memories, storages = excluded.storages,
+		  networks = excluded.networks, notify_available = excluded.notify_available,
+		  notify_unavailable = excluded.notify_unavailable, last_status = excluded.last_status,
+		  confirmed_status = excluded.confirmed_status, pending_order = excluded.pending_order,
+		  pending_notify = excluded.pending_notify, history = excluded.history, server_name = excluded.server_name,
+		  pending_notify_channels = excluded.pending_notify_channels,
+		  auto_order = excluded.auto_order, quantity = excluded.quantity,
+		  auto_order_account_id = excluded.auto_order_account_id
+	`, subRow); err != nil {
+		return fmt.Errorf("save monitor subscription %s with orders: %w", sub.PlanCode, err)
+	}
+
+	for _, row := range queueRows {
+		if _, err := tx.NamedExec(`
+			INSERT INTO queue
+			(id, account_id, plan_code, datacenter, options, status, created_at, updated_at,
+			 retry_interval, retry_count, max_retries, last_check_time,
+			 quick_order, priority, from_telegram, config_sniper_task_id)
+			VALUES
+			(:id, :account_id, :plan_code, :datacenter, :options, :status, :created_at, :updated_at,
+			 :retry_interval, :retry_count, :max_retries, :last_check_time,
+			 :quick_order, :priority, :from_telegram, :config_sniper_task_id)
+		`, row); err != nil {
+			return fmt.Errorf("insert monitor queue item %s: %w", row.ID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit monitor orders for %s: %w", sub.PlanCode, err)
+	}
+	return nil
+}

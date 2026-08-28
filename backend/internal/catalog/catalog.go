@@ -10,6 +10,7 @@ import (
 
 	ovhsdk "github.com/ovh/go-ovh/ovh"
 
+	"github.com/ovh-webui/server/internal/availability"
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/ovh"
 	"github.com/ovh-webui/server/internal/types"
@@ -25,16 +26,27 @@ type ConfigAvailability struct {
 	Options     []string          `json:"options"`
 }
 
+// ConfigAvailabilityResult 只有在可用性与公开 catalog 都完整、可唯一匹配时
+// 才返回配置。调用方尤其是监控和自动下单不能把不完整响应当作库存。
+type ConfigAvailabilityResult struct {
+	Configs map[string]*ConfigAvailability
+}
+
 // CheckServerAvailabilityWithConfigs 返回每个配置组合的可用性 + 匹配到的 API2 options。
 //   - accountID:决定用哪个账户的 OVH client 和 zone 拉 catalog。空 = 默认账户。
 //     `/dedicated/server/datacenter/availabilities` 是全局接口,client 走哪个账户无所谓;
 //     但 `/order/catalog/public/eco` 必须用对应 subsidiary 拉,否则跨子公司账户的 options 匹配会失败。
 //   - monitor 检查 loop 没有"当前账户"概念,直接传 "",意味着只能保证默认账户 + 同 subsidiary 账户准确;
 //     quick-order / Telegram 这种已知 account_id 的调用方应该传具体 ID。
-func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accountID string) map[string]*ConfigAvailability {
+func CheckServerAvailabilityWithConfigsStrict(state *app.State, planCode string, accountID string) (ConfigAvailabilityResult, error) {
+	empty := ConfigAvailabilityResult{Configs: map[string]*ConfigAvailability{}}
+	planCode = strings.TrimSpace(planCode)
+	if planCode == "" {
+		return empty, fmt.Errorf("planCode 不能为空")
+	}
 	client, err := state.OVH.ClientFor(accountID)
 	if err != nil {
-		return map[string]*ConfigAvailability{}
+		return empty, fmt.Errorf("获取 OVH 客户端失败: %w", err)
 	}
 
 	state.Logger.Info(fmt.Sprintf("[配置监控] 查询 %s 的所有配置组合...", planCode), "monitor")
@@ -44,12 +56,12 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accou
 	q.Set("planCode", planCode)
 	if err := client.Get("/dedicated/server/datacenter/availabilities?"+q.Encode(), &availabilities); err != nil {
 		state.Logger.Error(fmt.Sprintf("[配置监控] 获取配置可用性失败: %s", err.Error()), "monitor")
-		return map[string]*ConfigAvailability{}
+		return empty, fmt.Errorf("获取 %s 配置可用性失败: %w", planCode, err)
 	}
 
 	if len(availabilities) == 0 {
 		state.Logger.Warn(fmt.Sprintf("[配置监控] 未获取到 %s 的可用性数据", planCode), "monitor")
-		return map[string]*ConfigAvailability{}
+		return empty, fmt.Errorf("未获取到 %s 的可用性数据", planCode)
 	}
 
 	state.Logger.Info(fmt.Sprintf("[配置监控] OVH API 返回 %d 个配置组合", len(availabilities)), "monitor")
@@ -61,27 +73,44 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accou
 		subsidiary = "IE"
 	}
 	var catalogResp map[string]interface{}
-	_ = client.Get("/order/catalog/public/eco?ovhSubsidiary="+subsidiary, &catalogResp)
+	if err := client.Get("/order/catalog/public/eco?ovhSubsidiary="+url.QueryEscape(subsidiary), &catalogResp); err != nil {
+		return empty, fmt.Errorf("获取 %s 公开 catalog 失败: %w", subsidiary, err)
+	}
+	plan, err := findCatalogPlan(catalogResp, planCode)
+	if err != nil {
+		return empty, err
+	}
 
 	result := map[string]*ConfigAvailability{}
-	for _, item := range availabilities {
+	for index, item := range availabilities {
 		memory := getString(item, "memory", "N/A")
 		storage := getString(item, "storage", "N/A")
-		fqn := getString(item, "fqn", "")
+		fqn := strings.TrimSpace(getString(item, "fqn", ""))
+		if fqn == "" {
+			return empty, fmt.Errorf("%s 可用性响应第 %d 个配置缺少 fqn", planCode, index+1)
+		}
 		configKey := fqn
+		if _, exists := result[configKey]; exists {
+			return empty, fmt.Errorf("%s 可用性响应包含重复 fqn: %s", planCode, fqn)
+		}
 
 		datacenters := map[string]string{}
-		if dcsRaw, ok := item["datacenters"].([]interface{}); ok {
+		dcsRaw, ok := item["datacenters"].([]interface{})
+		if !ok || len(dcsRaw) == 0 {
+			return empty, fmt.Errorf("%s 配置 %s 缺少数据中心库存", planCode, fqn)
+		}
+		if ok {
 			for _, dcRaw := range dcsRaw {
 				dc, ok := dcRaw.(map[string]interface{})
 				if !ok {
-					continue
+					return empty, fmt.Errorf("%s 配置 %s 的数据中心格式无效", planCode, fqn)
 				}
-				dcName := getString(dc, "datacenter", "")
-				availability := getString(dc, "availability", "unknown")
-				if dcName != "" {
-					datacenters[dcName] = availability
+				dcName := strings.TrimSpace(getString(dc, "datacenter", ""))
+				availability := normalizeAvailability(getString(dc, "availability", ""))
+				if dcName == "" || availability == "" {
+					return empty, fmt.Errorf("%s 配置 %s 的数据中心库存字段不完整", planCode, fqn)
 				}
+				datacenters[dcName] = availability
 			}
 		}
 
@@ -99,68 +128,53 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accou
 		state.Logger.Debug(fmt.Sprintf("[配置监控] 提取选项: memory=%s (标准化: %s), storage=%s (标准化: %s)",
 			memory, memoryStd, storage, storageStd), "monitor")
 
-		if (memoryStd != "" || storageStd != "") && catalogResp != nil {
-			if plans, ok := catalogResp["plans"].([]interface{}); ok {
-				planFound := false
-				for _, planRaw := range plans {
-					plan, ok := planRaw.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					if getString(plan, "planCode", "") != planCode {
-						continue
-					}
-					planFound = true
-					addonFamilies, _ := plan["addonFamilies"].([]interface{})
-					for _, familyRaw := range addonFamilies {
-						family, ok := familyRaw.(map[string]interface{})
+		if memoryStd != "" || storageStd != "" {
+			addonFamilies, ok := plan["addonFamilies"].([]interface{})
+			if !ok {
+				return empty, fmt.Errorf("catalog 中 %s 缺少 addonFamilies", planCode)
+			}
+			memoryMatched := memoryStd == ""
+			storageMatched := storageStd == ""
+			for _, familyRaw := range addonFamilies {
+				family, ok := familyRaw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				familyName := strings.ToLower(getString(family, "name", ""))
+				addons, _ := family["addons"].([]interface{})
+
+				if familyName == "memory" && memoryStd != "" {
+					for _, addonRaw := range addons {
+						addon, ok := addonRaw.(string)
 						if !ok {
 							continue
 						}
-						familyName := strings.ToLower(getString(family, "name", ""))
-						addons, _ := family["addons"].([]interface{})
-
-						if familyName == "memory" && memoryStd != "" {
-							for _, addonRaw := range addons {
-								addon, ok := addonRaw.(string)
-								if !ok {
-									continue
-								}
-								addonStd := StandardizeConfig(addon)
-								if addonStd == memoryStd {
-									if !contains(api2Options, addon) {
-										api2Options = append(api2Options, addon)
-									}
-								} else if memoryStd != "" && strings.Contains(addonStd, memoryStd) {
-									if !contains(api2Options, addon) {
-										api2Options = append(api2Options, addon)
-									}
-								}
+						addonStd := StandardizeConfig(addon)
+						if addonStd == memoryStd || strings.Contains(addonStd, memoryStd) {
+							if !contains(api2Options, addon) {
+								api2Options = append(api2Options, addon)
 							}
-						} else if familyName == "storage" && storageStd != "" {
-							for _, addonRaw := range addons {
-								addon, ok := addonRaw.(string)
-								if !ok {
-									continue
-								}
-								addonStd := StandardizeConfig(addon)
-								if addonStd == storageStd {
-									if !contains(api2Options, addon) {
-										api2Options = append(api2Options, addon)
-									}
-								} else if storageStd != "" && strings.Contains(addonStd, storageStd) {
-									if !contains(api2Options, addon) {
-										api2Options = append(api2Options, addon)
-									}
-								}
-							}
+							memoryMatched = true
 						}
 					}
-					break
+				} else if familyName == "storage" && storageStd != "" {
+					for _, addonRaw := range addons {
+						addon, ok := addonRaw.(string)
+						if !ok {
+							continue
+						}
+						addonStd := StandardizeConfig(addon)
+						if addonStd == storageStd || strings.Contains(addonStd, storageStd) {
+							if !contains(api2Options, addon) {
+								api2Options = append(api2Options, addon)
+							}
+							storageMatched = true
+						}
+					}
 				}
-				if !planFound {
-					state.Logger.Warn(fmt.Sprintf("[配置监控] 在 catalog 中未找到 planCode: %s", planCode), "monitor")
-				}
+			}
+			if !memoryMatched || !storageMatched {
+				return empty, fmt.Errorf("catalog 无法完整匹配 %s 配置 %s（memory=%s storage=%s）", planCode, fqn, memory, storage)
 			}
 		}
 
@@ -179,7 +193,47 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accou
 	}
 
 	state.Logger.Info(fmt.Sprintf("[配置监控] 成功获取 %d 个配置组合的可用性", len(result)), "monitor")
-	return result
+	return ConfigAvailabilityResult{Configs: result}, nil
+}
+
+// CheckServerAvailabilityWithConfigs 保留原调用接口；严格检查失败时返回空，
+// 交互入口继续输出原有错误文案。监控等安全敏感调用应使用 Strict 版本。
+func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accountID string) map[string]*ConfigAvailability {
+	result, err := CheckServerAvailabilityWithConfigsStrict(state, planCode, accountID)
+	if err != nil {
+		state.Logger.Warn("[配置监控] "+err.Error(), "monitor")
+		return map[string]*ConfigAvailability{}
+	}
+	return result.Configs
+}
+
+func findCatalogPlan(catalogResp map[string]interface{}, planCode string) (map[string]interface{}, error) {
+	plans, ok := catalogResp["plans"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("公开 catalog 缺少 plans")
+	}
+	for _, raw := range plans {
+		plan, ok := raw.(map[string]interface{})
+		if ok && getString(plan, "planCode", "") == planCode {
+			return plan, nil
+		}
+	}
+	return nil, fmt.Errorf("公开 catalog 中未找到 planCode: %s", planCode)
+}
+
+func normalizeAvailability(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "unavailable" || AvailabilityExplicitlyAvailable(value) {
+		return value
+	}
+	return ""
+}
+
+// AvailabilityExplicitlyAvailable 只接受 OVH 已知的明确有货状态。
+// 自动下单、快速下单和库存统计应统一复用这里，避免未来新增的未知状态
+// 被“非 unavailable”逻辑误判为有货。
+func AvailabilityExplicitlyAvailable(value string) bool {
+	return availability.ExplicitlyAvailable(value)
 }
 
 // CheckServerAvailability 对应 Python: check_server_availability（带 options 精确匹配）

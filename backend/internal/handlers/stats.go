@@ -25,7 +25,7 @@ func GetStats(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			AvailableServers:      state.CountAvailableServers(),
 			PurchaseSuccess:       success,
 			PurchaseFailed:        failed,
-			QueueProcessorRunning: state.QueueProcessorRunning,
+			QueueProcessorRunning: state.IsQueueProcessorRunning(),
 			MonitorRunning:        mon != nil && mon.Running(),
 		}
 		c.JSON(http.StatusOK, s)

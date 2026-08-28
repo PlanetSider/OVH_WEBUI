@@ -43,6 +43,8 @@
 - `/api/monitor/*` 独服
 - `/api/vps-monitor/*` VPS
 - 监控通知支持 Telegram、飞书或微信；飞书可用性通知按内存/存储配置聚合并提供卡片入队按钮，微信使用文本命令下单
+- 独服监控（/api/monitor/*）支持有货变化后的自动下单；VPS 监控（/api/vps-monitor/*）仅发送库存通知，不支持自动下单。
+- 创建或更新 VPS 订阅不接受 autoOrder、quantity、autoOrderAccountId 字段；旧数据库中的 auto_order_account_id 仅为兼容保留列，不再使用。
 
 ### 飞书
 

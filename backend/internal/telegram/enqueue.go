@@ -3,6 +3,7 @@ package telegram
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/catalog"
@@ -24,21 +25,14 @@ func EnqueueSingle(state *app.State, accountID, planCode, datacenter string, opt
 	if planCode == "" || datacenter == "" {
 		return OrderResult{Success: false, Message: "缺少 planCode 或 datacenter"}
 	}
-	if !CanEnqueue(state, 1) {
-		return OrderResult{Success: false, Message: fmt.Sprintf("队列已满（上限 %d），请清理后再试", MaxQueueLen)}
-	}
-	if HasActiveDuplicateForAccount(state, accountID, planCode, datacenter, options) {
-		return OrderResult{Success: false, Message: "已存在相同配置的购买任务，请勿重复点击"}
-	}
-	if RecentSuccessDuplicateForAccount(state, accountID, planCode, datacenter, options) {
-		return OrderResult{Success: false, Message: "刚刚已成功下过同配置订单，稍后再试"}
-	}
-
 	// 无 options 时尝试从可用性补全
 	if len(options) == 0 {
-		avail := catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID)
-		for _, cfg := range avail {
-			if st, ok := cfg.Datacenters[datacenter]; ok && st != "" && st != "unavailable" && st != "unknown" && len(cfg.Options) > 0 {
+		availabilityResult, availabilityErr := catalog.CheckServerAvailabilityWithConfigsStrict(state, planCode, accountID)
+		if availabilityErr != nil {
+			return OrderResult{Success: false, Message: "无法安全获取指定配置库存：" + availabilityErr.Error()}
+		}
+		for _, cfg := range availabilityResult.Configs {
+			if st, ok := cfg.Datacenters[datacenter]; ok && catalog.AvailabilityExplicitlyAvailable(st) && len(cfg.Options) > 0 {
 				options = append([]string{}, cfg.Options...)
 				break
 			}
@@ -57,22 +51,25 @@ func EnqueueSingle(state *app.State, accountID, planCode, datacenter string, opt
 	}
 
 	item := NewTelegramQueueItem(accountID, planCode, datacenter, options)
-	state.QueueMu.Lock()
-	state.Queue = append(state.Queue, item)
-	state.QueueMu.Unlock()
-	if err := state.SaveQueue(); err != nil {
-		// 落盘失败回滚内存，避免只在内存里可执行、重启却丢失
-		state.QueueMu.Lock()
-		kept := state.Queue[:0]
-		for _, q := range state.Queue {
-			if q.ID != item.ID {
-				kept = append(kept, q)
+	if err := state.MutateQueueWithHistoryForAccount(accountID, func(queue []types.QueueItem, history []types.PurchaseHistoryEntry) ([]types.QueueItem, error) {
+		if recentSuccessDuplicateInHistory(history, accountID, planCode, datacenter, options, time.Now().Unix()) {
+			return nil, fmt.Errorf("刚刚已成功下过同配置订单，稍后再试")
+		}
+		if len(queue) >= MaxQueueLen {
+			return nil, fmt.Errorf("队列已满（上限 %d），请清理后再试", MaxQueueLen)
+		}
+		fp := OptionsFingerprint(options)
+		for _, existing := range queue {
+			if existing.AccountID == accountID && existing.PlanCode == planCode && existing.Datacenter == datacenter &&
+				(existing.Status == "running" || existing.Status == "pending" || existing.Status == "paused") &&
+				OptionsFingerprint(existing.Options) == fp {
+				return nil, fmt.Errorf("已存在相同配置的购买任务，请勿重复点击")
 			}
 		}
-		state.Queue = kept
-		state.QueueMu.Unlock()
+		return append(queue, item), nil
+	}); err != nil {
 		state.Logger.Error("Telegram 入队落盘失败: "+err.Error(), "telegram")
-		return OrderResult{Success: false, Message: "入队保存失败，请重试"}
+		return OrderResult{Success: false, Message: err.Error()}
 	}
 	state.Logger.Info(fmt.Sprintf("Telegram 受控入队: %s@%s account=%s opts=%v",
 		planCode, datacenter, accountID, options), "telegram")
@@ -108,10 +105,14 @@ func ProcessOrderForAccount(state *app.State, accountID, planCode, datacenter st
 
 	// 生产建议：强制指定机房，避免「全机房 × 全配置」扇出
 	// 若未指定：仅允许最多 MaxDCsWhenNoDC 个机房
-	availByConfig := catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID)
-	if len(availByConfig) == 0 {
+	availabilityResult, availabilityErr := catalog.CheckServerAvailabilityWithConfigsStrict(state, planCode, accountID)
+	if availabilityErr != nil || len(availabilityResult.Configs) == 0 {
+		if availabilityErr != nil {
+			return OrderResult{Success: false, Message: "无法安全获取 " + planCode + " 的可用性信息：" + availabilityErr.Error()}
+		}
 		return OrderResult{Success: false, Message: "无法获取 " + planCode + " 的可用性信息"}
 	}
+	availByConfig := availabilityResult.Configs
 
 	type configEntry struct {
 		key  string
@@ -140,7 +141,7 @@ func ProcessOrderForAccount(state *app.State, accountID, planCode, datacenter st
 	availableDCs := map[string]struct{}{}
 	for _, e := range configsToOrder {
 		for dc, status := range e.data.Datacenters {
-			if status != "" && status != "unavailable" && status != "unknown" {
+			if catalog.AvailabilityExplicitlyAvailable(status) {
 				availableDCs[dc] = struct{}{}
 			}
 		}
@@ -172,60 +173,55 @@ func ProcessOrderForAccount(state *app.State, accountID, planCode, datacenter st
 			"本次将创建 %d 个任务，超过单次上限 %d。请指定机房/配置或减小数量（≤%d）",
 			planned, MaxOrdersPerRequest, MaxQuantityPerOrder)}
 	}
-	if !CanEnqueue(state, planned) {
-		return OrderResult{Success: false, Message: fmt.Sprintf("队列空间不足（当前上限 %d）", MaxQueueLen)}
-	}
-
 	ordersToCreate := []types.QueueItem{}
 	skippedDup := 0
-	for _, ce := range configsToOrder {
-		configOptions := append([]string{}, ce.data.Options...)
-		for _, dc := range dcsToOrder {
-			if status, ok := ce.data.Datacenters[dc]; ok && (status == "unavailable" || status == "unknown") {
-				continue
-			}
-			// 队列中已有同配置活跃任务时整组跳过（不与 quantity 混用）
-			if HasActiveDuplicateForAccount(state, accountID, planCode, dc, configOptions) {
-				skippedDup += quantity
-				continue
-			}
-			// quantity 表示同配置入队条数（每条独立抢购任务），允许同批重复
-			for i := 0; i < quantity; i++ {
-				item := NewTelegramQueueItem(accountID, planCode, dc, configOptions)
-				item.FromTelegram = fromTelegram
-				ordersToCreate = append(ordersToCreate, item)
-			}
-		}
-	}
-
-	if len(ordersToCreate) == 0 {
-		msg := "没有可创建的任务"
-		if skippedDup > 0 {
-			msg = "已存在相同配置的活跃任务，跳过重复入队"
-		}
-		return OrderResult{Success: false, Message: msg}
-	}
-
-	// 串行入队 + 一次落盘
-	state.QueueMu.Lock()
-	state.Queue = append(state.Queue, ordersToCreate...)
-	state.QueueMu.Unlock()
-	if err := state.SaveQueue(); err != nil {
-		idSet := map[string]struct{}{}
-		for _, it := range ordersToCreate {
-			idSet[it.ID] = struct{}{}
-		}
-		state.QueueMu.Lock()
-		kept := state.Queue[:0]
-		for _, q := range state.Queue {
-			if _, drop := idSet[q.ID]; !drop {
-				kept = append(kept, q)
+	err := state.MutateQueueWithHistoryForAccount(accountID, func(queue []types.QueueItem, history []types.PurchaseHistoryEntry) ([]types.QueueItem, error) {
+		ordersToCreate = ordersToCreate[:0]
+		skippedDup = 0
+		nowTS := time.Now().Unix()
+		for _, ce := range configsToOrder {
+			configOptions := append([]string{}, ce.data.Options...)
+			for _, dc := range dcsToOrder {
+				status, ok := ce.data.Datacenters[dc]
+				if !ok || !catalog.AvailabilityExplicitlyAvailable(status) {
+					continue
+				}
+				if recentSuccessDuplicateInHistory(history, accountID, planCode, dc, configOptions, nowTS) {
+					skippedDup += quantity
+					continue
+				}
+				duplicate := false
+				fp := OptionsFingerprint(configOptions)
+				for _, existing := range queue {
+					if existing.AccountID == accountID && existing.PlanCode == planCode && existing.Datacenter == dc &&
+						(existing.Status == "running" || existing.Status == "pending" || existing.Status == "paused") &&
+						OptionsFingerprint(existing.Options) == fp {
+						duplicate = true
+						break
+					}
+				}
+				if duplicate {
+					skippedDup += quantity
+					continue
+				}
+				for i := 0; i < quantity; i++ {
+					item := NewTelegramQueueItem(accountID, planCode, dc, configOptions)
+					item.FromTelegram = fromTelegram
+					ordersToCreate = append(ordersToCreate, item)
+				}
 			}
 		}
-		state.Queue = kept
-		state.QueueMu.Unlock()
+		if len(ordersToCreate) == 0 {
+			return nil, fmt.Errorf("近期已成功下单或已存在相同配置的活跃任务，跳过重复入队")
+		}
+		if len(queue)+len(ordersToCreate) > MaxQueueLen {
+			return nil, fmt.Errorf("队列空间不足（当前上限 %d）", MaxQueueLen)
+		}
+		return append(queue, ordersToCreate...), nil
+	})
+	if err != nil {
 		state.Logger.Error("机器人批量入队落盘失败: "+err.Error(), "bot")
-		return OrderResult{Success: false, Message: "入队保存失败，请重试"}
+		return OrderResult{Success: false, Message: err.Error()}
 	}
 	created := len(ordersToCreate)
 	state.Logger.Info(fmt.Sprintf("机器人受控批量入队: %d 个 (skip_dup=%d) account=%s", created, skippedDup, accountID), "bot")

@@ -86,7 +86,6 @@ export interface VpsSubscription {
   notifyAvailable?: boolean;
   notifyUnavailable?: boolean;
   lastStatus?: Record<string, unknown>;
-  autoOrder?: boolean;
   createdAt?: string;
 }
 

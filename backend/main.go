@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/purchase"
 	"github.com/ovh-webui/server/internal/storage"
+	"github.com/ovh-webui/server/internal/vps"
 	"github.com/ovh-webui/server/internal/weixin"
 )
 
@@ -91,6 +93,15 @@ func main() {
 	})
 	state.Weixin = weixinManager
 	weixinManager.Start()
+	// 通知 outbox 使用独立后台循环，即使没有任何监控订阅，失败的抢购成功/
+	// 新服务器通知也会持续重试。发送仍由 State 全局互斥，避免与即时刷送重复。
+	outboxCtx, cancelOutbox := context.WithCancel(context.Background())
+	var outboxWG sync.WaitGroup
+	outboxWG.Add(1)
+	go func() {
+		defer outboxWG.Done()
+		mon.RunNotificationOutboxLoop(outboxCtx)
+	}()
 
 	// Gin
 	if mode := os.Getenv("GIN_MODE"); mode != "" {
@@ -424,8 +435,19 @@ func main() {
 	// 前端静态文件（仅 `-tags ui` 构建时生效）
 	mountEmbeddedUI(r)
 
-	// 后台线程
-	go purchase.ProcessQueueLoop(state)
+	// 后台抢购队列使用独立 context；若启动时 checkout 恢复或队列加载失败，
+	// 必须保持队列停用，避免在无法确认遗留订单时再次下单。
+	queueCtx, cancelQueue := context.WithCancel(context.Background())
+	var queueWG sync.WaitGroup
+	if state.IsQueueProcessorEnabled() {
+		queueWG.Add(1)
+		go func() {
+			defer queueWG.Done()
+			purchase.ProcessQueueLoop(queueCtx, state)
+		}()
+	} else {
+		state.Logger.Error("抢购队列处理器未启动：启动恢复不安全", "system")
+	}
 	// 服务器目录走懒加载：访问到且缓存过期时才打 OVH，无后台定时刷新
 	stopRealtimeAvailability := handlers.StartRealtimeAvailabilityRefresh(state)
 
@@ -433,6 +455,10 @@ func main() {
 	if len(mon.Snapshot()) > 0 {
 		mon.Start()
 		state.Logger.Info("自动启动服务器监控", "system")
+	}
+	if len(state.VPSSubscriptionsSnapshot()) > 0 {
+		vps.Start(state)
+		state.Logger.Info("自动启动VPS监控", "system")
 	}
 
 	state.Logger.Info("Server started", "system")
@@ -470,6 +496,15 @@ func main() {
 		console.Info("shutdown signal", "sig", sig.String())
 		state.Logger.Info("收到退出信号，正在优雅关闭…", "system")
 	}
+	// 先停止接收新请求，再停止会修改状态的后台任务。
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		console.Error("server shutdown", "err", err)
+		_ = srv.Close()
+	}
+	cancelQueue()
+	cancelOutbox()
 	stopRealtimeAvailability()
 	weixinManager.Stop()
 	feishuConnection.Stop()
@@ -478,15 +513,11 @@ func main() {
 	if mon != nil {
 		mon.Stop()
 	}
-	// 刷日志到盘
+	vps.Stop(state)
+	queueWG.Wait()
+	outboxWG.Wait()
+	state.SaveAll()
 	state.Logger.Flush()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		console.Error("server shutdown", "err", err)
-		_ = srv.Close()
-	}
 	console.Info("server stopped cleanly")
 }
 

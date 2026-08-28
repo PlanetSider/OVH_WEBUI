@@ -3,6 +3,7 @@ package ovh
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ovh/go-ovh/ovh"
 
@@ -64,6 +65,7 @@ func (f *Factory) ClientFor(accountID string) (*ovh.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	cli.Timeout = 30 * time.Second
 	f.cache[acc.ID] = cli
 	return cli, nil
 }
@@ -106,5 +108,6 @@ func (f *Factory) Client() (*ovh.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	cli.Timeout = 30 * time.Second
 	return cli, nil
 }

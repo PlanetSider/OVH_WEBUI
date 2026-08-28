@@ -79,18 +79,9 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 			c.JSON(http.StatusOK, gin.H{"challenge": challenge})
 			return
 		}
-		eventID := feishuEventID(body)
-		if state.DB != nil && eventID != "" {
-			claimed, claimErr := state.DB.TryClaimFeishuEvent(eventID)
-			if claimErr != nil {
-				state.Logger.Warn("飞书 event_id 幂等写入失败: "+claimErr.Error(), "feishu")
-			} else if !claimed {
-				c.JSON(http.StatusOK, gin.H{"code": 0, "duplicate": true})
-				return
-			}
-			if len(eventID)%20 == 0 {
-				_, _ = state.DB.CleanupFeishuEvents(float64(time.Now().Add(-feishuEventRetentionDays * 24 * time.Hour).Unix()))
-			}
+		if !claimFeishuEvent(state, body) {
+			c.JSON(http.StatusOK, gin.H{"code": 0, "duplicate": true})
+			return
 		}
 		event, _ := body["event"].(map[string]interface{})
 		message, _ := event["message"].(map[string]interface{})
@@ -375,6 +366,10 @@ func FeishuCardAction(state *app.State) gin.HandlerFunc {
 		token, appID = feishuHeaderValues(body)
 		if !monitor.FeishuVerifyIdentity(state, token, appID) { c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid identity"}); return }
 		if challenge, ok := body["challenge"].(string); ok && challenge != "" { c.JSON(http.StatusOK, gin.H{"challenge": challenge}); return }
+		if !claimFeishuEvent(state, body) {
+			c.JSON(http.StatusOK, gin.H{"toast": gin.H{"type": "success", "content": "操作已处理"}})
+			return
+		}
 		action, _ := body["action"].(map[string]interface{})
 		if event, ok := body["event"].(map[string]interface{}); ok {
 			if eventAction, ok := event["action"].(map[string]interface{}); ok {
@@ -495,10 +490,10 @@ func feishuEnqueue(state *app.State, values map[string]interface{}) string {
 	if !ok { return "按钮已使用、已过期或不存在" }
 	configInfo := dbParseConfigInfo(row.ConfigInfo)
 	accountID, _ := configInfo["accountId"].(string)
-	if accountID == "" { _ = state.DB.UnclaimTelegramButton(uuid); return "通知未冻结账户，请等待新的通知卡片" }
-	if _, ok := state.FindAccount(accountID); !ok { _ = state.DB.UnclaimTelegramButton(uuid); return "通知对应的 OVH 账户已不存在" }
+	if accountID == "" { rollbackTelegramButton(state, uuid, "飞书通知未冻结账户"); return "通知未冻结账户，请等待新的通知卡片" }
+	if _, ok := state.FindAccount(accountID); !ok { rollbackTelegramButton(state, uuid, "飞书通知账户不存在"); return "通知对应的 OVH 账户已不存在" }
 	options := dbParseOptions(row.Options)
 	result := telegram.EnqueueSingle(state, accountID, row.PlanCode, row.Datacenter, options, true)
-	if !result.Success { _ = state.DB.UnclaimTelegramButton(uuid); return "入队失败："+result.Message }
+	if !result.Success { rollbackTelegramButton(state, uuid, "飞书入队失败"); return "入队失败："+result.Message }
 	return fmt.Sprintf("✅ %s (%s) 已加入购买队列", row.PlanCode, strings.ToUpper(row.Datacenter))
 }

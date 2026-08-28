@@ -79,10 +79,31 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("monitor_subscriptions", "networks", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
+	if err := db.addColumnIfMissing("monitor_subscriptions", "confirmed_status", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("monitor_subscriptions", "pending_order", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("monitor_subscriptions", "pending_notify", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("monitor_subscriptions", "pending_notify_channels", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("vps_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := db.addColumnIfMissing("vps_subscriptions", "pending_notify", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("vps_subscriptions", "pending_notify_channels", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("telegram_order_buttons", "used_at", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("notification_outbox", "awaiting_channels", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return nil

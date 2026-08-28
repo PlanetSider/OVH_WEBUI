@@ -73,7 +73,7 @@ func appendPriceBlock(msg *strings.Builder, priceText string) {
 
 // SendAvailabilityAlertGrouped 对应 Python: send_availability_alert_grouped
 func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
-	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string) {
+	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string, expectedChannels ...[]string) NotificationDeliveryResult {
 
 	var msg strings.Builder
 	msg.WriteString("🎉 服务器上架通知！\n\n")
@@ -152,8 +152,6 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		msg.WriteString("\n⏰ 推送时间: " + pushTime.Format("2006-01-02 15:04:05"))
 	}
 
-	msg.WriteString("\n\n💡 点击下方按钮可直接下单对应机房！")
-
 	// 构建按钮（每行最多 2 个）
 	type btn struct {
 		Text         string `json:"text"`
@@ -174,38 +172,57 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 			}
 		}
 	}
+	expected := ConfiguredNotificationChannels(m.state)
+	if len(expectedChannels) > 0 { expected = canonicalNotificationChannels(expectedChannels[0]) }
 	for idx, dcInfo := range availableDCs {
 		dc, _ := dcInfo["dc"].(string)
-		msgUUID := uuid.NewString()
-		m.AddMessageUUID(msgUUID, planCode, dc, options, configInfo)
-		m.state.Logger.Debug(fmt.Sprintf("生成消息UUID: %s, 配置: %s@%s, options=%v", msgUUID, planCode, dc, options), "monitor")
-
-		cb := map[string]string{"a": "add_to_queue", "u": msgUUID}
-		cbStr, _ := json.Marshal(cb)
-		if len(cbStr) > 64 {
-			m.state.Logger.Warn(fmt.Sprintf("UUID callback_data异常长: %d字节, UUID=%s", len(cbStr), msgUUID), "monitor")
+		if notificationChannelSelected(expected, NotificationChannelTelegram) {
+			msgUUID := uuid.NewString()
+			if err := m.AddMessageUUID(msgUUID, planCode, dc, options, configInfo); err != nil {
+				m.state.Logger.Warn("持久化 Telegram 一键下单按钮失败，通知将不包含该按钮: "+err.Error(), "monitor")
+			} else {
+				m.state.Logger.Debug(fmt.Sprintf("生成消息UUID: %s, 配置: %s@%s, options=%v", msgUUID, planCode, dc, options), "monitor")
+				cb := map[string]string{"a": "add_to_queue", "u": msgUUID}
+				cbStr, _ := json.Marshal(cb)
+				if len(cbStr) > 64 {
+					m.state.Logger.Warn(fmt.Sprintf("UUID callback_data异常长: %d字节, UUID=%s", len(cbStr), msgUUID), "monitor")
+				}
+				row = append(row, btn{
+					Text:         dcDisplayShortName(dc) + " 一键下单",
+					CallbackData: string(cbStr),
+				})
+			}
 		}
-		row = append(row, btn{
-			Text:         dcDisplayShortName(dc) + " 一键下单",
-			CallbackData: string(cbStr),
-		})
 		// 飞书使用独立 UUID，两个渠道互不抢占同一个一次性按钮；账户已冻结在 configInfo。
-		feishuUUID := uuid.NewString()
-		m.AddMessageUUID(feishuUUID, planCode, dc, options, configInfo)
-		feishuActions = append(feishuActions, map[string]interface{}{
-			"tag":   "button",
-			"text":  map[string]interface{}{"tag": "plain_text", "content": dcDisplayShortName(dc) + " 一键下单"},
-			"type":  "primary",
-			"value": FeishuCardAction("add_to_queue", map[string]interface{}{"uuid": feishuUUID}),
-		})
-		if len(row) >= 2 || idx == len(availableDCs)-1 {
+		if notificationChannelSelected(expected, NotificationChannelFeishu) {
+			feishuUUID := uuid.NewString()
+			if err := m.AddMessageUUID(feishuUUID, planCode, dc, options, configInfo); err != nil {
+				m.state.Logger.Warn("持久化飞书一键下单按钮失败，通知将不包含该按钮: "+err.Error(), "monitor")
+			} else {
+				feishuActions = append(feishuActions, map[string]interface{}{
+					"tag":   "button",
+					"text":  map[string]interface{}{"tag": "plain_text", "content": dcDisplayShortName(dc) + " 一键下单"},
+					"type":  "primary",
+					"value": FeishuCardAction("add_to_queue", map[string]interface{}{"uuid": feishuUUID}),
+				})
+			}
+		}
+		if len(row) >= 2 || (idx == len(availableDCs)-1 && len(row) > 0) {
 			keyboard = append(keyboard, row)
 			row = nil
 		}
 	}
+	if len(keyboard) > 0 || len(feishuActions) > 0 {
+		msg.WriteString("\n\n💡 点击下方按钮可直接下单对应机房！")
+	}
 	replyMarkup := map[string]interface{}{"inline_keyboard": keyboard}
-	FeishuSendDefaultNotification(m.state, "🎉 服务器上架通知", msg.String(), "green", feishuActions)
-	SendWeixinNotification(m.state, msg.String()+"\n\n微信下单：/buy "+planCode+" <机房代码>")
+	delivered := NotificationDeliveryResult{}
+	if notificationChannelSelected(expected, NotificationChannelFeishu) {
+		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "🎉 服务器上架通知", msg.String(), "green", feishuActions)
+	}
+	if notificationChannelSelected(expected, NotificationChannelWeixin) {
+		delivered[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg.String()+"\n\n微信下单：/buy "+planCode+" <机房代码>")
+	}
 
 	configDesc := ""
 	if configInfo != nil {
@@ -214,16 +231,22 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 	m.state.Logger.Info(fmt.Sprintf("正在发送汇总Telegram通知: %s%s - %d个机房", planCode, configDesc, len(availableDCs)), "monitor")
-	if telegram.SendMessage(m.state, msg.String(), replyMarkup) {
+	tgOK := false
+	if notificationChannelSelected(expected, NotificationChannelTelegram) {
+		tgOK = telegram.SendMessage(m.state, msg.String(), replyMarkup)
+		delivered[NotificationChannelTelegram] = tgOK
+	}
+	if tgOK {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram汇总通知发送成功: %s%s", planCode, configDesc), "monitor")
 	} else {
-		m.state.Logger.Warn(fmt.Sprintf("⚠️ Telegram汇总通知发送失败: %s%s", planCode, configDesc), "monitor")
+		 m.state.Logger.Warn(fmt.Sprintf("⚠️ Telegram汇总通知发送失败: %s%s", planCode, configDesc), "monitor")
 	}
+	return delivered
 }
 
 // SendUnavailableAlertGrouped 对应 Python: send_unavailable_alert_grouped
 func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []map[string]interface{},
-	configInfo map[string]interface{}, serverName, traceID, configTraceID string) {
+	configInfo map[string]interface{}, serverName, traceID, configTraceID string, expectedChannels ...[]string) NotificationDeliveryResult {
 
 	var msg strings.Builder
 	msg.WriteString("📦 服务器下架通知\n\n")
@@ -258,8 +281,15 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 		}
 	}
 	msg.WriteString("\n⏰ 时间: " + m.nowBeijing().Format("2006-01-02 15:04:05"))
-	FeishuSendDefaultNotification(m.state, "📦 服务器下架通知", msg.String(), "grey", nil)
-	SendWeixinNotification(m.state, msg.String())
+	expected := ConfiguredNotificationChannels(m.state)
+	if len(expectedChannels) > 0 { expected = canonicalNotificationChannels(expectedChannels[0]) }
+	delivered := NotificationDeliveryResult{}
+	if notificationChannelSelected(expected, NotificationChannelFeishu) {
+		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "📦 服务器下架通知", msg.String(), "grey", nil)
+	}
+	if notificationChannelSelected(expected, NotificationChannelWeixin) {
+		delivered[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg.String())
+	}
 
 	configDesc := ""
 	if configInfo != nil {
@@ -268,16 +298,22 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 		}
 	}
 	m.state.Logger.Info(fmt.Sprintf("正在发送聚合下架Telegram通知: %s%s - %d个机房", planCode, configDesc, len(unavailableDCs)), "monitor")
-	if telegram.SendMessage(m.state, msg.String(), nil) {
+	tgOK := false
+	if notificationChannelSelected(expected, NotificationChannelTelegram) {
+		tgOK = telegram.SendMessage(m.state, msg.String(), nil)
+		delivered[NotificationChannelTelegram] = tgOK
+	}
+	if tgOK {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram聚合下架通知发送成功: %s%s", planCode, configDesc), "monitor")
 	} else {
 		m.state.Logger.Warn(fmt.Sprintf("⚠️ Telegram聚合下架通知发送失败: %s%s", planCode, configDesc), "monitor")
 	}
+	return delivered
 }
 
 // SendAvailabilityAlert 对应 Python: send_availability_alert
 func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType string,
-	configInfo map[string]interface{}, serverName, durationText, priceCheckError, traceID, configTraceID, detectedTime string) {
+	configInfo map[string]interface{}, serverName, durationText, priceCheckError, traceID, configTraceID, detectedTime string, expectedChannels ...[]string) NotificationDeliveryResult {
 
 	var msg strings.Builder
 	pushTime := m.nowBeijing()
@@ -427,17 +463,30 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 	} else if changeType == "price_check_failed" {
 		template, title = "orange", "⚠️ 价格校验失败通知"
 	}
-	FeishuSendDefaultNotification(m.state, title, msg.String(), template, nil)
-	SendWeixinNotification(m.state, msg.String())
-	if telegram.SendMessage(m.state, msg.String(), nil) {
+	expected := ConfiguredNotificationChannels(m.state)
+	if len(expectedChannels) > 0 { expected = canonicalNotificationChannels(expectedChannels[0]) }
+	delivered := NotificationDeliveryResult{}
+	if notificationChannelSelected(expected, NotificationChannelFeishu) {
+		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, title, msg.String(), template, nil)
+	}
+	if notificationChannelSelected(expected, NotificationChannelWeixin) {
+		delivered[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg.String())
+	}
+	tgOK := false
+	if notificationChannelSelected(expected, NotificationChannelTelegram) {
+		tgOK = telegram.SendMessage(m.state, msg.String(), nil)
+		delivered[NotificationChannelTelegram] = tgOK
+	}
+	if tgOK {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram通知发送成功: %s@%s%s - %s", planCode, datacenter, configDesc, changeType), "monitor")
 	} else {
 		m.state.Logger.Warn(fmt.Sprintf("⚠️ Telegram通知发送失败: %s@%s%s", planCode, datacenter, configDesc), "monitor")
 	}
+	return delivered
 }
 
 // SendNewServerAlert 对应 Python: send_new_server_alert
-func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
+func (m *Monitor) SendNewServerAlert(server map[string]interface{}, expectedChannels ...[]string) NotificationDeliveryResult {
 	planCode, _ := server["planCode"].(string)
 	priceText := ""
 	if planCode != "" {
@@ -450,10 +499,22 @@ func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
 		priceText = unavailablePriceText()
 	}
 	msg += "\n💰 价格:\n" + priceText + "\n\n⏰ 发现时间: " + m.nowBeijing().Format("2006-01-02 15:04:05") + "\n\n💡 快去查看详情！"
-	FeishuSendDefaultNotification(m.state, "🆕 新服务器上架通知", msg, "green", nil)
-	telegram.SendMessage(m.state, msg, nil)
-	SendWeixinNotification(m.state, msg)
+	expected := ConfiguredNotificationChannels(m.state)
+	if len(expectedChannels) > 0 {
+		expected = canonicalNotificationChannels(expectedChannels[0])
+	}
+	delivered := NotificationDeliveryResult{}
+	if notificationChannelSelected(expected, NotificationChannelFeishu) {
+		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "🆕 新服务器上架通知", msg, "green", nil)
+	}
+	if notificationChannelSelected(expected, NotificationChannelTelegram) {
+		delivered[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
+	}
+	if notificationChannelSelected(expected, NotificationChannelWeixin) {
+		delivered[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)
+	}
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
+	return delivered
 }
 
 func unavailablePriceText() string {

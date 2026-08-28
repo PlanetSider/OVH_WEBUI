@@ -77,10 +77,13 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			state.Logger.Warn("未找到服务器 "+body.PlanCode+" 的名称信息", "monitor")
 		}
 
-		mon.AddSubscription(body.PlanCode, body.Datacenters, notifyAvailable, notifyUnavailable,
+		if err := mon.AddSubscription(body.PlanCode, body.Datacenters, notifyAvailable, notifyUnavailable,
 			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID,
-			body.Memories, body.Storages, body.Networks)
-		mon.SaveToDB()
+			body.Memories, body.Storages, body.Networks); err != nil {
+			state.Logger.Error("保存服务器订阅失败: "+err.Error(), "monitor")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "保存订阅失败"})
+			return
+		}
 
 		if !mon.Running() {
 			mon.Start()
@@ -135,35 +138,49 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			notifyUnavailable = *body.NotifyUnavailable
 		}
 
-		existing := map[string]struct{}{}
-		for _, s := range mon.Snapshot() {
-			existing[s.PlanCode] = struct{}{}
-		}
-
 		added := 0
 		skipped := 0
-		errs := []string{}
 		state.ServerPlansMu.RLock()
 		plansCopy := make([]types.ServerPlan, len(state.ServerPlans))
 		copy(plansCopy, state.ServerPlans)
 		state.ServerPlansMu.RUnlock()
 
-		for _, server := range plansCopy {
-			pc := server.PlanCode
-			if pc == "" {
-				continue
+		if err := mon.MutateSubscriptions(func(subscriptions []*monitor.Subscription) ([]*monitor.Subscription, error) {
+			existing := make(map[string]struct{}, len(subscriptions))
+			for _, sub := range subscriptions {
+				existing[sub.PlanCode] = struct{}{}
 			}
-			if _, ok := existing[pc]; ok {
-				skipped++
-				continue
+			for _, server := range plansCopy {
+				pc := server.PlanCode
+				if pc == "" {
+					continue
+				}
+				if _, ok := existing[pc]; ok {
+					skipped++
+					continue
+				}
+				quantity := 0
+				if body.AutoOrder {
+					quantity = 1
+				}
+				subscriptions = append(subscriptions, &monitor.Subscription{
+					PlanCode: pc, Datacenters: []string{}, Memories: append([]string{}, body.Memories...),
+					Storages: append([]string{}, body.Storages...), Networks: append([]string{}, body.Networks...),
+					NotifyAvailable: notifyAvailable, NotifyUnavailable: notifyUnavailable,
+					LastStatus: map[string]string{}, ConfirmedStatus: map[string]string{},
+					PendingOrder: map[string]int{}, PendingNotify: map[string]string{}, PendingNotifyChannels: map[string][]string{},
+					CreatedAt: types.NowISO(), History: []monitor.HistoryEntry{}, ServerName: server.Name,
+					AutoOrder: body.AutoOrder, Quantity: quantity, AutoOrderAccountID: body.AutoOrderAccountID,
+				})
+				existing[pc] = struct{}{}
+				added++
 			}
-			mon.AddSubscription(pc, []string{}, notifyAvailable, notifyUnavailable,
-				server.Name, nil, nil, body.AutoOrder, 1, body.AutoOrderAccountID,
-				body.Memories, body.Storages, body.Networks)
-			added++
-			state.Logger.Debug("批量添加订阅: "+pc+" ("+server.Name+")", "monitor")
+			return subscriptions, nil
+		}); err != nil {
+			state.Logger.Error("批量保存服务器订阅失败: "+err.Error(), "monitor")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "批量保存订阅失败"})
+			return
 		}
-		mon.SaveToDB()
 		if !mon.Running() {
 			mon.Start()
 			state.Logger.Info("批量添加订阅后自动启动监控", "monitor")
@@ -173,15 +190,12 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		if skipped > 0 {
 			message += "，跳过 " + strconv.Itoa(skipped) + " 个已订阅的服务器"
 		}
-		if len(errs) > 0 {
-			message += "，" + strconv.Itoa(len(errs)) + " 个失败"
-		}
 		state.Logger.Info("批量添加订阅完成: "+message, "monitor")
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "success",
 			"added":   added,
 			"skipped": skipped,
-			"errors":  errs,
+			"errors":  []string{},
 			"message": message,
 		})
 	}
@@ -191,10 +205,13 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 func RemoveSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		planCode := c.Param("planCode")
-		if mon.RemoveSubscription(planCode) {
-			mon.SaveToDB()
+		if err := mon.RemoveSubscription(planCode); err == nil {
 			state.Logger.Info("删除服务器订阅: "+planCode, "")
 			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已取消订阅 " + planCode})
+			return
+		} else if err.Error() != "订阅不存在" {
+			state.Logger.Error("删除服务器订阅失败: "+err.Error(), "monitor")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "删除订阅失败"})
 			return
 		}
 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "订阅不存在"})
@@ -204,8 +221,12 @@ func RemoveSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 // ClearSubscriptions DELETE /api/monitor/subscriptions/clear
 func ClearSubscriptions(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		count := mon.ClearSubscriptions()
-		mon.SaveToDB()
+		count, err := mon.ClearSubscriptions()
+		if err != nil {
+			state.Logger.Error("清空服务器订阅失败: "+err.Error(), "monitor")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "清空订阅失败"})
+			return
+		}
 		state.Logger.Info("清空所有订阅 ("+strconv.Itoa(count)+" 项)", "")
 		c.JSON(http.StatusOK, gin.H{"status": "success", "count": count, "message": "已清空 " + strconv.Itoa(count) + " 个订阅"})
 	}
@@ -218,11 +239,6 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		planCode := c.Param("planCode")
 		if planCode == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "缺少 planCode"})
-			return
-		}
-		sub := mon.FindSubscription(planCode)
-		if sub == nil {
-			c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "订阅不存在"})
 			return
 		}
 		var body struct {
@@ -247,43 +263,58 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			}
 		}
 
-		// AddSubscription 对已存在项会更新配置且不重置状态
-		dcs := sub.Datacenters
-		if body.Datacenters != nil {
-			dcs = *body.Datacenters
+		found := false
+		if err := mon.MutateSubscriptions(func(subscriptions []*monitor.Subscription) ([]*monitor.Subscription, error) {
+			for _, sub := range subscriptions {
+				if sub.PlanCode != planCode {
+					continue
+				}
+				found = true
+				filtersChanged := (body.Datacenters != nil && !sameStringSlice(sub.Datacenters, *body.Datacenters)) ||
+					(body.Memories != nil && !sameStringSlice(sub.Memories, *body.Memories)) ||
+					(body.Storages != nil && !sameStringSlice(sub.Storages, *body.Storages)) ||
+					(body.Networks != nil && !sameStringSlice(sub.Networks, *body.Networks))
+				accountChanged := body.AutoOrderAccountID != nil && sub.AutoOrderAccountID != *body.AutoOrderAccountID
+				if body.Datacenters != nil { sub.Datacenters = append([]string{}, (*body.Datacenters)...) }
+				if body.Memories != nil { sub.Memories = append([]string{}, (*body.Memories)...) }
+				if body.Storages != nil { sub.Storages = append([]string{}, (*body.Storages)...) }
+				if body.Networks != nil { sub.Networks = append([]string{}, (*body.Networks)...) }
+				if filtersChanged || accountChanged { monitor.ResetSubscriptionTracking(sub) }
+				if body.NotifyAvailable != nil { sub.NotifyAvailable = *body.NotifyAvailable }
+				if body.NotifyUnavailable != nil { sub.NotifyUnavailable = *body.NotifyUnavailable }
+				if body.AutoOrder != nil { sub.AutoOrder = *body.AutoOrder }
+				if body.Quantity != nil { sub.Quantity = *body.Quantity }
+				if body.AutoOrderAccountID != nil { sub.AutoOrderAccountID = *body.AutoOrderAccountID }
+				if sub.AutoOrder && sub.Quantity < 1 { sub.Quantity = 1 }
+				if !sub.AutoOrder { sub.Quantity = 0; sub.PendingOrder = map[string]int{} }
+				monitor.ClearDisabledPendingNotifications(sub, sub.NotifyAvailable, sub.NotifyUnavailable)
+				return subscriptions, nil
+			}
+			return subscriptions, nil
+		}); err != nil {
+			state.Logger.Error("更新服务器订阅失败: "+err.Error(), "monitor")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "更新订阅失败"})
+			return
 		}
-		memories := sub.Memories
-		if body.Memories != nil { memories = *body.Memories }
-		storages := sub.Storages
-		if body.Storages != nil { storages = *body.Storages }
-		networks := sub.Networks
-		if body.Networks != nil { networks = *body.Networks }
-		notifyA := sub.NotifyAvailable
-		if body.NotifyAvailable != nil {
-			notifyA = *body.NotifyAvailable
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "订阅不存在"})
+			return
 		}
-		notifyU := sub.NotifyUnavailable
-		if body.NotifyUnavailable != nil {
-			notifyU = *body.NotifyUnavailable
-		}
-		autoOrder := sub.AutoOrder
-		if body.AutoOrder != nil {
-			autoOrder = *body.AutoOrder
-		}
-		qty := sub.Quantity
-		if body.Quantity != nil {
-			qty = *body.Quantity
-		}
-		accID := sub.AutoOrderAccountID
-		if body.AutoOrderAccountID != nil {
-			accID = *body.AutoOrderAccountID
-		}
-		mon.AddSubscription(planCode, dcs, notifyA, notifyU, sub.ServerName, nil, nil, autoOrder, qty, accID,
-			memories, storages, networks)
-		mon.SaveToDB()
 		state.Logger.Info("更新服务器订阅: "+planCode, "monitor")
 		c.JSON(http.StatusOK, gin.H{"status": "success", "message": "订阅已更新", "planCode": planCode})
 	}
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // GetSubscriptionHistory GET /api/monitor/subscriptions/:planCode/history
@@ -311,6 +342,13 @@ func GetSubscriptionHistory(state *app.State, mon *monitor.Monitor) gin.HandlerF
 // StartMonitor POST /api/monitor/start
 func StartMonitor(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !mon.LoadReady() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":  "error",
+				"message": "监控数据尚未安全加载，暂时无法启动",
+			})
+			return
+		}
 		if ok, reason := monitor.NotificationConfigured(state, c.Query("account")); !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "通知未配置或无效，无法启动监控: " + reason})
 			return

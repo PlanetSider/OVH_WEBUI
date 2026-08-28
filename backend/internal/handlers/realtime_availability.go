@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/db"
 )
 
@@ -546,7 +547,7 @@ func mergePreaddedServerPageItems(items []db.PreaddedServerPageItem) []db.Preadd
 }
 
 func preaddedAvailabilityIsAvailable(status string) bool {
-	return status != "" && status != "unavailable" && status != "unknown"
+	return catalog.AvailabilityExplicitlyAvailable(status)
 }
 
 func mergePreaddedAvailabilityStatus(current, candidate string) string {

@@ -47,7 +47,7 @@ function HistoryPage() {
   const list = useHistory();
   const clear = useClearHistory();
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed" | "uncertain">("all");
   const [confirmClear, setConfirmClear] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
@@ -107,6 +107,7 @@ function HistoryPage() {
                 <SelectItem value="all">所有状态</SelectItem>
                 <SelectItem value="success">成功</SelectItem>
                 <SelectItem value="failed">失败</SelectItem>
+                <SelectItem value="uncertain">待核实</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -204,6 +205,8 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
       <td className="px-4 py-3">
         {item.status === "success" ? (
           <Chip tone="success">成功</Chip>
+        ) : item.status === "uncertain" ? (
+          <Chip tone="warning">待核实</Chip>
         ) : (
           <Chip tone="danger">失败</Chip>
         )}
@@ -240,6 +243,15 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
             <ExternalLink className="w-3 h-3" />
             订单
           </a>
+        ) : item.status === "uncertain" && item.errorMessage ? (
+          <button
+            type="button"
+            onClick={() => toast.warning(item.errorMessage)}
+            className="inline-flex items-center gap-1 text-warning hover:underline text-[12px]"
+          >
+            <AlertCircle className="w-3 h-3" />
+            核实说明
+          </button>
         ) : item.status === "failed" && item.errorMessage ? (
           <button
             type="button"
@@ -272,6 +284,8 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
           </div>
           {item.status === "success" ? (
             <Chip tone="success">成功</Chip>
+          ) : item.status === "uncertain" ? (
+            <Chip tone="warning">待核实</Chip>
           ) : (
             <Chip tone="danger">失败</Chip>
           )}
@@ -306,6 +320,15 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
               <ExternalLink className="w-3 h-3" />
               订单
             </a>
+          ) : item.status === "uncertain" && item.errorMessage ? (
+            <button
+              type="button"
+              onClick={() => toast.warning(item.errorMessage)}
+              className="inline-flex items-center gap-1 text-warning hover:underline text-[12px]"
+            >
+              <AlertCircle className="w-3 h-3" />
+              核实说明
+            </button>
           ) : item.status === "failed" && item.errorMessage ? (
             <button
               type="button"

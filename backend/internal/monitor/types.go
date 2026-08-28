@@ -11,13 +11,23 @@ import (
 type Monitor struct {
 	state *app.State
 
+	lifecycleMu   sync.Mutex
 	subsMu        sync.Mutex
+	// persistMu 作为监控状态的读写屏障：单个订阅检查持有读锁，允许不同
+	// 订阅并发查询；订阅替换、账户级联删除和全量持久化持有写锁。
+	persistMu     sync.RWMutex
 	subscriptions []*Subscription
 	knownServers  map[string]struct{}
+	// knownServersInitialized 区分“从未建立过基线”和“基线已经持久化但
+	// 当前恰好为空”。不能用 len(knownServers)==0 代替，否则服务器目录从
+	// 空列表恢复为非空时会被错误地当成首次初始化，永久漏掉新服务器通知。
+	knownServersInitialized bool
 
 	running       bool
+	loaded        bool // SQLite 订阅/已知服务器已安全加载
 	checkInterval int // 全局固定 5 秒
 	thread        *sync.WaitGroup
+	stopCh        chan struct{}
 	maxWorkers    int
 
 	// Options 缓存（旧机制，兼容性保留）
@@ -30,11 +40,21 @@ type Monitor struct {
 
 	cacheLock sync.Mutex
 
-	// TG 健康检查时间戳:loop 每 5 分钟 verify 一次,失败就自停。
-	// 不放 subsMu 下,简单用单独的锁。
+	// 通知渠道健康检查时间戳：loop 每 5 分钟验证一次。临时失效只记警告，
+	// 不停止监控；待发送事件保留到渠道恢复。
+	// 不放 subsMu 下，使用单独的锁。
 	tgCheckMu   sync.Mutex
 	lastTGCheck time.Time
 }
+
+const (
+	NotificationKindNewServer       = "new_server"
+	NotificationKindPurchaseSuccess = "purchase_success"
+	// MessageButtonTTL 是 Telegram / 飞书一键下单按钮的统一有效期。
+	// 两个渠道共用同一张 SQLite 表，必须使用同一边界，避免飞书按钮
+	// 绕过 Telegram 缓存层后永久有效。
+	MessageButtonTTL = 24 * time.Hour
+)
 
 type CachedOptions struct {
 	Options   []string `json:"options"`
@@ -51,6 +71,8 @@ type CachedMessage struct {
 
 // Subscription 订阅条目(monitor 包内部用,落 SQLite 时转 types.Subscription)
 type Subscription struct {
+	mu                 sync.Mutex             `json:"-"`
+	checkMu            sync.Mutex             `json:"-"`
 	PlanCode           string                 `json:"planCode"`
 	Datacenters        []string               `json:"datacenters"`
 	Memories           []string               `json:"memories,omitempty"`
@@ -59,6 +81,10 @@ type Subscription struct {
 	NotifyAvailable    bool                   `json:"notifyAvailable"`
 	NotifyUnavailable  bool                   `json:"notifyUnavailable"`
 	LastStatus         map[string]string      `json:"lastStatus"`
+	ConfirmedStatus    map[string]string      `json:"confirmedStatus,omitempty"`
+	PendingOrder       map[string]int         `json:"pendingOrder,omitempty"`
+	PendingNotify      map[string]string      `json:"pendingNotify,omitempty"`
+	PendingNotifyChannels map[string][]string `json:"pendingNotifyChannels,omitempty"`
 	CreatedAt          string                 `json:"createdAt"`
 	History            []HistoryEntry         `json:"history"`
 	ServerName         string                 `json:"serverName,omitempty"`
@@ -88,7 +114,7 @@ func New(state *app.State) *Monitor {
 		optionsCache:        map[string]*CachedOptions{},
 		optionsCacheTTL:     24 * time.Hour,
 		messageUUIDCache:    map[string]*CachedMessage{},
-		messageUUIDCacheTTL: 24 * time.Hour,
+		messageUUIDCacheTTL: MessageButtonTTL,
 	}
 }
 
@@ -98,17 +124,7 @@ func (m *Monitor) Snapshot() []*Subscription {
 	defer m.subsMu.Unlock()
 	cp := make([]*Subscription, 0, len(m.subscriptions))
 	for _, s := range m.subscriptions {
-		// 保证 sub.History、sub.Datacenters、sub.LastStatus 均不为 nil
-		if s.History == nil {
-			s.History = []HistoryEntry{}
-		}
-		if s.Datacenters == nil {
-			s.Datacenters = []string{}
-		}
-		if s.LastStatus == nil {
-			s.LastStatus = map[string]string{}
-		}
-		cp = append(cp, s)
+		cp = append(cp, cloneSubscription(s))
 	}
 	return cp
 }
@@ -119,18 +135,7 @@ func (m *Monitor) Status() map[string]interface{} {
 	defer m.subsMu.Unlock()
 	subs := make([]*Subscription, len(m.subscriptions))
 	for i, s := range m.subscriptions {
-		// 与 Snapshot 保持一致：保证 sub 内 slice/map 字段不是 nil，
-		// 避免前端调 .length 时报错
-		if s.History == nil {
-			s.History = []HistoryEntry{}
-		}
-		if s.Datacenters == nil {
-			s.Datacenters = []string{}
-		}
-		if s.LastStatus == nil {
-			s.LastStatus = map[string]string{}
-		}
-		subs[i] = s
+		subs[i] = cloneSubscription(s)
 	}
 	return map[string]interface{}{
 		"running":             m.running,
@@ -141,11 +146,51 @@ func (m *Monitor) Status() map[string]interface{} {
 	}
 }
 
+func cloneSubscription(source *Subscription) *Subscription {
+	if source == nil {
+		return nil
+	}
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	return cloneSubscriptionUnlocked(source)
+}
+
+// cloneSubscriptionUnlocked 仅供已经持有 source.mu 的代码调用。
+func cloneSubscriptionUnlocked(source *Subscription) *Subscription {
+	if source == nil {
+		return nil
+	}
+	out := &Subscription{
+		PlanCode: source.PlanCode, Datacenters: cloneStrings(source.Datacenters),
+		Memories: cloneStrings(source.Memories), Storages: cloneStrings(source.Storages),
+		Networks: cloneStrings(source.Networks), NotifyAvailable: source.NotifyAvailable,
+		NotifyUnavailable: source.NotifyUnavailable, LastStatus: cloneStringMap(source.LastStatus),
+		ConfirmedStatus: cloneStringMap(source.ConfirmedStatus), PendingOrder: cloneIntMap(source.PendingOrder),
+		PendingNotify: cloneStringMap(source.PendingNotify), CreatedAt: source.CreatedAt, ServerName: source.ServerName,
+		PendingNotifyChannels: cloneStringSliceMap(source.PendingNotifyChannels),
+		AutoOrder: source.AutoOrder, Quantity: source.Quantity, AutoOrderAccountID: source.AutoOrderAccountID,
+	}
+	out.History = make([]HistoryEntry, 0, len(source.History))
+	for _, entry := range source.History {
+		copyEntry := entry
+		copyEntry.Config = copyMap(entry.Config)
+		out.History = append(out.History, copyEntry)
+	}
+	return out
+}
+
 // Running 监控是否在运行
 func (m *Monitor) Running() bool {
 	m.subsMu.Lock()
 	defer m.subsMu.Unlock()
 	return m.running
+}
+
+// LoadReady 返回监控是否已经安全加载完成。
+func (m *Monitor) LoadReady() bool {
+	m.subsMu.Lock()
+	defer m.subsMu.Unlock()
+	return m.loaded
 }
 
 // SetCheckInterval 已禁用，全局固定 5

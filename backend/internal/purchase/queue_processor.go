@@ -1,6 +1,8 @@
 package purchase
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -11,228 +13,178 @@ import (
 
 const concurrentBatchSize = 10
 
-// ProcessQueueLoop 对应 Python: process_queue
-func ProcessQueueLoop(state *app.State) {
+func effectiveRetryInterval(item types.QueueItem) int {
+	if item.RetryInterval < 1 {
+		return 60
+	}
+	return item.RetryInterval
+}
+
+// ProcessQueueLoop 处理抢购队列，ctx 取消后不再开始新任务，并等待已开始的批次结束。
+func ProcessQueueLoop(ctx context.Context, state *app.State) {
+	if state == nil {
+		return
+	}
+	// 启动闸门必须由处理器自身取得，不能依赖 main.go 的布尔字段。
+	// 这样测试、重载或未来其它启动路径重复调用时也不会出现两个循环
+	// 同时抢同一批任务。
+	if !state.TryStartQueueProcessor() {
+		state.Logger.Warn("抢购队列处理器已在运行，忽略重复启动", "queue")
+		return
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	defer state.SetQueueProcessorRunning(false)
+
 	for {
-		state.QueueMu.Lock()
-		queueEmpty := len(state.Queue) == 0
-		state.QueueMu.Unlock()
-		if queueEmpty {
-			// 队列为空：清理删除标记
-			state.DeletedTaskIDsMu.Lock()
-			if len(state.DeletedTaskIDs) > 0 {
-				state.DeletedTaskIDs = make(map[string]struct{})
-				state.Logger.Debug("队列为空，清理删除标记集合", "queue")
-			}
-			state.DeletedTaskIDsMu.Unlock()
-			time.Sleep(time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		processQueueTick(ctx, state)
+	}
+}
+
+func processQueueTick(ctx context.Context, state *app.State) {
+	if ctx == nil || ctx.Err() != nil || state == nil {
+		return
+	}
+	if !state.TryStartQueueTick() {
+		return
+	}
+	defer state.FinishQueueTick()
+	if !state.IsQueueProcessorEnabled() {
+		return
+	}
+	state.QueueMu.Lock()
+	sorted := append([]types.QueueItem(nil), state.Queue...)
+	state.QueueMu.Unlock()
+	if len(sorted) == 0 {
+		// DeletedTaskIDs 不仅表示用户删除的任务，也表示 checkout 结果
+		// 不确定或本地成功事务尚未完成的任务。队列为空并不能证明这些
+		// 隔离标记已经安全解除；清空它们会让旧 worker 或恢复流程再次
+		// 处理同一 task。标记只能在明确完成/重新建立任务的路径按 ID 清理。
+		return
+	}
+
+	sort.SliceStable(sorted, func(i, j int) bool {
+		a, b := sorted[i], sorted[j]
+		if a.QuickOrder != b.QuickOrder {
+			return a.QuickOrder
+		}
+		at, _ := time.Parse(time.RFC3339Nano, a.CreatedAt)
+		bt, _ := time.Parse(time.RFC3339Nano, b.CreatedAt)
+		return at.After(bt)
+	})
+
+	now := time.Now().Unix()
+	ready := make([]types.QueueItem, 0, len(sorted))
+	state.DeletedTaskIDsMu.Lock()
+	deleted := make(map[string]struct{}, len(state.DeletedTaskIDs))
+	for id := range state.DeletedTaskIDs {
+		deleted[id] = struct{}{}
+	}
+	state.DeletedTaskIDsMu.Unlock()
+	for _, item := range sorted {
+		if _, removed := deleted[item.ID]; removed || item.Status != "running" {
 			continue
 		}
-
-		// 清理已从队列移除的删除标记
-		state.QueueMu.Lock()
-		currentIDs := map[string]struct{}{}
-		for _, it := range state.Queue {
-			currentIDs[it.ID] = struct{}{}
+		retryInterval := effectiveRetryInterval(item)
+		if item.LastCheckTime == 0 || float64(now)-item.LastCheckTime >= float64(retryInterval) {
+			ready = append(ready, item)
 		}
-		state.QueueMu.Unlock()
-		state.DeletedTaskIDsMu.Lock()
-		removed := 0
-		for id := range state.DeletedTaskIDs {
-			if _, ok := currentIDs[id]; !ok {
-				delete(state.DeletedTaskIDs, id)
-				removed++
+	}
+
+	for start := 0; start < len(ready); start += concurrentBatchSize {
+		if ctx.Err() != nil {
+			return
+		}
+		end := start + concurrentBatchSize
+		if end > len(ready) {
+			end = len(ready)
+		}
+		var wg sync.WaitGroup
+		for _, item := range ready[start:end] {
+			if ctx.Err() != nil {
+				break
 			}
+			wg.Add(1)
+			go func(candidate types.QueueItem) {
+				defer wg.Done()
+				processQueueItem(ctx, state, candidate)
+			}(item)
 		}
-		state.DeletedTaskIDsMu.Unlock()
-		if removed > 0 {
-			state.Logger.Debug("清理 N 个已从队列移除的删除标记", "queue")
-		}
+		wg.Wait()
+	}
+}
 
-		// 按优先级排序：quickOrder 优先，其次按创建时间倒序
-		state.QueueMu.Lock()
-		sorted := make([]types.QueueItem, len(state.Queue))
-		copy(sorted, state.Queue)
-		state.QueueMu.Unlock()
-		sort.SliceStable(sorted, func(i, j int) bool {
-			a, b := sorted[i], sorted[j]
-			ap, bp := 1, 1
-			if a.QuickOrder {
-				ap = 0
-			}
-			if b.QuickOrder {
-				bp = 0
-			}
-			if ap != bp {
-				return ap < bp
-			}
-			at, _ := time.Parse(time.RFC3339Nano, a.CreatedAt)
-			bt, _ := time.Parse(time.RFC3339Nano, b.CreatedAt)
-			return at.After(bt)
-		})
+func processQueueItem(ctx context.Context, state *app.State, candidate types.QueueItem) {
+	state.DeletedTaskIDsMu.Lock()
+	_, deleted := state.DeletedTaskIDs[candidate.ID]
+	state.DeletedTaskIDsMu.Unlock()
+	if deleted {
+		return
+	}
 
-		current := time.Now().Unix()
-		ready := []types.QueueItem{}
-		state.DeletedTaskIDsMu.Lock()
-		deletedSnap := make(map[string]struct{}, len(state.DeletedTaskIDs))
-		for k := range state.DeletedTaskIDs {
-			deletedSnap[k] = struct{}{}
-		}
-		state.DeletedTaskIDsMu.Unlock()
-
-		// 再快照一次 queue id 集合，用于复核"任务是否还在队列中"（1:1 对应 Python app.py:1185-1188）
-		state.QueueMu.Lock()
-		queueIDs := make(map[string]struct{}, len(state.Queue))
-		for _, q := range state.Queue {
-			queueIDs[q.ID] = struct{}{}
-		}
-		state.QueueMu.Unlock()
-
-		for _, it := range sorted {
-			if _, del := deletedSnap[it.ID]; del {
+	var snapshot types.QueueItem
+	err := state.MutateQueue(func(queue []types.QueueItem) ([]types.QueueItem, error) {
+		for i := range queue {
+			if queue[i].ID != candidate.ID || queue[i].Status != "running" {
 				continue
 			}
-			// 复核：sorted 是 snapshot，与此同时用户可能删过；如果不在 queue 里则标记 deleted 并跳过
-			if _, exists := queueIDs[it.ID]; !exists {
-				state.DeletedTaskIDsMu.Lock()
-				state.DeletedTaskIDs[it.ID] = struct{}{}
-				state.DeletedTaskIDsMu.Unlock()
+			queue[i].LastCheckTime = float64(time.Now().Unix())
+			queue[i].RetryCount++
+			queue[i].UpdatedAt = types.NowISO()
+			snapshot = queue[i]
+			return queue, nil
+		}
+		return nil, fmt.Errorf("任务已不在运行队列中")
+	})
+	if err != nil {
+		if snapshot.ID != "" {
+			state.Logger.Error("保存队列重试状态失败: "+err.Error(), "queue")
+		}
+		return
+	}
+
+	if snapshot.RetryCount == 1 {
+		state.Logger.Info("首次尝试任务 "+snapshot.ID+": "+snapshot.PlanCode+" 在 "+snapshot.Datacenter, "queue")
+	} else {
+		state.Logger.Info("重试检查任务 "+snapshot.ID+": "+snapshot.PlanCode+" 在 "+snapshot.Datacenter, "queue")
+	}
+
+	if PurchaseServer(ctx, state, &snapshot) {
+		state.Logger.Info("购买成功并已从队列原子移除: "+snapshot.PlanCode+" ("+snapshot.ID+")", "queue")
+		return
+	}
+	// PurchaseServer 可能因为 checkout 结果不确定而隔离任务，或用户在
+	// 请求过程中删除/暂停任务。此时不能再进入 MaxRetries 终止分支，
+	// 以免覆盖隔离语义并输出误导日志。
+	if !state.IsQueueItemRunning(snapshot.ID) {
+		return
+	}
+	// PurchaseServer 执行期间用户可能编辑任务。是否达到上限必须使用当前
+	// 队列值原子判断，不能使用请求开始前的 snapshot，否则旧 MaxRetries
+	// 可能误删刚刚调高重试上限的任务。
+	terminated := false
+	err = state.MutateQueue(func(queue []types.QueueItem) ([]types.QueueItem, error) {
+		kept := make([]types.QueueItem, 0, len(queue))
+		for _, item := range queue {
+			if item.ID == snapshot.ID && item.Status == "running" &&
+				item.MaxRetries > 0 && item.RetryCount >= item.MaxRetries {
+				terminated = true
 				continue
 			}
-			if it.Status != "running" {
-				continue
-			}
-			if it.LastCheckTime == 0 || float64(current)-it.LastCheckTime >= float64(it.RetryInterval) {
-				ready = append(ready, it)
-			}
+			kept = append(kept, item)
 		}
-
-		if len(ready) > 0 {
-			state.Logger.Debug("准备并发处理 N 个订单", "queue")
-			processedIDs := []string{}
-			var procMu sync.Mutex
-
-			processSingle := func(it types.QueueItem) {
-				state.DeletedTaskIDsMu.Lock()
-				_, deleted := state.DeletedTaskIDs[it.ID]
-				state.DeletedTaskIDsMu.Unlock()
-				if deleted {
-					return
-				}
-
-				// 更新检查时间、重试次数
-				state.QueueMu.Lock()
-				var current *types.QueueItem
-				for i := range state.Queue {
-					if state.Queue[i].ID == it.ID {
-						current = &state.Queue[i]
-						break
-					}
-				}
-				if current == nil {
-					state.QueueMu.Unlock()
-					return
-				}
-				isFirstAttempt := current.LastCheckTime == 0
-				current.LastCheckTime = float64(time.Now().Unix())
-				current.RetryCount++
-				current.UpdatedAt = types.NowISO()
-				finalRetry := current.RetryCount
-				maxRetries := current.MaxRetries
-				snapshot := *current
-				state.QueueMu.Unlock()
-
-				if isFirstAttempt {
-					state.Logger.Info("首次尝试任务 "+it.ID+": "+it.PlanCode+" 在 "+it.Datacenter, "queue")
-				} else {
-					state.Logger.Info("重试检查任务 "+it.ID+": "+it.PlanCode+" 在 "+it.Datacenter, "queue")
-				}
-
-				success := PurchaseServer(state, &snapshot)
-				if success {
-					state.QueueMu.Lock()
-					for i := range state.Queue {
-						if state.Queue[i].ID == it.ID {
-							state.Queue[i].Status = "completed"
-							state.Queue[i].UpdatedAt = types.NowISO()
-							break
-						}
-					}
-					state.QueueMu.Unlock()
-					procMu.Lock()
-					processedIDs = append(processedIDs, it.ID)
-					procMu.Unlock()
-					if finalRetry == 1 {
-						state.Logger.Info("首次尝试购买成功: "+it.PlanCode, "queue")
-					} else {
-						state.Logger.Info("重试购买成功: "+it.PlanCode, "queue")
-					}
-				} else {
-					// MaxRetries>0 时达到上限则终止任务（0 = 无限抢购，不终止）
-					if maxRetries > 0 && finalRetry >= maxRetries {
-						state.QueueMu.Lock()
-						for i := range state.Queue {
-							if state.Queue[i].ID == it.ID {
-								state.Queue[i].Status = "failed"
-								state.Queue[i].UpdatedAt = types.NowISO()
-								break
-							}
-						}
-						state.QueueMu.Unlock()
-						procMu.Lock()
-						processedIDs = append(processedIDs, it.ID)
-						procMu.Unlock()
-						state.Logger.Info("任务达到 MaxRetries 上限已终止: "+it.PlanCode+" ("+it.ID+")", "queue")
-					} else if finalRetry == 1 {
-						state.Logger.Info("首次尝试购买失败或服务器暂无货: "+it.PlanCode, "queue")
-					} else {
-						state.Logger.Info("重试购买失败或服务器仍无货: "+it.PlanCode, "queue")
-					}
-				}
-			}
-
-			// 分批并发
-			totalBatches := (len(ready) + concurrentBatchSize - 1) / concurrentBatchSize
-			for batchIdx := 0; batchIdx < totalBatches; batchIdx++ {
-				start := batchIdx * concurrentBatchSize
-				end := start + concurrentBatchSize
-				if end > len(ready) {
-					end = len(ready)
-				}
-				batch := ready[start:end]
-				var wg sync.WaitGroup
-				for _, it := range batch {
-					wg.Add(1)
-					go func(item types.QueueItem) {
-						defer wg.Done()
-						processSingle(item)
-					}(it)
-				}
-				wg.Wait()
-				state.Logger.Debug("批次完成", "queue")
-			}
-
-			// 从队列移除已完成
-			if len(processedIDs) > 0 {
-				procSet := map[string]struct{}{}
-				for _, id := range processedIDs {
-					procSet[id] = struct{}{}
-				}
-				state.QueueMu.Lock()
-				kept := state.Queue[:0]
-				for _, it := range state.Queue {
-					if _, ok := procSet[it.ID]; !ok {
-						kept = append(kept, it)
-					}
-				}
-				state.Queue = kept
-				state.QueueMu.Unlock()
-				state.Logger.Info("已从队列移除 N 个已完成的订单", "queue")
-			}
-
-			_ = state.SaveQueue()
-		}
-
-		time.Sleep(time.Second)
+		return kept, nil
+	})
+	if err != nil {
+		state.Logger.Error("移除达到重试上限的任务失败: "+err.Error(), "queue")
+		return
+	}
+	if terminated {
+		state.Logger.Info("任务达到 MaxRetries 上限已终止: "+snapshot.PlanCode+" ("+snapshot.ID+")", "queue")
 	}
 }

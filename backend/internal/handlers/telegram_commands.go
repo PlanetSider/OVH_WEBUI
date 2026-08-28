@@ -56,10 +56,11 @@ func cmdStock(state *app.State, args []string, accountID string) string {
 	if _, ok := state.FindAccount(accountID); !ok {
 		return "❌ 当前绑定的 OVH 账户不存在"
 	}
-	avail := catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID)
-	if len(avail) == 0 {
+	availabilityResult, err := catalog.CheckServerAvailabilityWithConfigsStrict(state, planCode, accountID)
+	if err != nil || len(availabilityResult.Configs) == 0 {
 		return "❌ 无法获取 " + planCode + " 的库存信息（型号可能不存在或 API 失败）"
 	}
+	avail := availabilityResult.Configs
 
 	// 汇总各机房：任一配置有货即视为该 DC 有货
 	dcStatus := map[string]string{} // dc → best status
@@ -67,7 +68,7 @@ func cmdStock(state *app.State, args []string, accountID string) string {
 	for _, cfg := range avail {
 		availDCs := []string{}
 		for dc, st := range cfg.Datacenters {
-			if st == "" || st == "unavailable" || st == "unknown" {
+			if !catalog.AvailabilityExplicitlyAvailable(st) {
 				continue
 			}
 			availDCs = append(availDCs, strings.ToUpper(dc)+"("+st+")")
@@ -93,7 +94,7 @@ func cmdStock(state *app.State, args []string, accountID string) string {
 	inStock := []string{}
 	outStock := []string{}
 	for dc, st := range dcStatus {
-		if st != "" && st != "unavailable" && st != "unknown" {
+		if catalog.AvailabilityExplicitlyAvailable(st) {
 			inStock = append(inStock, strings.ToUpper(dc)+"("+st+")")
 		} else {
 			outStock = append(outStock, strings.ToUpper(dc))
@@ -200,9 +201,11 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID
 	state.ServerPlansMu.RUnlock()
 
 	// 通知数据源始终是当前默认账户；autoOrder=false，不会自动购买。
-	mon.AddSubscription(planCode, dcs, true, false, serverName, nil, nil, false, 0, accountID,
-		[]string{}, []string{}, []string{})
-	mon.SaveToDB()
+	if err := mon.AddSubscription(planCode, dcs, true, false, serverName, nil, nil, false, 0, accountID,
+		[]string{}, []string{}, []string{}); err != nil {
+		state.Logger.Error(channel+" /monitor 保存订阅失败: "+err.Error(), channel)
+		return "❌ 保存监控订阅失败，请稍后重试"
+	}
 	if !mon.Running() {
 		mon.Start()
 		state.Logger.Info(channel+" /monitor 添加订阅后自动启动监控", channel)
@@ -247,9 +250,13 @@ func cmdPrice(state *app.State, args []string, accountID string) string {
 
 	// 尝试取该机房任一有货配置的 options 再询价
 	options := []string{}
-	avail := catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID)
+	availabilityResult, availabilityErr := catalog.CheckServerAvailabilityWithConfigsStrict(state, planCode, accountID)
+	if availabilityErr != nil {
+		return "❌ 无法安全获取库存配置\n\n" + availabilityErr.Error()
+	}
+	avail := availabilityResult.Configs
 	for _, cfg := range avail {
-		if st, ok := cfg.Datacenters[dc]; ok && st != "" && st != "unavailable" && st != "unknown" {
+		if st, ok := cfg.Datacenters[dc]; ok && catalog.AvailabilityExplicitlyAvailable(st) {
 			if len(cfg.Options) > 0 {
 				options = append([]string{}, cfg.Options...)
 				break

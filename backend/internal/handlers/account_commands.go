@@ -60,18 +60,32 @@ func switchDefaultAccount(state *app.State, accountID string) (types.OVHAccount,
 	if accountID == "" || state.DB == nil {
 		return types.OVHAccount{}, fmt.Errorf("账户参数无效")
 	}
-	account, ok, err := state.DB.GetAccount(accountID)
+	var account types.OVHAccount
+	var previousDefault types.OVHAccount
+	var hadPreviousDefault bool
+	err := state.WithAccountMutationRollback(func() error {
+		var ok bool
+		var err error
+		account, ok, err = state.DB.GetAccount(accountID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("所选账户不存在或已被删除")
+		}
+		previousDefault, hadPreviousDefault, err = state.DB.GetDefaultAccount()
+		if err != nil {
+			return err
+		}
+		if err := state.DB.SetDefaultAccount(accountID); err != nil {
+			return err
+		}
+		return nil
+	}, func() error {
+		return restoreDefaultAccount(state, previousDefault, hadPreviousDefault)
+	})
 	if err != nil {
 		return types.OVHAccount{}, err
-	}
-	if !ok {
-		return types.OVHAccount{}, fmt.Errorf("所选账户不存在或已被删除")
-	}
-	if err := state.DB.SetDefaultAccount(accountID); err != nil {
-		return types.OVHAccount{}, err
-	}
-	if err := state.ReloadAccounts(); err != nil {
-		return types.OVHAccount{}, fmt.Errorf("账户已写入，但刷新运行状态失败：%w", err)
 	}
 	return account, nil
 }

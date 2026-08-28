@@ -276,20 +276,20 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 	options := dbParseOptions(row.Options)
 	configInfo := dbParseConfigInfo(row.ConfigInfo)
 	if planCode == "" || dc == "" {
-		_ = state.DB.UnclaimTelegramButton(messageUUID)
+		rollbackTelegramButton(state, messageUUID, "Telegram 按钮数据无效")
 		telegram.AnswerCallback(state, cbID, "按钮数据无效", true)
 		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "invalid_button_data"})
 		return
 	}
 	accountID, _ := configInfo["accountId"].(string)
 	if accountID == "" {
-		_ = state.DB.UnclaimTelegramButton(messageUUID)
+		rollbackTelegramButton(state, messageUUID, "Telegram 通知未冻结账户")
 		telegram.AnswerCallback(state, cbID, "通知未冻结账户", true)
 		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "account_not_frozen"})
 		return
 	}
 	if _, ok := state.FindAccount(accountID); !ok {
-		_ = state.DB.UnclaimTelegramButton(messageUUID)
+		rollbackTelegramButton(state, messageUUID, "Telegram 通知账户不存在")
 		telegram.AnswerCallback(state, cbID, "通知对应的账户已不存在", true)
 		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "account_not_found"})
 		return
@@ -298,7 +298,7 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 	result := telegram.EnqueueSingle(state, accountID, planCode, dc, options, true)
 	if !result.Success {
 		// 入队失败：回滚已认领的按钮，允许重试。
-		_ = state.DB.UnclaimTelegramButton(messageUUID)
+		rollbackTelegramButton(state, messageUUID, "Telegram 入队失败")
 		telegram.AnswerCallback(state, cbID, "入队失败", true)
 		telegram.SendReply(state, chatID, "❌ "+result.Message, int64(messageID))
 		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "enqueue_failed"})
@@ -316,6 +316,22 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 	telegram.AnswerCallback(state, cbID, "已添加到队列！", false)
 	telegram.SendReply(state, chatID, confirmMsg, int64(messageID))
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// rollbackTelegramButton 将已经认领、但未能入队的通知按钮恢复为可重试。
+// 回滚失败不能被静默忽略，否则用户看到的是可重试错误，按钮却会永久停留
+// 在已使用状态。调用方仍返回原始业务错误，日志负责保留持久化故障证据。
+func rollbackTelegramButton(state *app.State, messageUUID, reason string) bool {
+	if state == nil || state.DB == nil || messageUUID == "" {
+		return false
+	}
+	if err := state.DB.UnclaimTelegramButton(messageUUID); err != nil {
+		if state.Logger != nil {
+			state.Logger.Error(fmt.Sprintf("回滚一键下单按钮失败: uuid=%s, reason=%s, error=%v", messageUUID, reason, err), "button_security")
+		}
+		return false
+	}
+	return true
 }
 
 func dbParseOptions(raw string) []string {

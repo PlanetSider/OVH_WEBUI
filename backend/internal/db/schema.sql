@@ -79,6 +79,52 @@ CREATE INDEX IF NOT EXISTS idx_history_purchase_time ON history(purchase_time DE
 CREATE INDEX IF NOT EXISTS idx_history_task_id       ON history(task_id);
 CREATE INDEX IF NOT EXISTS idx_history_plan_code     ON history(plan_code);
 
+-- checkout 成功但 history/queue 事务尚未落盘时的最小恢复记录。
+-- 先持久化本表，再执行 checkout；重启时该任务不会再次下单。
+CREATE TABLE IF NOT EXISTS checkout_attempts (
+  task_id       TEXT PRIMARY KEY,
+  cart_id       TEXT NOT NULL,
+  account_id    TEXT NOT NULL DEFAULT '',
+  plan_code     TEXT NOT NULL,
+  datacenter    TEXT NOT NULL,
+  options       TEXT NOT NULL DEFAULT '[]',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  started_at    TEXT NOT NULL,
+  order_id      TEXT NOT NULL DEFAULT '',
+  order_url     TEXT NOT NULL DEFAULT ''
+);
+
+-- 通知 outbox：业务状态提交成功后先持久化通知，渠道失败时可在后续轮次/重启后重试。
+CREATE TABLE IF NOT EXISTS notification_outbox (
+  id                TEXT PRIMARY KEY,
+  event_key         TEXT NOT NULL UNIQUE,
+  kind              TEXT NOT NULL,
+  payload           TEXT NOT NULL,
+  channels          TEXT NOT NULL DEFAULT '[]',
+  awaiting_channels INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_updated
+  ON notification_outbox(updated_at);
+
+-- 通知死信：结构损坏或类型未知的事件移入此表，不再阻塞后续正常通知。
+-- 原始 payload/channels 完整保留，便于人工排查和恢复。
+CREATE TABLE IF NOT EXISTS notification_dead_letters (
+  id                TEXT PRIMARY KEY,
+  event_key         TEXT NOT NULL,
+  kind              TEXT NOT NULL,
+  payload           TEXT NOT NULL,
+  channels          TEXT NOT NULL,
+  awaiting_channels INTEGER NOT NULL DEFAULT 0,
+  error             TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  failed_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notification_dead_letters_failed
+  ON notification_dead_letters(failed_at);
+
 -- ===========================================
 -- servers: OVH 服务器目录缓存（refresh-from-OVH 整块覆盖式 upsert）
 -- 数据本身就是 OVH 接口返回的 catalog，结构复杂且字段稳定，整块 JSON 存即可
@@ -101,6 +147,10 @@ CREATE TABLE IF NOT EXISTS monitor_subscriptions (
   notify_available    INTEGER NOT NULL DEFAULT 1,
   notify_unavailable  INTEGER NOT NULL DEFAULT 0,
   last_status         TEXT NOT NULL DEFAULT '{}',  -- JSON map[string]string
+  confirmed_status    TEXT NOT NULL DEFAULT '{}',  -- 已通过价格校验的库存基线
+  pending_order       TEXT NOT NULL DEFAULT '{}',  -- JSON map[string]int，剩余待入队数量
+  pending_notify      TEXT NOT NULL DEFAULT '{}',  -- JSON map[string]string
+  pending_notify_channels TEXT NOT NULL DEFAULT '{}', -- JSON map[string][]string
   created_at          TEXT NOT NULL,
   history             TEXT NOT NULL DEFAULT '[]',  -- JSON []HistoryEntry
   server_name         TEXT NOT NULL DEFAULT '',
@@ -122,8 +172,11 @@ CREATE TABLE IF NOT EXISTS vps_subscriptions (
   notify_available    INTEGER NOT NULL DEFAULT 1,
   notify_unavailable  INTEGER NOT NULL DEFAULT 0,
   last_status         TEXT NOT NULL DEFAULT '{}',  -- JSON map
+  pending_notify      TEXT NOT NULL DEFAULT '{}',  -- JSON map[string]string
+  pending_notify_channels TEXT NOT NULL DEFAULT '{}', -- JSON map[string][]string
   history             TEXT NOT NULL DEFAULT '[]',  -- JSON []
-  created_at          TEXT NOT NULL
+  created_at          TEXT NOT NULL,
+  auto_order_account_id TEXT NOT NULL DEFAULT ''   -- 旧版本兼容，不再对外使用
 );
 CREATE INDEX IF NOT EXISTS idx_vps_plan_code ON vps_subscriptions(plan_code);
 

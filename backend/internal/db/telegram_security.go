@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// TelegramButtonTTL 是 Telegram / 飞书通知卡片的一键下单按钮有效期。
+// Claim 层必须自己校验，不能只依赖可被某些回调绕过的内存缓存。
+const TelegramButtonTTL = 24 * time.Hour
+
 // TryClaimTelegramUpdate 幂等认领 update_id。
 // 返回 claimed=true 表示首次处理；false 表示已处理过（重放）。
 func (db *DB) TryClaimTelegramUpdate(updateID int64) (claimed bool, err error) {
@@ -77,6 +81,7 @@ func (db *DB) ClaimTelegramButton(id string) (row TelegramButtonRow, ok bool, er
 		return row, false, nil
 	}
 	now := float64(time.Now().Unix())
+	notBefore := float64(time.Now().Add(-TelegramButtonTTL).Unix())
 	// SQLite: 先更新再读；用事务保证并发安全
 	tx, err := db.Beginx()
 	if err != nil {
@@ -85,8 +90,9 @@ func (db *DB) ClaimTelegramButton(id string) (row TelegramButtonRow, ok bool, er
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.Exec(
-		`UPDATE telegram_order_buttons SET used_at = ? WHERE id = ? AND (used_at IS NULL OR used_at = 0)`,
-		now, id,
+		`UPDATE telegram_order_buttons SET used_at = ?
+		 WHERE id = ? AND created_at >= ? AND (used_at IS NULL OR used_at = 0)`,
+		now, id, notBefore,
 	)
 	if err != nil {
 		return row, false, fmt.Errorf("claim telegram button: %w", err)

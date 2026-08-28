@@ -384,11 +384,10 @@ func serverDatacenterLines(plan types.ServerPlan) []string {
 	known := make(map[string]struct{})
 	for _, datacenter := range plan.Datacenters {
 		code := canonicalServerDatacenter(datacenter.Datacenter)
-		status := strings.ToLower(strings.TrimSpace(datacenter.Availability))
 		if code != "" {
 			known[code] = struct{}{}
 		}
-		if code != "" && status != "" && status != "unavailable" && status != "unknown" {
+		if code != "" && catalog.AvailabilityExplicitlyAvailable(datacenter.Availability) {
 			available[code] = true
 		}
 	}
@@ -432,8 +431,7 @@ func serverDatacenterAvailabilitySummary(plan types.ServerPlan) string {
 			continue
 		}
 		known[code] = struct{}{}
-		status := strings.ToLower(strings.TrimSpace(datacenter.Availability))
-		if status != "" && status != "unavailable" && status != "unknown" {
+		if catalog.AvailabilityExplicitlyAvailable(datacenter.Availability) {
 			available[code] = true
 		}
 	}
