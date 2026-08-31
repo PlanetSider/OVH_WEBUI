@@ -59,6 +59,7 @@ OVH_WEBUI/
 - 数据：项目目录 `./data`（SQLite + logs/cache），Compose 直接绑定到容器 `/data`
 - 队列处理器：启动时 `go purchase.ProcessQueueLoop`
 - 监控：有订阅时自动 Start
+- 数据刷新：运行主机每个整点并行刷新完整服务器目录与实时可用性批次。预增服务器仅使用当批在线获取的区域实时可用性和区域公开目录比对并原子保存；完整目录独立更新内存缓存与 SQLite，失败时各自保留上一份成功数据。
 
 ## 前端路由
 

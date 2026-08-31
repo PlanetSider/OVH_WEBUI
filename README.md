@@ -332,6 +332,8 @@ X-API-Key: <API_SECRET_KEY>
 - `/api/telegram/*`：Telegram Webhook、命令和下单
 - `/api/weixin/*`：微信扫码、连接状态、测试通知和解绑
 
+后台在运行主机的每个整点并行刷新完整服务器目录和实时可用性批次。预添加服务器只使用同一批次在线获取的区域实时可用性与区域公开目录进行比对；完整服务器目录独立提交，不参与或覆盖该批次。任一刷新失败时保留对应的上一份成功数据。
+
 完整接口说明见 [`docs/handover/03-API-CONTRACT.md`](./docs/handover/03-API-CONTRACT.md)。
 
 ## 目录

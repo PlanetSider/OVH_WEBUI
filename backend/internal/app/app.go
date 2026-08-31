@@ -27,22 +27,29 @@ type ServerListCache struct {
 	TTL       time.Duration
 }
 
-// NewServerListCache 默认 2 小时 TTL（懒加载：仅访问触发刷新，无后台定时器）
+// NewServerListCache 默认 2 小时 TTL。后台按整点刷新；TTL 仍用于启动补采、
+// 请求降级和缓存状态展示。
 func NewServerListCache() *ServerListCache {
 	return &ServerListCache{TTL: 2 * time.Hour}
 }
 
-// Get 返回缓存副本和是否有效
-func (s *ServerListCache) Get() ([]types.ServerPlan, bool) {
+// Snapshot 返回数据、时间戳副本和是否仍在 TTL 内。
+func (s *ServerListCache) Snapshot() ([]types.ServerPlan, *time.Time, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.Timestamp == nil {
-		return nil, false
+		return nil, nil, false
 	}
-	valid := time.Since(*s.Timestamp) < s.TTL
 	cp := make([]types.ServerPlan, len(s.Data))
 	copy(cp, s.Data)
-	return cp, valid
+	ts := *s.Timestamp
+	return cp, &ts, time.Since(ts) < s.TTL
+}
+
+// Get 返回缓存副本和是否有效。
+func (s *ServerListCache) Get() ([]types.ServerPlan, bool) {
+	data, _, valid := s.Snapshot()
+	return data, valid
 }
 
 // Set 更新缓存，时间戳=NOW
@@ -55,8 +62,16 @@ func (s *ServerListCache) Set(data []types.ServerPlan) {
 // 否则旧数据被当作刚拉的，过期判断会出错。
 func (s *ServerListCache) SetAt(data []types.ServerPlan, ts time.Time) {
 	s.mu.Lock()
-	s.Data = data
+	s.Data = append([]types.ServerPlan(nil), data...)
 	s.Timestamp = &ts
+	s.mu.Unlock()
+}
+
+// Clear 原子清空缓存和时间戳。
+func (s *ServerListCache) Clear() {
+	s.mu.Lock()
+	s.Data = nil
+	s.Timestamp = nil
 	s.mu.Unlock()
 }
 

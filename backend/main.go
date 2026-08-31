@@ -448,8 +448,8 @@ func main() {
 	} else {
 		state.Logger.Error("抢购队列处理器未启动：启动恢复不安全", "system")
 	}
-	// 服务器目录走懒加载：访问到且缓存过期时才打 OVH，无后台定时刷新
-	stopRealtimeAvailability := handlers.StartRealtimeAvailabilityRefresh(state)
+	// 整点并行刷新预增比对批次和完整服务器目录；两者数据与提交互相隔离。
+	stopHourlyDataRefresh := handlers.StartHourlyDataRefresh(state, mon)
 
 	// 自动启动监控（如果有订阅）
 	if len(mon.Snapshot()) > 0 {
@@ -505,7 +505,7 @@ func main() {
 	}
 	cancelQueue()
 	cancelOutbox()
-	stopRealtimeAvailability()
+	stopHourlyDataRefresh()
 	weixinManager.Stop()
 	feishuConnection.Stop()
 

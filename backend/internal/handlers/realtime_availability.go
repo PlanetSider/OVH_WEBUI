@@ -639,32 +639,6 @@ func migrateLegacyPreaddedResults(state *app.State) error {
 	return nil
 }
 
-// StartRealtimeAvailabilityRefresh 启动后台整点刷新。首次启动没有快照时立即补采，
-// 后续每次都等待本机时区下一个整点，避免页面访问触发上游请求。
-func StartRealtimeAvailabilityRefresh(state *app.State) func() {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		if err := ensureRealtimeAvailabilitySnapshots(state); err != nil {
-			state.Logger.Warn("实时可用性启动补采失败: "+err.Error(), "availability")
-		}
-		for {
-			now := time.Now()
-			next := time.Date(now.Year(), now.Month(), now.Day(), now.Hour()+1, 0, 0, 0, now.Location())
-			timer := time.NewTimer(time.Until(next))
-			select {
-			case <-ctx.Done():
-				if !timer.Stop() {
-					<-timer.C
-				}
-				return
-			case <-timer.C:
-				RefreshRealtimeAvailabilityOnce(state)
-			}
-		}
-	}()
-	return cancel
-}
-
 func ensureRealtimeAvailabilitySnapshots(state *app.State) error {
 	needsRefresh := false
 	cutoff := time.Now().Add(-7 * 24 * time.Hour).UnixMilli()

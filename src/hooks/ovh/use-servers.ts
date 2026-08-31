@@ -29,13 +29,8 @@ export interface ServerPlan {
   }[];
 }
 
-/** 服务器目录（带可用性）。
- *  - 2 小时内不会因为 mount / 切 tab / focus 重新请求；后端 ServerCache 也是 2 小时
- *  - 后端无定时刷新：只有访问时才检查缓存是否过期，过期才会调 OVH
- *  - forceRefresh()：先 POST /cache/clear 清后端内存缓存，再走标准 q.refetch()
- *                   走 react-query 自己的请求流程，data 一定通知订阅者重渲染
- *  - isRefreshing = q.isRefetching：只在 refetch 期间为 true，跟首次加载 isLoading 严格分开
- */
+/** 服务器目录（带可用性）。后端整点刷新完整目录；页面每 5 分钟轻量读取
+ * 一次后端缓存，以便已经打开的页面及时看到新批次。 */
 export function useServers(showApiServers: boolean = true) {
   const qc = useQueryClient();
   const key = qk.servers.list(showApiServers);
@@ -46,26 +41,31 @@ export function useServers(showApiServers: boolean = true) {
       return (res.data.servers || res.data || []) as ServerPlan[];
     },
     staleTime: 2 * 60 * 60_000,
+    refetchInterval: 5 * 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
 
+  const refresh = useMutation({
+    mutationFn: async () => {
+      const res = await api.get("/servers", {
+        params: { showApiServers, forceRefresh: true },
+      });
+      return (res.data.servers || res.data || []) as ServerPlan[];
+    },
+    onSuccess: (servers) => {
+      qc.setQueryData(key, servers);
+      qc.invalidateQueries({ queryKey: ["settings", "cache-info"] });
+    },
+  });
+
   const forceRefresh = async () => {
-    // 后端内存缓存清掉，让接下来 refetch 一定打 OVH
-    try {
-      await api.post("/cache/clear", { type: "memory" });
-    } catch {
-      // 清缓存失败不致命，refetch 还能拿到现有缓存
-    }
-    // 标准 react-query refetch：期间 q.isRefetching=true，完成后 data 自动通知重渲染
-    await q.refetch();
-    // 让 /api/cache/info 也刷新一下，徽章里"X 分钟前"立刻归零
-    qc.invalidateQueries({ queryKey: ["settings", "cache-info"] });
+    await refresh.mutateAsync();
   };
 
   return Object.assign(q, {
     forceRefresh,
-    isRefreshing: q.isRefetching,
+    isRefreshing: refresh.isPending,
   });
 }
 

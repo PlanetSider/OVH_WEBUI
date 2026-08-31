@@ -29,7 +29,7 @@ export function ServerAvailability() {
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
-      await api.refreshServers();
+      await api.refreshServers(true);
       await refetch();
       toast.success("服务器列表已刷新");
     } catch (err: any) {

@@ -158,20 +158,8 @@ func refreshServerPlansForModelQuery(state *app.State) {
 		return
 	}
 	serverModelLastRefresh = time.Now()
-	refreshed := catalog.LoadServerList(state)
-	if len(refreshed) == 0 {
-		return
-	}
-	state.ServerPlansMu.Lock()
-	state.ServerPlans = refreshed
-	state.ServerPlansMu.Unlock()
-	if state.ServerCache != nil {
-		state.ServerCache.Set(refreshed)
-	}
-	if state.DB != nil {
-		if err := state.SaveServers(); err != nil {
-			state.Logger.Warn("保存型号查询刷新后的服务器目录失败: "+err.Error(), "")
-		}
+	if _, err := refreshServerCatalog(state); err != nil {
+		state.Logger.Warn("型号查询刷新服务器目录失败: "+err.Error(), "")
 	}
 }
 

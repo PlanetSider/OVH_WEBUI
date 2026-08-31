@@ -25,9 +25,9 @@ func GetServers(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		usingExpiredCache := false
 		cacheAgeMinutes := 0
 
-		cached, valid := state.ServerCache.Get()
-		if state.ServerCache.Timestamp != nil {
-			cacheAgeMinutes = int(time.Since(*state.ServerCache.Timestamp).Minutes())
+		cached, cacheTimestamp, valid := state.ServerCache.Snapshot()
+		if cacheTimestamp != nil {
+			cacheAgeMinutes = int(time.Since(*cacheTimestamp).Minutes())
 		}
 
 		// 多账户:凭据来源是 ovh_accounts 表,不再是旧的 state.Config
@@ -39,31 +39,19 @@ func GetServers(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			serverPlans = cached
 		} else if showAPI && hasOVH {
 			state.Logger.Info("正在从OVH API重新加载服务器列表...", "")
-			apiServers := catalog.LoadServerList(state)
-			if len(apiServers) > 0 {
-				catalogSnapshot := make([]map[string]interface{}, 0, len(apiServers))
-				for _, server := range apiServers {
-					catalogSnapshot = append(catalogSnapshot, map[string]interface{}{
-						"planCode":  server.PlanCode,
-						"name":      server.Name,
-						"cpu":       server.CPU,
-						"memory":    server.Memory,
-						"storage":   server.Storage,
-						"bandwidth": server.Bandwidth,
-					})
-				}
-				if mon != nil {
-					mon.CheckNewServers(catalogSnapshot)
-				}
-				state.ServerPlansMu.Lock()
-				state.ServerPlans = apiServers
-				state.ServerPlansMu.Unlock()
-				state.ServerCache.Set(apiServers)
-				_ = state.SaveServers()
+			apiServers, refreshErr := refreshServerCatalog(state)
+			if refreshErr == nil && len(apiServers) > 0 {
+				notifyNewServers(mon, apiServers)
 				serverPlans = apiServers
+				cached, cacheTimestamp, valid = state.ServerCache.Snapshot()
+				cacheAgeMinutes = 0
 				state.Logger.Info("从OVH API加载了 "+strconv.Itoa(len(apiServers))+" 台服务器，已更新缓存", "")
 			} else {
-				state.Logger.Warn("从OVH API加载服务器列表失败或返回空数据", "")
+				refreshMessage := "OVH API 返回空服务器目录"
+				if refreshErr != nil {
+					refreshMessage = refreshErr.Error()
+				}
+				state.Logger.Warn("从OVH API加载服务器列表失败: "+refreshMessage, "")
 				if len(cached) > 0 {
 					serverPlans = cached
 					usingExpiredCache = true
@@ -87,9 +75,11 @@ func GetServers(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 					}
 				}
 			}
-		} else if !valid && len(cached) > 0 {
-			usingExpiredCache = true
-			state.Logger.Warn("⚠️ 缓存已过期但未配置 OVH API，使用过期缓存数据", "")
+		} else if len(cached) > 0 {
+			usingExpiredCache = !valid
+			if usingExpiredCache {
+				state.Logger.Warn("⚠️ 缓存已过期但未配置 OVH API，使用过期缓存数据", "")
+			}
 			serverPlans = cached
 		}
 
@@ -127,14 +117,13 @@ func GetServers(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		}
 
 		var ts *float64
-		var nextRefresh *float64
+		next := float64(nextHourlyRefresh(time.Now()).Unix())
+		nextRefresh := &next
 		var cacheAgeSecs *int
-		if state.ServerCache.Timestamp != nil {
-			tsFloat := float64(state.ServerCache.Timestamp.Unix())
+		if cacheTimestamp != nil {
+			tsFloat := float64(cacheTimestamp.Unix())
 			ts = &tsFloat
-			next := tsFloat + state.ServerCache.TTL.Seconds()
-			nextRefresh = &next
-			age := int(time.Since(*state.ServerCache.Timestamp).Seconds())
+			age := int(time.Since(*cacheTimestamp).Seconds())
 			cacheAgeSecs = &age
 		}
 
@@ -274,13 +263,13 @@ func MonitorPrice(state *app.State) gin.HandlerFunc {
 // CacheInfo GET /api/cache/info
 func CacheInfo(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cached, valid := state.ServerCache.Get()
+		cached, cacheTimestamp, valid := state.ServerCache.Snapshot()
 		var ts *float64
 		var age *int
-		if state.ServerCache.Timestamp != nil {
-			t := float64(state.ServerCache.Timestamp.Unix())
+		if cacheTimestamp != nil {
+			t := float64(cacheTimestamp.Unix())
 			ts = &t
-			a := int(time.Since(*state.ServerCache.Timestamp).Seconds())
+			a := int(time.Since(*cacheTimestamp).Seconds())
 			age = &a
 		}
 		sqliteCount, _ := state.DB.ServerCount()
@@ -330,8 +319,7 @@ func ClearCache(state *app.State) gin.HandlerFunc {
 			state.ServerPlansMu.Lock()
 			state.ServerPlans = []types.ServerPlan{}
 			state.ServerPlansMu.Unlock()
-			state.ServerCache.Set(nil)
-			state.ServerCache.Timestamp = nil
+			state.ServerCache.Clear()
 			cleared = append(cleared, "memory")
 			state.Logger.Info("已清除内存缓存", "")
 		}
