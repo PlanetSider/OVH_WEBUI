@@ -21,6 +21,7 @@ var KnownCommands = map[string]string{
 	"start":   "显示帮助与可用命令",
 	"help":    "显示帮助与可用命令",
 	"account": "查看或切换当前 OVH 账户: /account [switch]",
+	"reboot":  "选择服务器并确认重启",
 	"stock":   "查询库存: /stock <planCode>",
 	"queue":   "加入队列: /queue <planCode> [dc] [qty] [options]",
 	"buy":     "快速下单: /buy <planCode> [dc] [qty] [options]",
@@ -76,6 +77,9 @@ func HelpMessage() string {
 👤 当前账户
   /account
   /account switch  打开账户切换菜单
+
+🔄 重启独立服务器
+  /reboot  选择账户和服务器，确认后重启
 
 🔎 型号查询
   直接发送服务器型号

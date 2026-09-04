@@ -302,6 +302,21 @@ CREATE TABLE IF NOT EXISTS telegram_updates (
 );
 CREATE INDEX IF NOT EXISTS idx_tg_updates_processed ON telegram_updates(processed_at);
 
+-- 机器人服务器重启交互。完整候选列表保存在 payload，按钮 callback 只携带
+-- flow id 和索引，以满足 Telegram callback_data 的 64 字节限制。
+-- stage 通过条件 UPDATE 原子推进，确保确认操作只能执行一次。
+CREATE TABLE IF NOT EXISTS bot_reboot_flows (
+  id         TEXT PRIMARY KEY,
+  channel    TEXT NOT NULL,
+  actor_id   TEXT NOT NULL,
+  chat_id    TEXT NOT NULL,
+  stage      TEXT NOT NULL,
+  payload    TEXT NOT NULL DEFAULT '{}',
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bot_reboot_flows_created ON bot_reboot_flows(created_at);
+
 -- 飞书事件会自动重试投递，按 event_id 幂等去重，避免重复执行下单命令。
 CREATE TABLE IF NOT EXISTS feishu_events (
   event_id     TEXT PRIMARY KEY,

@@ -140,6 +140,8 @@ https://你的域名/api/telegram/webhook
 
 Telegram Webhook 路径免 `X-API-Key`，但使用 Telegram Secret Token 校验来源。
 
+发送 `/reboot` 可通过内联按钮依次选择 OVH 账户和独立服务器，并在二次确认后发送重启命令。仅配置一个默认账户时会直接显示服务器列表。
+
 ### 飞书
 
 在设置页填写：
@@ -159,6 +161,8 @@ https://你的域名/api/feishu/card-action
 ```
 
 基础通知只需要 App ID 和 App Secret。需要事件绑定账户或卡片按钮交互时，按飞书应用后台的事件订阅配置填写安全项。
+
+飞书私聊同样支持 `/reboot` 交互卡片；服务器按钮会显示数据中心国旗、三字母机房代码和自定义名称。
 
 ### 微信 iLink Bot
 

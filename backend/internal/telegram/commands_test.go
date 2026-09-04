@@ -18,6 +18,8 @@ func TestParseBotCommand(t *testing.T) {
 		{"/help", "help", nil, false},
 		{"/account", "account", nil, false},
 		{"/account switch", "account", []string{"switch"}, false},
+		{"/reboot", "reboot", nil, false},
+		{"/reboot@MyBot", "reboot", nil, false},
 		{"/buy 24ska01 gra", "buy", []string{"24ska01", "gra"}, false},
 		{"/buy@MyBot 24ska01 gra 2", "buy", []string{"24ska01", "gra", "2"}, false},
 		{"/STOCK 24ska01", "stock", []string{"24ska01"}, false},
@@ -65,7 +67,7 @@ func TestParseOrderArgs(t *testing.T) {
 }
 
 func TestIsKnownCommand(t *testing.T) {
-	if !IsKnownCommand("buy") || !IsKnownCommand("STOCK") || !IsKnownCommand("account") {
+	if !IsKnownCommand("buy") || !IsKnownCommand("STOCK") || !IsKnownCommand("account") || !IsKnownCommand("reboot") {
 		t.Fatal("expected known")
 	}
 	if IsKnownCommand("foo") {
@@ -91,6 +93,9 @@ func TestHelpMessageNonEmpty(t *testing.T) {
 	}
 	if !strings.Contains(HelpMessage(), "/account switch") {
 		t.Fatal("help should mention /account switch")
+	}
+	if !strings.Contains(HelpMessage(), "/reboot") {
+		t.Fatal("help should mention /reboot")
 	}
 	if !strings.Contains(HelpMessage(), "KS-1") {
 		t.Fatal("help should mention server model lookup")

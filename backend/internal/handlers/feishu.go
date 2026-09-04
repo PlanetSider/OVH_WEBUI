@@ -120,6 +120,12 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 					_ = sendFeishuAccountMenu(state, openID)
 				} else if cmd.Name == "account" {
 					_ = monitor.FeishuSendText(state, openID, accountCommandText(state, cmd.Args, "feishu"))
+				} else if cmd.Name == "reboot" {
+					if len(cmd.Args) > 0 {
+						_ = monitor.FeishuSendText(state, openID, "用法：/reboot")
+					} else {
+						_ = sendFeishuRebootMenu(state, openID)
+					}
 				} else if !bound {
 					_ = monitor.FeishuSendText(state, openID, "请先在飞书中私聊机器人完成全局接收人绑定")
 				} else if accountID == "" {
@@ -214,6 +220,12 @@ func processFeishuMessage(state *app.State, mon *monitor.Monitor, body map[strin
 			_ = sendFeishuAccountMenu(state, openID)
 		} else if cmd.Name == "account" {
 			_ = monitor.FeishuSendText(state, openID, accountCommandText(state, cmd.Args, "feishu"))
+		} else if cmd.Name == "reboot" {
+			if len(cmd.Args) > 0 {
+				_ = monitor.FeishuSendText(state, openID, "用法：/reboot")
+			} else {
+				_ = sendFeishuRebootMenu(state, openID)
+			}
 		} else if !bound {
 			_ = monitor.FeishuSendText(state, openID, "请先在飞书中私聊机器人完成全局接收人绑定")
 		} else if accountID == "" {
@@ -301,6 +313,17 @@ func processFeishuCardActionBody(state *app.State, body map[string]interface{}) 
 			result.Content = feishuEnqueue(state, values)
 			result.SendText = true
 		}
+	case "reboot_select_account", "reboot_select_server", "reboot_confirm":
+		binding, bound := monitor.FeishuDefaultBinding(state)
+		if !bound || openID == "" || binding.OpenID != openID {
+			result.Content = "当前飞书用户不是全局通知接收人"
+		} else {
+			result.Content, _ = processFeishuRebootAction(state, openID, name, values)
+			if strings.HasPrefix(result.Content, "❌") || strings.Contains(result.Content, "失败") || strings.Contains(result.Content, "已过期") {
+				result.Type = "error"
+			}
+			result.SendText = name == "reboot_confirm"
+		}
 	default:
 		result.Content = "未知操作，请重新打开最新通知卡片"
 	}
@@ -370,52 +393,11 @@ func FeishuCardAction(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusOK, gin.H{"toast": gin.H{"type": "success", "content": "操作已处理"}})
 			return
 		}
-		action, _ := body["action"].(map[string]interface{})
-		if event, ok := body["event"].(map[string]interface{}); ok {
-			if eventAction, ok := event["action"].(map[string]interface{}); ok {
-				action = eventAction
-			}
+		result := processFeishuCardActionBody(state, body)
+		c.JSON(http.StatusOK, gin.H{"toast": gin.H{"type": result.Type, "content": result.Content}})
+		if result.SendText && result.OpenID != "" {
+			_ = monitor.FeishuSendText(state, result.OpenID, result.Content)
 		}
-		value := action["value"]
-		if rawValue, ok := value.(string); ok { _ = json.Unmarshal([]byte(rawValue), &value) }
-		values, _ := value.(map[string]interface{})
-		name, _ := values["action"].(string)
-		openID := feishuOpenID(body)
-		message := "操作已完成"
-		if openID != "" && !telegram.AllowRate("feishu-card:"+openID) {
-			c.JSON(http.StatusOK, gin.H{"toast": gin.H{"type": "warning", "content": "操作过于频繁，请稍后再试"}})
-			return
-		}
-		switch name {
-		case "ping":
-			message = "飞书交互卡片连接正常"
-		case "switch_account":
-			binding, bound := monitor.FeishuDefaultBinding(state)
-			if !bound || openID == "" || binding.OpenID != openID {
-				message = "当前飞书用户不是全局通知接收人"
-			} else {
-				accountID, _ := values["account_id"].(string)
-				account, err := switchDefaultAccount(state, accountID)
-				if err != nil {
-					state.Logger.Warn("飞书切换默认账户失败: "+err.Error(), "feishu")
-					message = "切换失败：" + err.Error()
-				} else {
-					message = "✅ 默认 OVH 账户已切换为：" + accountDisplayName(account)
-					state.Logger.Info("飞书切换默认 OVH 账户: account="+account.ID+" open_id="+openID, "feishu")
-				}
-			}
-		case "add_to_queue":
-			binding, bound := monitor.FeishuDefaultBinding(state)
-			if !bound || openID == "" || binding.OpenID != openID {
-				message = "当前飞书用户不是全局通知接收人"
-			} else {
-				message = feishuEnqueue(state, values)
-			}
-		default:
-			message = "未知操作，请重新打开最新通知卡片"
-		}
-		c.JSON(http.StatusOK, gin.H{"toast": gin.H{"type": "success", "content": message}})
-		if openID != "" && (name == "add_to_queue" || name == "switch_account") && strings.HasPrefix(message, "✅") { _ = monitor.FeishuSendText(state, openID, message) }
 	}
 }
 

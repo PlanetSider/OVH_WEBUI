@@ -827,6 +827,13 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                       example: "/account switch",
                       color: "text-purple-500",
                     },
+                    {
+                      command: "/reboot",
+                      format: "/reboot",
+                      description: "通过账号、服务器和确认卡片安全重启独立服务器",
+                      example: "/reboot",
+                      color: "text-red-500",
+                    },
                     ...orderModes.map((mode) => ({
                       command: `/${mode.mode}`,
                       format: `/${mode.mode} <planCode> [datacenter] [quantity]`,

@@ -200,6 +200,10 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 	} else if v, ok := callbackObj["action"].(string); ok {
 		action = v
 	}
+	if handleTelegramRebootCallback(state, action, callbackObj, cbID, chatID, userID, int64(messageID)) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
 	if action == "as" {
 		accountID, _ := callbackObj["i"].(string)
 		account, err := switchDefaultAccount(state, accountID)

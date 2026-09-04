@@ -29,6 +29,8 @@ func dispatchBotCommand(state *app.State, mon *monitor.Monitor, cmd *telegram.Bo
 		return telegram.HelpMessage()
 	case "account":
 		return accountCommandText(state, cmd.Args, channel)
+	case "reboot":
+		return "请在 Telegram 或飞书私聊中发送 /reboot，并通过卡片选择要重启的服务器。"
 	case "stock":
 		return cmdStock(state, cmd.Args, accountID)
 	case "queue", "buy":
@@ -343,6 +345,14 @@ func handleTelegramText(state *app.State, mon *monitor.Monitor, text string, cha
 		}
 		if cmd.Name == "account" && isAccountSwitchRequest(cmd.Args) {
 			sendTelegramAccountMenu(state, chatID, int64(messageID))
+			return
+		}
+		if cmd.Name == "reboot" {
+			if len(cmd.Args) > 0 {
+				telegram.SendReply(state, chatID, "用法：/reboot", int64(messageID))
+				return
+			}
+			sendTelegramRebootMenu(state, chatID, userID, int64(messageID))
 			return
 		}
 		// 未知多余参数：buy/queue 若无 planCode 在 dispatch 内拒绝
