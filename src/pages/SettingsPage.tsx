@@ -7,7 +7,6 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/common/Skeleton";
 import { Chip } from "@/components/common/Chip";
@@ -207,6 +206,32 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
+function NotificationStatusSelect({
+  enabled,
+  onChange,
+}: {
+  enabled?: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-muted-foreground whitespace-nowrap">通知状态</span>
+      <Select
+        value={enabled === false ? "disabled" : "enabled"}
+        onValueChange={(value) => onChange(value === "enabled")}
+      >
+        <SelectTrigger className="w-[104px] h-8">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="enabled">已开启</SelectItem>
+          <SelectItem value="disabled">已关闭</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
 function FeishuSection({
   form,
   set,
@@ -310,11 +335,11 @@ function FeishuSection({
             <p className="text-[11px] text-muted-foreground mt-1">只填写 App ID 和 App Secret 即可完成飞书通知配置；Verification Token、Encrypt Key 为事件回调和按钮交互的可选安全项。</p>
           </div>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-2 text-xs cursor-pointer">
-              <Checkbox checked={form.feishuNotificationsEnabled !== false} onCheckedChange={(value) => set("feishuNotificationsEnabled", value === true)} />
-              开启飞书通知
-            </label>
-            <Chip tone={form.feishuEnabled ? "success" : "warning"}>{form.feishuEnabled ? "已启用" : "待配置"}</Chip>
+            <NotificationStatusSelect
+              enabled={form.feishuNotificationsEnabled}
+              onChange={(value) => set("feishuNotificationsEnabled", value)}
+            />
+            <Chip tone={form.feishuEnabled ? "success" : "warning"}>{form.feishuEnabled ? "凭据已配置" : "凭据未配置"}</Chip>
           </div>
         </div>
         <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
@@ -480,10 +505,10 @@ function WeixinSection({ form, set }: {
             <p className="text-[11px] text-muted-foreground mt-1">通过微信官方 iLink Bot 长轮询连接，不需要公网 Webhook，也无需手填 Token。</p>
           </div>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-2 text-xs cursor-pointer">
-              <Checkbox checked={form.weixinNotificationsEnabled !== false} onCheckedChange={(value) => set("weixinNotificationsEnabled", value === true)} />
-              开启微信通知
-            </label>
+            <NotificationStatusSelect
+              enabled={form.weixinNotificationsEnabled}
+              onChange={(value) => set("weixinNotificationsEnabled", value)}
+            />
             <Chip tone={connected && status.data?.polling ? "success" : connected ? "warning" : "warning"}>
               {connected ? (status.data?.polling ? "已连接" : "已配置") : "未连接"}
             </Chip>
@@ -616,10 +641,10 @@ function TelegramSection({
           <div className="text-[13px] font-medium">通知通道</div>
           <p className="text-[11px] text-muted-foreground mt-1">关闭后不会发送库存、监控和系统测试通知，但不会清除 Bot 配置。</p>
         </div>
-        <label className="flex items-center gap-2 text-xs cursor-pointer">
-          <Checkbox checked={form.tgNotificationsEnabled !== false} onCheckedChange={(value) => set("tgNotificationsEnabled", value === true)} />
-          开启 Telegram 通知
-        </label>
+        <NotificationStatusSelect
+          enabled={form.tgNotificationsEnabled}
+          onChange={(value) => set("tgNotificationsEnabled", value)}
+        />
       </div>
       <Field label="Bot Token" hint="保存设置后写入后端；Webhook 需再点下方「注册 Webhook」才会生效">
         <Input
