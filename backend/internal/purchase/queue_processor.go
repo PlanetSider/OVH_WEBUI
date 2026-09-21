@@ -14,6 +14,9 @@ import (
 const concurrentBatchSize = 10
 
 func effectiveRetryInterval(item types.QueueItem) int {
+	if item.Discontinued {
+		return types.DiscontinuedCheckIntervalSeconds
+	}
 	if item.RetryInterval < 1 {
 		return 60
 	}

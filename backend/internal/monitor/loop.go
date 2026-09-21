@@ -209,6 +209,10 @@ func (m *Monitor) monitorLoop(stop <-chan struct{}, done *sync.WaitGroup) {
 					m.state.Logger.Debug(fmt.Sprintf("订阅 %s 在检查期间被删除，跳过", sub.PlanCode), "monitor")
 					continue
 				}
+				if !m.subscriptionCheckDue(sub, time.Now()) {
+					m.state.Logger.Debug(fmt.Sprintf("停售订阅 %s 尚未到每小时检查时间，跳过本轮", sub.PlanCode), "monitor")
+					continue
+				}
 				traceID := uuid.NewString()
 				wg.Add(1)
 				sem <- struct{}{}
@@ -253,6 +257,23 @@ func (m *Monitor) monitorLoop(stop <-chan struct{}, done *sync.WaitGroup) {
 		}
 	}
 	m.state.Logger.Info("监控循环已停止", "monitor")
+}
+
+func (m *Monitor) subscriptionCheckDue(sub *Subscription, now time.Time) bool {
+	if sub == nil {
+		return false
+	}
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if !sub.Discontinued {
+		return true
+	}
+	current := float64(now.Unix())
+	if sub.DiscontinuedNextCheckAt > current {
+		return false
+	}
+	sub.DiscontinuedNextCheckAt = current + float64(types.DiscontinuedCheckIntervalSeconds)
+	return true
 }
 
 func (m *Monitor) stillInSubscriptions(sub *Subscription) bool {
@@ -372,7 +393,7 @@ func (m *Monitor) batchOrder(target, sub *Subscription, configInfo map[string]in
 			items = append(items, types.QueueItem{
 				ID: uuid.NewString(), AccountID: accountID, PlanCode: planCode, Datacenter: n.dc,
 				Options: append([]string(nil), options...), Status: "running", RetryInterval: 2, MaxRetries: 3,
-				CreatedAt: now, UpdatedAt: now, QuickOrder: true, Priority: 100,
+				CreatedAt: now, UpdatedAt: now, QuickOrder: true, Priority: 100, Discontinued: sub.Discontinued,
 			})
 		}
 	}
@@ -456,7 +477,9 @@ func sameSubscriptionSettings(left, right *Subscription) bool {
 		left.NotifyUnavailable == right.NotifyUnavailable &&
 		left.AutoOrder == right.AutoOrder &&
 		left.Quantity == right.Quantity &&
-		left.AutoOrderAccountID == right.AutoOrderAccountID
+		left.AutoOrderAccountID == right.AutoOrderAccountID &&
+		left.Discontinued == right.Discontinued &&
+		left.DiscontinuedNextCheckAt == right.DiscontinuedNextCheckAt
 }
 
 func copySubscriptionState(dst, src *Subscription) {
@@ -465,6 +488,8 @@ func copySubscriptionState(dst, src *Subscription) {
 	dst.PendingOrder = cloneIntMap(src.PendingOrder)
 	dst.PendingNotify = cloneStringMap(src.PendingNotify)
 	dst.PendingNotifyChannels = cloneStringSliceMap(src.PendingNotifyChannels)
+	dst.Discontinued = src.Discontinued
+	dst.DiscontinuedNextCheckAt = src.DiscontinuedNextCheckAt
 	dst.History = make([]HistoryEntry, len(src.History))
 	for i, entry := range src.History {
 		dst.History[i] = entry

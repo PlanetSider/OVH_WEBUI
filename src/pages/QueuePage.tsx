@@ -821,6 +821,11 @@ function QueueRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="font-mono font-semibold text-sm">{item.planCode}</span>
+            {item.discontinued && (
+              <Chip tone="danger">
+                <StatusDot tone="danger" size="xs" />停售
+              </Chip>
+            )}
             <AccountChip accountId={item.accountId} />
             <Chip tone="default">DC {item.datacenter.toUpperCase()}</Chip>
             {item.options && item.options.length > 0 && (
@@ -830,7 +835,7 @@ function QueueRow({
           <div className="text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
             <Clock className="w-3 h-3" />
             <span>
-              下次尝试 {item.retryCount > 0 ? `${item.retryInterval}秒后（第 ${item.retryCount + 1} 次）` : "即将开始"}
+              下次尝试 {item.discontinued ? "停售期间每小时检查" : item.retryCount > 0 ? `${item.retryInterval}秒后（第 ${item.retryCount + 1} 次）` : "即将开始"}
             </span>
             <span>·</span>
             <span>{new Date(item.createdAt).toLocaleString()}</span>

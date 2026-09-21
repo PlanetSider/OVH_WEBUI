@@ -23,6 +23,7 @@ export interface QueueItem {
   priority?: number;
   fromTelegram?: boolean;
   configSniperTaskId?: string;
+  discontinued?: boolean;
 }
 
 /** 抢购队列列表 */

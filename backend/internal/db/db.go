@@ -64,10 +64,19 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("queue", "account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := db.addColumnIfMissing("queue", "discontinued", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("history", "account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("monitor_subscriptions", "discontinued", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("monitor_subscriptions", "discontinued_next_check_at", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "memories", "TEXT NOT NULL DEFAULT '[]'"); err != nil {

@@ -58,6 +58,8 @@ func toDBSub(s *Subscription) types.Subscription {
 		AutoOrder:          s.AutoOrder,
 		Quantity:           s.Quantity,
 		AutoOrderAccountID: s.AutoOrderAccountID,
+		Discontinued:       s.Discontinued,
+		DiscontinuedNextCheckAt: s.DiscontinuedNextCheckAt,
 	}
 }
 
@@ -108,6 +110,8 @@ func fromDBSub(s types.Subscription) *Subscription {
 		AutoOrder:          s.AutoOrder,
 		Quantity:           s.Quantity,
 		AutoOrderAccountID: s.AutoOrderAccountID,
+		Discontinued:       s.Discontinued,
+		DiscontinuedNextCheckAt: s.DiscontinuedNextCheckAt,
 	}
 }
 

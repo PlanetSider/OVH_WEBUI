@@ -86,11 +86,17 @@ func notifyNewServers(mon *monitor.Monitor, plans []types.ServerPlan) {
 }
 
 func refreshServerCatalogAndNotify(state *app.State, mon *monitor.Monitor, source string) error {
+	state.ServerPlansMu.RLock()
+	previousPlans := append([]types.ServerPlan(nil), state.ServerPlans...)
+	state.ServerPlansMu.RUnlock()
 	plans, err := refreshServerCatalog(state)
 	if err != nil {
 		return err
 	}
 	notifyNewServers(mon, plans)
+	if err := updateDiscontinuedCatalogState(state, mon, plans, previousPlans); err != nil {
+		state.Logger.Warn("更新型号停售状态失败: "+err.Error(), "server_catalog")
+	}
 	if source == "" {
 		source = "主动"
 	}

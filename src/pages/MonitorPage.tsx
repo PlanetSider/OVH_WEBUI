@@ -224,6 +224,11 @@ function SubRow({
               {sub.serverName && (
                 <span className="text-xs text-muted-foreground">| {sub.serverName}</span>
               )}
+              {sub.discontinued && (
+                <Chip tone="danger">
+                  <StatusDot tone="danger" size="xs" />停售 · 每小时检查
+                </Chip>
+              )}
             </div>
             <p className="text-xs text-muted-foreground mb-1.5">
               {sub.datacenters.length > 0

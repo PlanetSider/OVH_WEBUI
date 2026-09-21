@@ -25,6 +25,7 @@ type queueRow struct {
 	Priority           int     `db:"priority"`
 	FromTelegram       int     `db:"from_telegram"`
 	ConfigSniperTaskID string  `db:"config_sniper_task_id"`
+	Discontinued       int     `db:"discontinued"`
 }
 
 func rowToQueueItem(r queueRow) types.QueueItem {
@@ -52,6 +53,7 @@ func rowToQueueItem(r queueRow) types.QueueItem {
 		Priority:           r.Priority,
 		FromTelegram:       r.FromTelegram == 1,
 		ConfigSniperTaskID: r.ConfigSniperTaskID,
+		Discontinued:       r.Discontinued == 1,
 	}
 }
 
@@ -86,6 +88,7 @@ func queueItemToRow(q types.QueueItem) (queueRow, error) {
 		Priority:           q.Priority,
 		FromTelegram:       bi(q.FromTelegram),
 		ConfigSniperTaskID: q.ConfigSniperTaskID,
+		Discontinued:       bi(q.Discontinued),
 	}, nil
 }
 
@@ -122,11 +125,11 @@ func (db *DB) ReplaceQueue(items []types.QueueItem) error {
 			INSERT INTO queue
 			(id, account_id, plan_code, datacenter, options, status, created_at, updated_at,
 			 retry_interval, retry_count, max_retries, last_check_time,
-			 quick_order, priority, from_telegram, config_sniper_task_id)
+			 quick_order, priority, from_telegram, config_sniper_task_id, discontinued)
 			VALUES
 			(:id, :account_id, :plan_code, :datacenter, :options, :status, :created_at, :updated_at,
 			 :retry_interval, :retry_count, :max_retries, :last_check_time,
-			 :quick_order, :priority, :from_telegram, :config_sniper_task_id)
+			 :quick_order, :priority, :from_telegram, :config_sniper_task_id, :discontinued)
 		`, r)
 		if err != nil {
 			return fmt.Errorf("insert queue %s: %w", q.ID, err)
@@ -185,10 +188,10 @@ func (db *DB) EnqueueMonitorOrdersAndSaveSubscription(sub types.Subscription, it
 	if _, err := tx.NamedExec(`
 		INSERT INTO monitor_subscriptions
 		(plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
-		 created_at, history, server_name, auto_order, quantity, auto_order_account_id)
+		 created_at, history, server_name, auto_order, quantity, auto_order_account_id, discontinued, discontinued_next_check_at)
 		VALUES
 		(:plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
-		 :created_at, :history, :server_name, :auto_order, :quantity, :auto_order_account_id)
+		 :created_at, :history, :server_name, :auto_order, :quantity, :auto_order_account_id, :discontinued, :discontinued_next_check_at)
 		ON CONFLICT(plan_code) DO UPDATE SET
 		  datacenters = excluded.datacenters, memories = excluded.memories, storages = excluded.storages,
 		  networks = excluded.networks, notify_available = excluded.notify_available,
@@ -197,7 +200,9 @@ func (db *DB) EnqueueMonitorOrdersAndSaveSubscription(sub types.Subscription, it
 		  pending_notify = excluded.pending_notify, history = excluded.history, server_name = excluded.server_name,
 		  pending_notify_channels = excluded.pending_notify_channels,
 		  auto_order = excluded.auto_order, quantity = excluded.quantity,
-		  auto_order_account_id = excluded.auto_order_account_id
+		  auto_order_account_id = excluded.auto_order_account_id,
+		  discontinued = excluded.discontinued,
+		  discontinued_next_check_at = excluded.discontinued_next_check_at
 	`, subRow); err != nil {
 		return fmt.Errorf("save monitor subscription %s with orders: %w", sub.PlanCode, err)
 	}
@@ -207,11 +212,11 @@ func (db *DB) EnqueueMonitorOrdersAndSaveSubscription(sub types.Subscription, it
 			INSERT INTO queue
 			(id, account_id, plan_code, datacenter, options, status, created_at, updated_at,
 			 retry_interval, retry_count, max_retries, last_check_time,
-			 quick_order, priority, from_telegram, config_sniper_task_id)
+			 quick_order, priority, from_telegram, config_sniper_task_id, discontinued)
 			VALUES
 			(:id, :account_id, :plan_code, :datacenter, :options, :status, :created_at, :updated_at,
 			 :retry_interval, :retry_count, :max_retries, :last_check_time,
-			 :quick_order, :priority, :from_telegram, :config_sniper_task_id)
+			 :quick_order, :priority, :from_telegram, :config_sniper_task_id, :discontinued)
 		`, row); err != nil {
 			return fmt.Errorf("insert monitor queue item %s: %w", row.ID, err)
 		}

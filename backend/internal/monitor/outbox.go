@@ -22,6 +22,14 @@ type purchaseSuccessPayload struct {
 	OrderURL   string   `json:"orderUrl"`
 }
 
+type catalogStatusPayload struct {
+	Mode       string `json:"mode"`
+	PlanCode   string `json:"planCode"`
+	ServerName string `json:"serverName"`
+	CycleID    string `json:"cycleId"`
+	Recovered  bool   `json:"recovered"`
+}
+
 func NewPurchaseSuccessNotification(item types.QueueItem, orderID, orderURL string, channels []string) (*types.NotificationOutboxEntry, error) {
 	channels = canonicalNotificationChannels(channels)
 	payload, err := json.Marshal(purchaseSuccessPayload{
@@ -36,6 +44,46 @@ func NewPurchaseSuccessNotification(item types.QueueItem, orderID, orderURL stri
 		EventKey: "purchase_success:" + item.ID, Kind: NotificationKindPurchaseSuccess,
 		Payload: string(payload), Channels: channels, AwaitingChannels: len(channels) == 0,
 	}, nil
+}
+
+func NewCatalogStatusNotification(mode, planCode, serverName, cycleID string, recovered bool, channels []string) (*types.NotificationOutboxEntry, error) {
+	mode = strings.TrimSpace(mode)
+	planCode = strings.TrimSpace(planCode)
+	cycleID = strings.TrimSpace(cycleID)
+	channels = canonicalNotificationChannels(channels)
+	if mode != "抢购" && mode != "监控" {
+		return nil, fmt.Errorf("catalog status notification mode 无效: %q", mode)
+	}
+	if planCode == "" || cycleID == "" {
+		return nil, fmt.Errorf("catalog status notification 缺少 planCode 或 cycleID")
+	}
+	payload, err := json.Marshal(catalogStatusPayload{
+		Mode: mode, PlanCode: planCode, ServerName: strings.TrimSpace(serverName),
+		CycleID: cycleID, Recovered: recovered,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode catalog status notification: %w", err)
+	}
+	state := "discontinued"
+	if recovered {
+		state = "recovered"
+	}
+	return &types.NotificationOutboxEntry{
+		EventKey: fmt.Sprintf("catalog_status:%s:%s:%s:%s", state, mode, planCode, cycleID),
+		Kind: NotificationKindCatalogStatus, Payload: string(payload),
+		Channels: channels, AwaitingChannels: len(channels) == 0,
+	}, nil
+}
+
+func catalogStatusMessage(payload catalogStatusPayload) (string, string, string) {
+	name := strings.TrimSpace(payload.ServerName)
+	if name == "" {
+		name = payload.PlanCode
+	}
+	if payload.Recovered {
+		return "✅ 型号重新上架通知", fmt.Sprintf("正在%s的%s（%s）已重新上架！\n\n已恢复原%s频率。", payload.Mode, name, payload.PlanCode, payload.Mode), "green"
+	}
+	return "⚠️ 型号停售通知", fmt.Sprintf("正在%s的%s（%s）已停售！\n\n该型号已连续 1 小时未出现在服务器目录中，已将%s检查频率降为每小时一次。", payload.Mode, name, payload.PlanCode, payload.Mode), "red"
 }
 
 func purchaseSuccessMessage(payload purchaseSuccessPayload) string {
@@ -73,6 +121,25 @@ func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (Noti
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
 			result[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "🎉 OVH 服务器抢购成功", msg, "green", nil)
+		}
+		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
+			result[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)
+		}
+		return result, nil
+	case NotificationKindCatalogStatus:
+		var payload catalogStatusPayload
+		if err := json.Unmarshal([]byte(entry.Payload), &payload); err != nil {
+			return result, fmt.Errorf("解析型号状态通知失败: %w", err)
+		}
+		if (payload.Mode != "抢购" && payload.Mode != "监控") || strings.TrimSpace(payload.PlanCode) == "" || strings.TrimSpace(payload.CycleID) == "" {
+			return result, fmt.Errorf("解析型号状态通知失败: mode、planCode 或 cycleId 无效")
+		}
+		title, msg, template := catalogStatusMessage(payload)
+		if notificationChannelSelected(entry.Channels, NotificationChannelTelegram) {
+			result[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
+		}
+		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
+			result[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, title, msg, template, nil)
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
 			result[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)

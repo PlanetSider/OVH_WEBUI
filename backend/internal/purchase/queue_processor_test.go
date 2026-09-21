@@ -19,6 +19,9 @@ func TestEffectiveRetryInterval(t *testing.T) {
 			t.Fatalf("effectiveRetryInterval(%d) = %d, want %d", value, got, value)
 		}
 	}
+	if got := effectiveRetryInterval(types.QueueItem{RetryInterval: 2, Discontinued: true}); got != types.DiscontinuedCheckIntervalSeconds {
+		t.Fatalf("discontinued effectiveRetryInterval = %d, want %d", got, types.DiscontinuedCheckIntervalSeconds)
+	}
 }
 
 func TestProcessQueueTickDoesNotClearIsolationWhenQueueIsEmpty(t *testing.T) {

@@ -34,9 +34,10 @@ type rebootAccountChoice struct {
 type rebootServerChoice struct {
 	AccountID   string `json:"accountId"`
 	AccountName string `json:"accountName"`
-	ServiceName string `json:"serviceName"`
-	DisplayName string `json:"displayName"`
-	Datacenter  string `json:"datacenter"`
+	ServiceName    string `json:"serviceName"`
+	DisplayName    string `json:"displayName"`
+	CommercialRange string `json:"commercialRange,omitempty"`
+	Datacenter     string `json:"datacenter"`
 	State       string `json:"state,omitempty"`
 }
 
@@ -147,10 +148,11 @@ func loadRebootServers(state *app.State, account types.OVHAccount) ([]rebootServ
 			state.Logger.Warn("读取待重启服务器详情失败: "+details[i].err.Error(), "server_control")
 		}
 		name := mapString(info, "name")
-		displayName := visibleRebootServerName(aliases[serviceName], name, i+1)
+		commercialRange := mapString(info, "commercialRange")
+		displayName := visibleRebootServerName(aliases[serviceName], commercialRange, name, i+1)
 		servers = append(servers, rebootServerChoice{
 			AccountID: account.ID, AccountName: accountDisplayName(account), ServiceName: serviceName,
-			DisplayName: displayName, Datacenter: mapStringOr(info, "datacenter", "N/A"),
+			DisplayName: displayName, CommercialRange: commercialRange, Datacenter: mapStringOr(info, "datacenter", "N/A"),
 			State: mapStringOr(info, "state", "unknown"),
 		})
 	}
@@ -172,12 +174,16 @@ func mapStringOr(values map[string]interface{}, key, fallback string) string {
 	return fallback
 }
 
-func visibleRebootServerName(alias, ovhName string, ordinal int) string {
-	for _, candidate := range []string{alias, ovhName} {
-		candidate = strings.TrimSpace(candidate)
-		if candidate != "" && !strings.HasPrefix(strings.ToLower(candidate), "ns") {
-			return candidate
-		}
+func visibleRebootServerName(alias, commercialRange, ovhName string, ordinal int) string {
+	alias = strings.TrimSpace(alias)
+	if alias != "" && !strings.HasPrefix(strings.ToLower(alias), "ns") {
+		return alias
+	}
+	if commercialRange = strings.TrimSpace(commercialRange); commercialRange != "" {
+		return commercialRange
+	}
+	if ovhName = strings.TrimSpace(ovhName); ovhName != "" && !strings.HasPrefix(strings.ToLower(ovhName), "ns") {
+		return ovhName
 	}
 	return fmt.Sprintf("未设置自定义名称 #%d", ordinal)
 }

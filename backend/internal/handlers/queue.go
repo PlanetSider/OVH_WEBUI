@@ -337,6 +337,10 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 			if len(queue)+created > app.MaxQueueItems {
 				return nil, fmt.Errorf("队列空间不足（上限 %d）", app.MaxQueueItems)
 			}
+			discontinued := item.Discontinued && item.PlanCode == planCode
+			if queue[index].PlanCode != planCode {
+				queue[index].Discontinued = false
+			}
 			queue[index].AccountID = accountID
 			queue[index].PlanCode = planCode
 			queue[index].Datacenter = dcs[0]
@@ -344,6 +348,7 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 			queue[index].RetryInterval = retryInterval
 			queue[index].RetryCount = 0
 			queue[index].LastCheckTime = 0
+			queue[index].Discontinued = discontinued
 			queue[index].Status = "running"
 			queue[index].UpdatedAt = now
 			for _, dc := range dcs {
@@ -356,7 +361,7 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 						Options: append([]string{}, options...), Status: "running", CreatedAt: now, UpdatedAt: now,
 						RetryInterval: retryInterval, MaxRetries: item.MaxRetries, Priority: item.Priority,
 						QuickOrder: item.QuickOrder, FromTelegram: item.FromTelegram,
-						ConfigSniperTaskID: item.ConfigSniperTaskID,
+						ConfigSniperTaskID: item.ConfigSniperTaskID, Discontinued: discontinued,
 					})
 				}
 			}

@@ -52,3 +52,33 @@ func TestDispatchOutboxEntryRejectsInvalidOrUnknownPayload(t *testing.T) {
 		t.Fatal("unknown notification kind should be rejected")
 	}
 }
+
+func TestNewCatalogStatusNotificationUsesStableTransitionIdentity(t *testing.T) {
+	entry, err := NewCatalogStatusNotification("抢购", "24sk502", "KS-5", "1700000000", false, []string{"telegram", "telegram", "feishu"})
+	if err != nil || entry == nil {
+		t.Fatalf("entry=%#v err=%v", entry, err)
+	}
+	if entry.EventKey != "catalog_status:discontinued:抢购:24sk502:1700000000" {
+		t.Fatalf("event key = %q", entry.EventKey)
+	}
+	if entry.Kind != NotificationKindCatalogStatus || strings.Join(entry.Channels, ",") != "feishu,telegram" {
+		t.Fatalf("entry identity = %#v", entry)
+	}
+	if !strings.Contains(entry.Payload, `"serverName":"KS-5"`) || !strings.Contains(entry.Payload, `"recovered":false`) {
+		t.Fatalf("payload = %s", entry.Payload)
+	}
+}
+
+func TestCatalogStatusMessageIncludesModeAndFrequency(t *testing.T) {
+	messageTitle, message, template := catalogStatusMessage(catalogStatusPayload{
+		Mode: "监控", PlanCode: "24sk502", ServerName: "KS-5", Recovered: false,
+	})
+	for _, expected := range []string{"正在监控的KS-5（24sk502）已停售", "每小时一次"} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("message missing %q: %s", expected, message)
+		}
+	}
+	if messageTitle == "" || template != "red" {
+		t.Fatalf("title/template = %q/%q", messageTitle, template)
+	}
+}

@@ -2,6 +2,8 @@ package types
 
 import "time"
 
+const DiscontinuedCheckIntervalSeconds = 60 * 60
+
 // Config 对应 Python 全局 config dict
 type Config struct {
 	AppKey      string `json:"appKey"`
@@ -120,6 +122,7 @@ type QueueItem struct {
 	Priority            int      `json:"priority,omitempty"`
 	FromTelegram        bool     `json:"fromTelegram,omitempty"`
 	ConfigSniperTaskID  string   `json:"configSniperTaskId,omitempty"`
+	Discontinued        bool     `json:"discontinued,omitempty"`
 }
 
 // PriceInfo 价格信息
@@ -209,6 +212,8 @@ type Subscription struct {
 	AutoOrder           bool                       `json:"autoOrder,omitempty"`
 	Quantity            int                        `json:"quantity,omitempty"`
 	AutoOrderAccountID  string                     `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
+	Discontinued        bool                       `json:"discontinued,omitempty"`
+	DiscontinuedNextCheckAt float64                `json:"discontinuedNextCheckAt,omitempty"`
 }
 
 // VPSSubscription VPS 监控订阅

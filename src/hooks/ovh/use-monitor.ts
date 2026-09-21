@@ -16,6 +16,8 @@ export interface MonitorSubscription {
   quantity?: number;
   /** 触发 auto-order 时用哪个 OVH 账户下单;空 = 只通知 */
   autoOrderAccountId?: string;
+  discontinued?: boolean;
+  discontinuedNextCheckAt?: number;
   lastStatus: Record<string, string>;
   createdAt: string;
 }

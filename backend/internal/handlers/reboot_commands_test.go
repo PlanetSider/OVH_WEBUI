@@ -153,15 +153,16 @@ func TestPrepareRebootFlowListsAllAccountsWithoutCredentials(t *testing.T) {
 
 func TestVisibleRebootServerNameNeverShowsNSPrefix(t *testing.T) {
 	cases := []struct {
-		alias, ovhName string
-		want           string
+		alias, commercialRange, ovhName string
+		want                        string
 	}{
-		{alias: "自定义名称", ovhName: "ns1.example", want: "自定义名称"},
-		{alias: "ns-local-alias", ovhName: "web-01", want: "web-01"},
-		{alias: "", ovhName: "ns1.example", want: "未设置自定义名称 #3"},
+		{alias: "自定义名称", commercialRange: "KS-LE-B", ovhName: "ns1.example", want: "自定义名称"},
+		{alias: "ns-local-alias", commercialRange: "KS-LE-B", ovhName: "web-01", want: "KS-LE-B"},
+		{alias: "", commercialRange: "KS-LE-C", ovhName: "ns1.example", want: "KS-LE-C"},
+		{alias: "", commercialRange: "", ovhName: "ns1.example", want: "未设置自定义名称 #3"},
 	}
 	for _, tc := range cases {
-		if got := visibleRebootServerName(tc.alias, tc.ovhName, 3); got != tc.want {
+		if got := visibleRebootServerName(tc.alias, tc.commercialRange, tc.ovhName, 3); got != tc.want {
 			t.Errorf("visibleRebootServerName(%q, %q) = %q, want %q", tc.alias, tc.ovhName, got, tc.want)
 		}
 	}

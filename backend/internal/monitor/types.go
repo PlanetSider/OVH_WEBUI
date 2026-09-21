@@ -50,6 +50,7 @@ type Monitor struct {
 const (
 	NotificationKindNewServer       = "new_server"
 	NotificationKindPurchaseSuccess = "purchase_success"
+	NotificationKindCatalogStatus   = "catalog_status"
 	// MessageButtonTTL 是 Telegram / 飞书一键下单按钮的统一有效期。
 	// 两个渠道共用同一张 SQLite 表，必须使用同一边界，避免飞书按钮
 	// 绕过 Telegram 缓存层后永久有效。
@@ -91,6 +92,8 @@ type Subscription struct {
 	AutoOrder          bool                   `json:"autoOrder,omitempty"`
 	Quantity           int                    `json:"quantity,omitempty"`
 	AutoOrderAccountID string                 `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
+	Discontinued        bool                   `json:"discontinued,omitempty"`
+	DiscontinuedNextCheckAt float64            `json:"discontinuedNextCheckAt,omitempty"`
 }
 
 // HistoryEntry 历史记录条目
@@ -169,6 +172,7 @@ func cloneSubscriptionUnlocked(source *Subscription) *Subscription {
 		PendingNotify: cloneStringMap(source.PendingNotify), CreatedAt: source.CreatedAt, ServerName: source.ServerName,
 		PendingNotifyChannels: cloneStringSliceMap(source.PendingNotifyChannels),
 		AutoOrder: source.AutoOrder, Quantity: source.Quantity, AutoOrderAccountID: source.AutoOrderAccountID,
+		Discontinued: source.Discontinued, DiscontinuedNextCheckAt: source.DiscontinuedNextCheckAt,
 	}
 	out.History = make([]HistoryEntry, 0, len(source.History))
 	for _, entry := range source.History {
