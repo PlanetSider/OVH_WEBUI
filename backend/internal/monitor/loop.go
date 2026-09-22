@@ -356,6 +356,10 @@ func (m *Monitor) batchOrder(target, sub *Subscription, configInfo map[string]in
 		m.state.Logger.Warn("[monitor->order] 跳过自动下单: 账户不存在", "monitor")
 		return false
 	}
+	if m.state.IsAccountProxyPaused(accountID) {
+		m.state.Logger.Warn("[monitor->order] 跳过自动下单: 账户代理已熔断", "monitor")
+		return false
+	}
 	if target == nil || sub == nil {
 		return false
 	}

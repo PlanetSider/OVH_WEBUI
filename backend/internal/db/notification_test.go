@@ -708,11 +708,17 @@ func TestNotificationOutboxReturnsCorruptChannelsWithoutBlockingLaterEntries(t *
 	if err != nil || len(items) != 2 {
 		t.Fatalf("items=%#v err=%v, want both entries", items, err)
 	}
-	if items[0].EventKey != "event-corrupt" || items[0].DecodeError == "" {
-		t.Fatalf("corrupt entry = %#v, want decode error", items[0])
+	byKey := make(map[string]types.NotificationOutboxEntry, len(items))
+	for _, item := range items {
+		byKey[item.EventKey] = item
 	}
-	if items[1].EventKey != "event-healthy" || items[1].DecodeError != "" || !reflect.DeepEqual(items[1].Channels, []string{"feishu"}) {
-		t.Fatalf("healthy entry = %#v", items[1])
+	corrupt, ok := byKey["event-corrupt"]
+	if !ok || corrupt.DecodeError == "" {
+		t.Fatalf("corrupt entry = %#v, want decode error", corrupt)
+	}
+	healthy, ok := byKey["event-healthy"]
+	if !ok || healthy.DecodeError != "" || !reflect.DeepEqual(healthy.Channels, []string{"feishu"}) {
+		t.Fatalf("healthy entry = %#v", healthy)
 	}
 }
 

@@ -1,8 +1,31 @@
 package types
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
-const DiscontinuedCheckIntervalSeconds = 60 * 60
+const (
+	DiscontinuedCheckIntervalSeconds = 60 * 60
+	// NowISOLayout 是 NowISO 写入的无时区本地时间格式。
+	NowISOLayout = "2006-01-02T15:04:05.000000"
+)
+
+// ParseTS 解析本项目持久化时间戳。
+// 历史数据同时存在无时区 NowISO 和 RFC3339/RFC3339Nano，
+// 无时区值按当前本地时区解析，避免把有效时间静默当成零值。
+func ParseTS(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, NowISOLayout, "2006-01-02T15:04:05"} {
+		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
 
 // Config 对应 Python 全局 config dict
 type Config struct {
@@ -100,6 +123,8 @@ type OVHAccount struct {
 	AppSecret   string `json:"appSecret"`
 	ConsumerKey string `json:"consumerKey"`
 	IAM         string `json:"iam"`           // go-ovh-<zone-lower>
+	ProxyURL    string `json:"proxyUrl,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 	IsDefault   bool   `json:"isDefault"`     // 默认账户（未指定时 fallback 用它）
 	CreatedAt   string `json:"createdAt"`
 }
@@ -116,6 +141,8 @@ type QueueItem struct {
 	UpdatedAt           string   `json:"updatedAt"`
 	RetryInterval       int      `json:"retryInterval"`
 	RetryCount          int      `json:"retryCount"`
+	// FailureCount 只统计确定已经走到失败提交阶段的错误；429/5xx/网络错误不计入。
+	FailureCount        int      `json:"failureCount,omitempty"`
 	MaxRetries          int      `json:"maxRetries,omitempty"`
 	LastCheckTime       float64  `json:"lastCheckTime"`
 	QuickOrder          bool     `json:"quickOrder,omitempty"`
@@ -149,6 +176,8 @@ type PurchaseHistoryEntry struct {
 	AttemptCount   int        `json:"attemptCount"`
 	ExpirationTime string     `json:"expirationTime,omitempty"`
 	Price          *PriceInfo `json:"price,omitempty"`
+	OrderStatus    string     `json:"orderStatus,omitempty"`
+	OrderStatusAt  string     `json:"orderStatusAt,omitempty"`
 }
 
 // Datacenter 服务器目录中单个机房可用性
@@ -262,5 +291,5 @@ type CacheInfo struct {
 
 // NowISO 返回 ISO8601 时间（与 datetime.now().isoformat() 一致）
 func NowISO() string {
-	return time.Now().Format("2006-01-02T15:04:05.000000")
+	return time.Now().Format(NowISOLayout)
 }

@@ -347,6 +347,7 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 			queue[index].Options = append([]string{}, options...)
 			queue[index].RetryInterval = retryInterval
 			queue[index].RetryCount = 0
+			queue[index].FailureCount = 0
 			queue[index].LastCheckTime = 0
 			queue[index].Discontinued = discontinued
 			queue[index].Status = "running"

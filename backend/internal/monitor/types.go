@@ -50,6 +50,7 @@ type Monitor struct {
 const (
 	NotificationKindNewServer       = "new_server"
 	NotificationKindPurchaseSuccess = "purchase_success"
+	NotificationKindOrderStatus     = "order_status"
 	NotificationKindCatalogStatus   = "catalog_status"
 	// MessageButtonTTL 是 Telegram / 飞书一键下单按钮的统一有效期。
 	// 两个渠道共用同一张 SQLite 表，必须使用同一边界，避免飞书按钮

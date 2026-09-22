@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/types"
 )
 
 // orderMappingCache 简单内存缓存
@@ -254,18 +255,11 @@ func GetOrderMapping(state *app.State) gin.HandlerFunc {
 }
 
 func parseFlexible(s string) (time.Time, error) {
-	if strings.Contains(s, "T") {
-		if s2 := strings.Replace(s, "Z", "+00:00", 1); s2 != "" {
-			if t, err := time.Parse("2006-01-02T15:04:05-07:00", s2); err == nil {
-				return t, nil
-			}
-			if t, err := time.Parse(time.RFC3339, s); err == nil {
-				return t, nil
-			}
-		}
+	if parsed, ok := types.ParseTS(s); ok {
+		return parsed, nil
 	}
-	if t, err := time.Parse("2006-01-02", s); err == nil {
-		return t.UTC(), nil
+	if t, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(s), time.UTC); err == nil {
+		return t, nil
 	}
 	return time.Time{}, fmt.Errorf("无法解析日期: %s", s)
 }

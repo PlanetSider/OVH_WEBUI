@@ -12,6 +12,7 @@ services:
       API_SECRET_KEY: ${API_SECRET_KEY:?Set API_SECRET_KEY in .env}
       TG_WEBHOOK_SECRET: ${TG_WEBHOOK_SECRET:-}
       TG_WEBHOOK_SECRET_OPTIONAL: ${TG_WEBHOOK_SECRET_OPTIONAL:-false}
+      OVH_DB_KEY: ${OVH_DB_KEY:-}
     ports:
       - "19998:19998"
     volumes:

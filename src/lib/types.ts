@@ -45,6 +45,8 @@ export interface HistoryEntry {
   purchaseTime: string;
   attemptCount?: number;
   price?: { withTax?: number; currency?: string };
+  orderStatus?: string;
+  orderStatusAt?: string;
 }
 
 /** 监控状态：后端 snake_case 为准，camelCase 仅兼容旧类型引用 */

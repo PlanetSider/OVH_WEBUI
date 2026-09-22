@@ -381,6 +381,23 @@ func TestMutateQueueWithHistoryForAccountRechecksDatabaseAccount(t *testing.T) {
 	}
 }
 
+func TestAttemptOutcomeRoundTrip(t *testing.T) {
+	state := &State{attemptOutcomes: make(map[string]AttemptOutcome)}
+	state.SetAttemptOutcome("task-transient", AttemptOutcome{Transient: true})
+	got, ok := state.TakeAttemptOutcome("task-transient")
+	if !ok || !got.Transient || got.CountFailure {
+		t.Fatalf("transient outcome = %#v, ok=%v", got, ok)
+	}
+	if _, ok := state.TakeAttemptOutcome("task-transient"); ok {
+		t.Fatal("outcome was not consumed")
+	}
+	state.SetAttemptOutcome("task-definitive", AttemptOutcome{CountFailure: true})
+	got, ok = state.TakeAttemptOutcome("task-definitive")
+	if !ok || !got.CountFailure || got.Transient {
+		t.Fatalf("definitive outcome = %#v, ok=%v", got, ok)
+	}
+}
+
 func TestCheckoutAttemptCleanupFailureKeepsPersistentDuplicateGuard(t *testing.T) {
 	cases := []struct {
 		name    string

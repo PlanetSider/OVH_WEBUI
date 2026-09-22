@@ -1,13 +1,16 @@
 package purchase
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 
 	ovhsdk "github.com/ovh/go-ovh/ovh"
+	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/catalog"
+	"github.com/ovh-webui/server/internal/types"
 )
 
 func TestCheckoutFailureIsDefinitive(t *testing.T) {
@@ -37,6 +40,50 @@ func TestCheckoutFailureIsDefinitive(t *testing.T) {
 				t.Fatalf("checkoutFailureIsDefinitive(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsTransient(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "rate limited", err: &ovhsdk.APIError{Code: 429}, want: true},
+		{name: "request timeout", err: &ovhsdk.APIError{Code: 408}, want: true},
+		{name: "value conflict", err: ovhsdk.APIError{Code: 409}, want: true},
+		{name: "value client closed request", err: ovhsdk.APIError{Code: 499}, want: true},
+		{name: "server error", err: &ovhsdk.APIError{Code: 503}, want: true},
+		{name: "business rejection", err: &ovhsdk.APIError{Code: 400}, want: false},
+		{name: "unauthorized", err: &ovhsdk.APIError{Code: 401}, want: false},
+		{name: "network reset", err: errors.New("connection reset by peer"), want: true},
+		{name: "unrelated error", err: errors.New("invalid cart payload"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsTransient(tt.err); got != tt.want {
+				t.Fatalf("IsTransient(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCancellationDoesNotConsumeFailureBudget(t *testing.T) {
+	if IsTransient(context.Canceled) {
+		t.Fatal("context cancellation must not be classified as transient retry work")
+	}
+	if !IsCancellation(errors.Join(errors.New("stage aborted"), context.Canceled)) {
+		t.Fatal("wrapped context cancellation was not recognized")
+	}
+	if !IsTransient(context.DeadlineExceeded) {
+		t.Fatal("context deadline should be treated as transient")
+	}
+	state := &app.State{}
+	item := &types.QueueItem{ID: "cancelled-task"}
+	state.SetAttemptOutcome(item.ID, app.AttemptOutcome{CountFailure: true})
+	markTransient(state, item, context.Canceled)
+	if _, ok := state.TakeAttemptOutcome(item.ID); ok {
+		t.Fatal("cancellation left a failure outcome behind")
 	}
 }
 

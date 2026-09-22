@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, getActiveServerControlAccount, setActiveServerControlAccount } from "@/lib/http";
+import { api, apiErrorText, getActiveServerControlAccount, setActiveServerControlAccount } from "@/lib/http";
 import { toast } from "sonner";
 
 export interface OVHAccount {
@@ -7,10 +7,12 @@ export interface OVHAccount {
   name: string;
   endpoint: string;
   zone: string;
-  appKey: string;
-  appSecret: string;
-  consumerKey: string;
+  appKey?: string;
+  appSecret?: string;
+  consumerKey?: string;
   iam: string;
+  proxyUrl?: string;
+  fingerprint?: string;
   isDefault: boolean;
   createdAt: string;
 }
@@ -23,6 +25,10 @@ export interface AccountInput {
   appSecret: string;
   consumerKey: string;
   iam?: string;
+  proxyUrl?: string;
+  fingerprint?: string;
+  clearProxy?: boolean;
+  clearFingerprint?: boolean;
   setDefault?: boolean;
 }
 
@@ -89,7 +95,7 @@ export function useCreateAccount() {
         toast.warning(`账户创建失败或 OVH 验证未通过，请检查凭据`);
       }
     },
-    onError: (e: any) => toast.error(e?.response?.data?.error || "创建失败"),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "创建失败")),
   });
 }
 
@@ -105,7 +111,7 @@ export function useUpdateAccount() {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
       toast.success("账户已更新");
     },
-    onError: (e: any) => toast.error(e?.response?.data?.error || "更新失败"),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "更新失败")),
   });
 }
 
@@ -129,7 +135,7 @@ export function useDeleteAccount() {
       qc.invalidateQueries({ queryKey: ["account"] });
       toast.success("账户已删除,关联数据一并清理");
     },
-    onError: (e: any) => toast.error(e?.response?.data?.error || "删除失败"),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "删除失败")),
   });
 }
 
@@ -142,7 +148,7 @@ export function useSetDefaultAccount() {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
       toast.success("已设为默认账户");
     },
-    onError: (e: any) => toast.error(e?.response?.data?.error || "设默认失败"),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "设默认失败")),
   });
 }
 

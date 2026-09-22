@@ -23,6 +23,11 @@ func (s *Store) LoadCredentials() (Credentials, bool, error) {
 	if err != nil {
 		return Credentials{}, false, fmt.Errorf("load weixin credentials: %w", err)
 	}
+	token, _, err := s.db.DecryptSecret(credentials.Token)
+	if err != nil {
+		return Credentials{}, false, fmt.Errorf("decrypt weixin bot token: %w", err)
+	}
+	credentials.Token = token
 	return credentials, true, nil
 }
 
@@ -30,15 +35,98 @@ func (s *Store) SaveCredentials(credentials Credentials) error {
 	if credentials.UpdatedAt == 0 {
 		credentials.UpdatedAt = time.Now().UnixMilli()
 	}
-	_, err := s.db.Exec(`INSERT INTO weixin_credentials(id, account_id, bot_token, base_url, user_id, updated_at)
+	token, err := s.db.EncryptSecret(credentials.Token)
+	if err != nil {
+		return fmt.Errorf("encrypt weixin bot token: %w", err)
+	}
+	_, err = s.db.Exec(`INSERT INTO weixin_credentials(id, account_id, bot_token, base_url, user_id, updated_at)
 		VALUES(1, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET account_id=excluded.account_id, bot_token=excluded.bot_token,
 		base_url=excluded.base_url, user_id=excluded.user_id, updated_at=excluded.updated_at`,
-		credentials.AccountID, credentials.Token, credentials.BaseURL, credentials.UserID, credentials.UpdatedAt)
+		credentials.AccountID, token, credentials.BaseURL, credentials.UserID, credentials.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("save weixin credentials: %w", err)
 	}
 	return nil
+}
+
+// MigrateSecrets converts legacy plaintext bot/context tokens in one
+// transaction. It validates encrypted rows before writing, so a wrong key
+// cannot replace or clear the original values.
+func (s *Store) MigrateSecrets() error {
+	type credentialRow struct {
+		ID    int    `db:"id"`
+		Token string `db:"bot_token"`
+	}
+	type contextRow struct {
+		AccountID string `db:"account_id"`
+		UserID    string `db:"user_id"`
+		Token     string `db:"context_token"`
+	}
+	var credentials []credentialRow
+	if err := s.db.Select(&credentials, `SELECT id, bot_token FROM weixin_credentials`); err != nil {
+		return fmt.Errorf("list weixin credentials for migration: %w", err)
+	}
+	var contexts []contextRow
+	if err := s.db.Select(&contexts, `SELECT account_id, user_id, context_token FROM weixin_context_tokens`); err != nil {
+		return fmt.Errorf("list weixin context tokens for migration: %w", err)
+	}
+	type credentialUpdate struct {
+		ID    int
+		Token string
+	}
+	type contextUpdate struct {
+		AccountID string
+		UserID    string
+		Token     string
+	}
+	credentialUpdates := make([]credentialUpdate, 0)
+	for _, row := range credentials {
+		plain, encrypted, err := s.db.DecryptSecret(row.Token)
+		if err != nil {
+			return fmt.Errorf("validate weixin bot token: %w", err)
+		}
+		if !encrypted && plain != "" {
+			ciphertext, err := s.db.EncryptSecret(plain)
+			if err != nil {
+				return fmt.Errorf("encrypt weixin bot token: %w", err)
+			}
+			credentialUpdates = append(credentialUpdates, credentialUpdate{ID: row.ID, Token: ciphertext})
+		}
+	}
+	contextUpdates := make([]contextUpdate, 0)
+	for _, row := range contexts {
+		plain, encrypted, err := s.db.DecryptSecret(row.Token)
+		if err != nil {
+			return fmt.Errorf("validate weixin context token: %w", err)
+		}
+		if !encrypted && plain != "" {
+			ciphertext, err := s.db.EncryptSecret(plain)
+			if err != nil {
+				return fmt.Errorf("encrypt weixin context token: %w", err)
+			}
+			contextUpdates = append(contextUpdates, contextUpdate{AccountID: row.AccountID, UserID: row.UserID, Token: ciphertext})
+		}
+	}
+	if len(credentialUpdates) == 0 && len(contextUpdates) == 0 {
+		return nil
+	}
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, update := range credentialUpdates {
+		if _, err := tx.Exec(`UPDATE weixin_credentials SET bot_token = ? WHERE id = ?`, update.Token, update.ID); err != nil {
+			return fmt.Errorf("persist weixin bot token migration: %w", err)
+		}
+	}
+	for _, update := range contextUpdates {
+		if _, err := tx.Exec(`UPDATE weixin_context_tokens SET context_token = ? WHERE account_id = ? AND user_id = ?`, update.Token, update.AccountID, update.UserID); err != nil {
+			return fmt.Errorf("persist weixin context token migration: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) DeleteAll() error {
@@ -85,13 +173,24 @@ func (s *Store) ContextToken(accountID, userID string) (string, error) {
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
-	return token, err
+	if err != nil {
+		return "", err
+	}
+	plain, _, err := s.db.DecryptSecret(token)
+	if err != nil {
+		return "", fmt.Errorf("decrypt weixin context token: %w", err)
+	}
+	return plain, nil
 }
 
 func (s *Store) SaveContextToken(accountID, userID, token string) error {
-	_, err := s.db.Exec(`INSERT INTO weixin_context_tokens(account_id, user_id, context_token, updated_at) VALUES(?, ?, ?, ?)
+	encrypted, err := s.db.EncryptSecret(token)
+	if err != nil {
+		return fmt.Errorf("encrypt weixin context token: %w", err)
+	}
+	_, err = s.db.Exec(`INSERT INTO weixin_context_tokens(account_id, user_id, context_token, updated_at) VALUES(?, ?, ?, ?)
 		ON CONFLICT(account_id, user_id) DO UPDATE SET context_token=excluded.context_token, updated_at=excluded.updated_at`,
-		accountID, userID, token, time.Now().UnixMilli())
+		accountID, userID, encrypted, time.Now().UnixMilli())
 	return err
 }
 

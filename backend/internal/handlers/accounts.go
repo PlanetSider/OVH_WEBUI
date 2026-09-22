@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	ovhsdk "github.com/ovh/go-ovh/ovh"
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/db"
+	"github.com/ovh-webui/server/internal/ovh"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -27,6 +26,10 @@ type accountInput struct {
 	AppSecret   string `json:"appSecret"`
 	ConsumerKey string `json:"consumerKey"`
 	IAM         string `json:"iam"`      // 可空,会自动生成 go-ovh-<zone>
+	ProxyURL    string `json:"proxyUrl"`
+	Fingerprint string `json:"fingerprint"`
+	ClearProxy  bool   `json:"clearProxy"`
+	ClearFingerprint bool `json:"clearFingerprint"`
 	SetDefault  bool   `json:"setDefault"`
 }
 
@@ -50,6 +53,8 @@ func (in *accountInput) normalize() {
 	in.AppSecret = strings.TrimSpace(in.AppSecret)
 	in.ConsumerKey = strings.TrimSpace(in.ConsumerKey)
 	in.IAM = strings.TrimSpace(in.IAM)
+	in.ProxyURL = strings.TrimSpace(in.ProxyURL)
+	in.Fingerprint = strings.TrimSpace(in.Fingerprint)
 	if in.Zone == "" {
 		in.Zone = "IE"
 	}
@@ -71,6 +76,8 @@ func (in *accountInput) normalizeUpdate() {
 	in.AppSecret = strings.TrimSpace(in.AppSecret)
 	in.ConsumerKey = strings.TrimSpace(in.ConsumerKey)
 	in.IAM = strings.TrimSpace(in.IAM)
+	in.ProxyURL = strings.TrimSpace(in.ProxyURL)
+	in.Fingerprint = strings.TrimSpace(in.Fingerprint)
 	if in.Zone != "" {
 		if in.Endpoint == "" {
 			in.Endpoint = endpointForZone(in.Zone)
@@ -88,6 +95,12 @@ func (in *accountInput) validate() string {
 	if in.AppKey == "" || in.AppSecret == "" || in.ConsumerKey == "" {
 		return "缺少 OVH 凭据 (appKey / appSecret / consumerKey)"
 	}
+	if err := ovh.ValidateProxyURL(in.ProxyURL); err != nil {
+		return "proxyUrl 无效: " + err.Error()
+	}
+	if err := ovh.ValidateFingerprint(in.Fingerprint); err != nil {
+		return "fingerprint 无效: " + err.Error()
+	}
 	return ""
 }
 
@@ -104,7 +117,7 @@ func ListAccounts(state *app.State) gin.HandlerFunc {
 		if accs == nil {
 			accs = []types.OVHAccount{}
 		}
-		c.JSON(http.StatusOK, gin.H{"accounts": accs, "total": len(accs)})
+		c.JSON(http.StatusOK, gin.H{"accounts": accountsResponse(accs), "total": len(accs)})
 	}
 }
 
@@ -121,7 +134,7 @@ func GetAccountByID(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, gin.H{"error": "账户不存在"})
 			return
 		}
-		c.JSON(http.StatusOK, acc)
+		c.JSON(http.StatusOK, toAccountResponse(acc))
 	}
 }
 
@@ -149,6 +162,8 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 			AppSecret:   in.AppSecret,
 			ConsumerKey: in.ConsumerKey,
 			IAM:         in.IAM,
+			ProxyURL:    in.ProxyURL,
+			Fingerprint: in.Fingerprint,
 			CreatedAt:   types.NowISO(),
 		}
 		// 新账户在凭据验证完成前不能发布到数据库和运行内存。否则验证
@@ -193,7 +208,7 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 
 		state.Logger.Info("创建账户: "+acc.Name+" ("+acc.Zone+") valid=true", "accounts")
 
-		c.JSON(http.StatusOK, gin.H{"account": acc, "valid": true})
+		c.JSON(http.StatusOK, gin.H{"account": toAccountResponse(acc), "valid": true})
 	}
 }
 
@@ -294,7 +309,7 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 		// 客户端参数有变更时已经在保存前验证；名称、默认标记等元数据
 		// 更新沿用原接口行为，在保存后返回当前凭据的实时验证结果。
 		valid := credentialsVerified || verifyOVHAccount(state, acc)
-		c.JSON(http.StatusOK, gin.H{"account": acc, "valid": valid})
+		c.JSON(http.StatusOK, gin.H{"account": toAccountResponse(acc), "valid": valid})
 	}
 }
 
@@ -448,6 +463,16 @@ func mergeAccountUpdate(existing types.OVHAccount, in accountInput) types.OVHAcc
 	if in.ConsumerKey != "" {
 		existing.ConsumerKey = in.ConsumerKey
 	}
+	if in.ClearProxy {
+		existing.ProxyURL = ""
+	} else if in.ProxyURL != "" {
+		existing.ProxyURL = in.ProxyURL
+	}
+	if in.ClearFingerprint {
+		existing.Fingerprint = ""
+	} else if in.Fingerprint != "" {
+		existing.Fingerprint = in.Fingerprint
+	}
 	existing.IsDefault = existing.IsDefault || in.SetDefault
 	return existing
 }
@@ -458,7 +483,9 @@ func accountClientConfigChanged(before, after types.OVHAccount) bool {
 	return before.Endpoint != after.Endpoint ||
 		before.AppKey != after.AppKey ||
 		before.AppSecret != after.AppSecret ||
-		before.ConsumerKey != after.ConsumerKey
+		before.ConsumerKey != after.ConsumerKey ||
+		before.ProxyURL != after.ProxyURL ||
+		before.Fingerprint != after.Fingerprint
 }
 
 // sameAccountSnapshot 是账户更新的轻量 CAS。OVHAccount 当前全部字段均为可比较
@@ -472,6 +499,8 @@ func sameAccountSnapshot(a, b types.OVHAccount) bool {
 		a.AppSecret == b.AppSecret &&
 		a.ConsumerKey == b.ConsumerKey &&
 		a.IAM == b.IAM &&
+		a.ProxyURL == b.ProxyURL &&
+		a.Fingerprint == b.Fingerprint &&
 		a.IsDefault == b.IsDefault &&
 		a.CreatedAt == b.CreatedAt
 }
@@ -488,12 +517,11 @@ func verifyOVHAccount(state *app.State, account types.OVHAccount) bool {
 		strings.TrimSpace(account.ConsumerKey) == "" {
 		return false
 	}
-	client, err := ovhsdk.NewClient(account.Endpoint, account.AppKey, account.AppSecret, account.ConsumerKey)
+	client, err := state.OVH.NewClientForAccount(account)
 	if err != nil {
 		state.Logger.Warn("verify account "+account.ID+": "+err.Error(), "accounts")
 		return false
 	}
-	client.Timeout = 30 * time.Second
 	var me map[string]interface{}
 	if err := client.Get("/me", &me); err != nil {
 		state.Logger.Warn("verify account "+account.ID+": "+err.Error(), "accounts")

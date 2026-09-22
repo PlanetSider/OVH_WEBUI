@@ -76,8 +76,14 @@ func processQueueTick(ctx context.Context, state *app.State) {
 		if a.QuickOrder != b.QuickOrder {
 			return a.QuickOrder
 		}
-		at, _ := time.Parse(time.RFC3339Nano, a.CreatedAt)
-		bt, _ := time.Parse(time.RFC3339Nano, b.CreatedAt)
+		at, aOK := types.ParseTS(a.CreatedAt)
+		bt, bOK := types.ParseTS(b.CreatedAt)
+		if aOK != bOK {
+			return aOK
+		}
+		if !aOK {
+			return a.CreatedAt > b.CreatedAt
+		}
 		return at.After(bt)
 	})
 
@@ -91,6 +97,9 @@ func processQueueTick(ctx context.Context, state *app.State) {
 	state.DeletedTaskIDsMu.Unlock()
 	for _, item := range sorted {
 		if _, removed := deleted[item.ID]; removed || item.Status != "running" {
+			continue
+		}
+		if state.IsAccountProxyPaused(item.AccountID) {
 			continue
 		}
 		retryInterval := effectiveRetryInterval(item)
@@ -158,6 +167,7 @@ func processQueueItem(ctx context.Context, state *app.State, candidate types.Que
 	}
 
 	if PurchaseServer(ctx, state, &snapshot) {
+		state.ClearAttemptOutcome(snapshot.ID)
 		state.Logger.Info("购买成功并已从队列原子移除: "+snapshot.PlanCode+" ("+snapshot.ID+")", "queue")
 		return
 	}
@@ -165,6 +175,17 @@ func processQueueItem(ctx context.Context, state *app.State, candidate types.Que
 	// 请求过程中删除/暂停任务。此时不能再进入 MaxRetries 终止分支，
 	// 以免覆盖隔离语义并输出误导日志。
 	if !state.IsQueueItemRunning(snapshot.ID) {
+		state.ClearAttemptOutcome(snapshot.ID)
+		return
+	}
+	outcome, hasOutcome := state.TakeAttemptOutcome(snapshot.ID)
+	if !hasOutcome {
+		// 没有阶段结果通常表示无货、取消或调用在进入业务阶段前失败；
+		// 保守地不消耗失败预算，仍由 retry interval 控制下一次尝试。
+		outcome = app.AttemptOutcome{}
+	}
+	if outcome.Transient {
+		state.Logger.Warn("任务因临时错误结束，本轮不消耗失败预算: "+snapshot.ID, "queue")
 		return
 	}
 	// PurchaseServer 执行期间用户可能编辑任务。是否达到上限必须使用当前
@@ -172,22 +193,34 @@ func processQueueItem(ctx context.Context, state *app.State, candidate types.Que
 	// 可能误删刚刚调高重试上限的任务。
 	terminated := false
 	err = state.MutateQueue(func(queue []types.QueueItem) ([]types.QueueItem, error) {
-		kept := make([]types.QueueItem, 0, len(queue))
-		for _, item := range queue {
-			if item.ID == snapshot.ID && item.Status == "running" &&
-				item.MaxRetries > 0 && item.RetryCount >= item.MaxRetries {
-				terminated = true
+		for i := range queue {
+			if queue[i].ID != snapshot.ID || queue[i].Status != "running" {
 				continue
 			}
-			kept = append(kept, item)
+			if outcome.CountFailure {
+				queue[i].FailureCount++
+			}
+			if queue[i].MaxRetries > 0 && queue[i].FailureCount >= queue[i].MaxRetries {
+				terminated = true
+			}
 		}
-		return kept, nil
+		if terminated {
+			kept := make([]types.QueueItem, 0, len(queue))
+			for _, item := range queue {
+				if item.ID == snapshot.ID && item.Status == "running" {
+					continue
+				}
+				kept = append(kept, item)
+			}
+			return kept, nil
+		}
+		return queue, nil
 	})
 	if err != nil {
-		state.Logger.Error("移除达到重试上限的任务失败: "+err.Error(), "queue")
+		state.Logger.Error("更新失败预算或移除达到上限任务失败: "+err.Error(), "queue")
 		return
 	}
 	if terminated {
-		state.Logger.Info("任务达到 MaxRetries 上限已终止: "+snapshot.PlanCode+" ("+snapshot.ID+")", "queue")
+		state.Logger.Info("任务达到 MaxRetries 失败预算上限已终止: "+snapshot.PlanCode+" ("+snapshot.ID+")", "queue")
 	}
 }

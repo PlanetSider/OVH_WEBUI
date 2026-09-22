@@ -11,6 +11,7 @@ import (
 
 	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/ovh"
+	"github.com/ovh-webui/server/internal/types"
 )
 
 // notification 单次状态变化通知（内部）
@@ -368,6 +369,10 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 	// 自动下单订阅必须使用指定账户的区域和价格判断库存；普通通知订阅
 	// 使用当前默认账户。
 	notificationAccountID := m.resolvePriceAccount(sub)
+	if m.state.IsAccountProxyPaused(notificationAccountID) {
+		m.state.Logger.Warn(fmt.Sprintf("跳过订阅 %s: 账户 %s 的代理已熔断，等待健康检查恢复", planCode, notificationAccountID), "monitor")
+		return
+	}
 	availabilityResult, err := catalog.CheckServerAvailabilityWithConfigsStrict(m.state, planCode, notificationAccountID)
 	if err != nil || len(availabilityResult.Configs) == 0 {
 		if err != nil {
@@ -906,12 +911,9 @@ func (m *Monitor) calcDuration(sub *Subscription, dc, configDisplay string, targ
 	if lastTS == "" {
 		return ""
 	}
-	startDT, err := time.Parse(time.RFC3339Nano, lastTS)
-	if err != nil {
-		startDT, err = time.Parse(time.RFC3339, lastTS)
-		if err != nil {
-			return ""
-		}
+	startDT, ok := types.ParseTS(lastTS)
+	if !ok {
+		return ""
 	}
 	delta := m.nowBeijing().Sub(startDT)
 	totalSec := int(delta.Seconds())

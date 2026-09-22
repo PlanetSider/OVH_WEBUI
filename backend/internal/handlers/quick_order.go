@@ -37,7 +37,7 @@ func enqueueQuickOrder(state *app.State, accountID, planCode, datacenter string,
 					entry.Status != "success" || fingerprint(entry.Options) != fp {
 					continue
 				}
-				if timestamp, err := time.Parse(time.RFC3339Nano, entry.PurchaseTime); err == nil && nowTS-timestamp.Unix() < 120 {
+				if timestamp, ok := types.ParseTS(entry.PurchaseTime); ok && nowTS-timestamp.Unix() < 120 {
 					return nil, fmt.Errorf("刚刚已成功下过同配置订单，稍后再试")
 				}
 			}

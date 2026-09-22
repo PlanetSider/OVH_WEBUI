@@ -254,7 +254,7 @@ func recentSuccessDuplicateInHistory(history []types.PurchaseHistoryEntry, accou
 		h := history[i]
 		if (accountID == "" || h.AccountID == accountID) && h.PlanCode == planCode && h.Datacenter == datacenter && h.Status == "success" &&
 			OptionsFingerprint(h.Options) == fp {
-			if t, err := time.Parse(time.RFC3339Nano, h.PurchaseTime); err == nil && nowTS-t.Unix() < 120 {
+			if t, ok := types.ParseTS(h.PurchaseTime); ok && nowTS-t.Unix() < 120 {
 				return true
 			}
 		}

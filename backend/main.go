@@ -24,6 +24,7 @@ import (
 	"github.com/ovh-webui/server/internal/logger"
 	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/purchase"
+	"github.com/ovh-webui/server/internal/secret"
 	"github.com/ovh-webui/server/internal/storage"
 	"github.com/ovh-webui/server/internal/vps"
 	"github.com/ovh-webui/server/internal/weixin"
@@ -52,7 +53,25 @@ func main() {
 	defer sqliteDB.Close()
 
 	lg := logger.New(paths.LogFile("app.log.json"), console)
-	cfgStore := config.New(sqliteDB)
+	dbCipher, keyInfo, keyErr := secret.LoadKey(paths.DataDir)
+	if keyErr != nil {
+		console.Error("load database encryption key", "err", keyErr, "source", keyInfo.Source, "path", keyInfo.Path)
+		os.Exit(1)
+	}
+	sqliteDB.SetSecretCipher(dbCipher)
+	if err := sqliteDB.MigrateAccountSecrets(); err != nil {
+		console.Error("migrate encrypted account credentials", "err", err)
+		os.Exit(1)
+	}
+	if err := weixin.NewStore(sqliteDB).MigrateSecrets(); err != nil {
+		console.Error("migrate encrypted Weixin tokens", "err", err)
+		os.Exit(1)
+	}
+	cfgStore, configErr := config.NewWithCipher(sqliteDB, dbCipher)
+	if configErr != nil {
+		console.Error("load encrypted configuration", "err", configErr)
+		os.Exit(1)
+	}
 	state := app.NewState(paths, cfgStore, lg, sqliteDB)
 	state.APIKey = strings.TrimSpace(os.Getenv("API_SECRET_KEY"))
 	allowInsecureKey := strings.EqualFold(os.Getenv("ALLOW_INSECURE_DEFAULT_KEY"), "true")
@@ -101,6 +120,16 @@ func main() {
 	go func() {
 		defer outboxWG.Done()
 		mon.RunNotificationOutboxLoop(outboxCtx)
+	}()
+
+	// 订单状态轮询只处理已有 order_id 的成功历史；状态写入 history 与
+	// 通知 outbox 由同一事务完成，且使用独立 context 参与优雅停机。
+	orderStatusCtx, cancelOrderStatus := context.WithCancel(context.Background())
+	var orderStatusWG sync.WaitGroup
+	orderStatusWG.Add(1)
+	go func() {
+		defer orderStatusWG.Done()
+		purchase.NewOrderStatusLoop(state).Run(orderStatusCtx)
 	}()
 
 	// Gin
@@ -212,6 +241,8 @@ func main() {
 		api.DELETE("/accounts/:id", handlers.DeleteAccountByID(state, mon))
 		api.POST("/accounts/:id/set-default", handlers.SetDefaultAccountByID(state))
 		api.POST("/accounts/:id/verify", handlers.VerifyAccount(state))
+		api.GET("/accounts/:id/proxy-status", handlers.AccountProxyStatus(state))
+		api.POST("/accounts/:id/proxy-reset", handlers.ResetAccountProxyGuard(state))
 		api.GET("/accounts/status", handlers.AccountsStatus(state))
 
 		// Feishu events / interactive cards
@@ -505,6 +536,7 @@ func main() {
 	}
 	cancelQueue()
 	cancelOutbox()
+	cancelOrderStatus()
 	stopHourlyDataRefresh()
 	weixinManager.Stop()
 	feishuConnection.Stop()
@@ -516,6 +548,7 @@ func main() {
 	vps.Stop(state)
 	queueWG.Wait()
 	outboxWG.Wait()
+	orderStatusWG.Wait()
 	state.SaveAll()
 	state.Logger.Flush()
 	console.Info("server stopped cleanly")

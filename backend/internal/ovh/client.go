@@ -27,14 +27,21 @@ type Factory struct {
 
 	mu    sync.Mutex
 	cache map[string]*ovh.Client // accountID → client
+	proxyHealth ProxyHealthReporter
 }
 
-// NewFactory 构造工厂。lookup 由 State 闭包注入。
-func NewFactory(cfg *config.Store, lookup AccountLookup) *Factory {
+// NewFactory 构造工厂。lookup 由 State 闭包注入；reporter 可选，负责接收
+// 已配置代理的 transport 健康事件。
+func NewFactory(cfg *config.Store, lookup AccountLookup, reporters ...ProxyHealthReporter) *Factory {
+	var reporter ProxyHealthReporter
+	if len(reporters) > 0 {
+		reporter = reporters[0]
+	}
 	return &Factory{
-		lookup:   lookup,
-		fallback: cfg,
-		cache:    map[string]*ovh.Client{},
+		lookup:      lookup,
+		fallback:    cfg,
+		cache:       map[string]*ovh.Client{},
+		proxyHealth: reporter,
 	}
 }
 
@@ -61,18 +68,44 @@ func (f *Factory) ClientFor(accountID string) (*ovh.Client, error) {
 	if cli, ok := f.cache[acc.ID]; ok {
 		return cli, nil
 	}
+	cli, err := f.buildClient(acc)
+	if err != nil {
+		return nil, err
+	}
+	f.cache[acc.ID] = cli
+	return cli, nil
+}
+
+// NewClientForAccount 创建不进入缓存的账户 client，供保存前验证新账户或
+// 显式健康检查使用。它仍使用同一套账户代理隔离与健康观察器。
+func (f *Factory) NewClientForAccount(acc types.OVHAccount) (*ovh.Client, error) {
+	return f.buildClient(acc)
+}
+
+func (f *Factory) buildClient(acc types.OVHAccount) (*ovh.Client, error) {
+	if acc.AppKey == "" || acc.AppSecret == "" || acc.ConsumerKey == "" {
+		return nil, fmt.Errorf("ovh account %s missing credentials", acc.ID)
+	}
 	cli, err := ovh.NewClient(acc.Endpoint, acc.AppKey, acc.AppSecret, acc.ConsumerKey)
 	if err != nil {
 		return nil, err
 	}
 	cli.Timeout = 30 * time.Second
-	f.cache[acc.ID] = cli
+	httpClient, err := BuildHTTPClient(acc.ProxyURL, acc.Fingerprint, cli.Timeout)
+	if err != nil {
+		return nil, fmt.Errorf("build account %s HTTP client: %w", acc.ID, err)
+	}
+	cli.Client = withProxyHealthReporter(httpClient, acc.ID, acc.ProxyURL, f.proxyHealth)
+	cli.UserAgent = FingerprintUserAgent(acc.Fingerprint)
 	return cli, nil
 }
 
 // Invalidate 清掉指定账户的缓存 client(更新 / 删除账户后调,避免拿到旧凭据)
 func (f *Factory) Invalidate(accountID string) {
 	f.mu.Lock()
+	if cli, ok := f.cache[accountID]; ok && cli != nil && cli.Client != nil {
+		cli.Client.CloseIdleConnections()
+	}
 	delete(f.cache, accountID)
 	f.mu.Unlock()
 }
@@ -80,6 +113,11 @@ func (f *Factory) Invalidate(accountID string) {
 // InvalidateAll 清全部缓存(比如重置 OVH 配置时)
 func (f *Factory) InvalidateAll() {
 	f.mu.Lock()
+	for _, cli := range f.cache {
+		if cli != nil && cli.Client != nil {
+			cli.Client.CloseIdleConnections()
+		}
+	}
 	f.cache = map[string]*ovh.Client{}
 	f.mu.Unlock()
 }
@@ -89,14 +127,13 @@ func (f *Factory) InvalidateAll() {
 //
 // Deprecated: 调用方应明确传 accountID。
 func (f *Factory) Client() (*ovh.Client, error) {
-	// 优先走 lookup 拿默认账户
+	// 有账户 lookup 时，账户是唯一凭据与代理来源；不能在查找失败后
+	// 静默退回旧 config，避免绕过账户级代理隔离。
 	if f.lookup != nil {
-		if cli, err := f.ClientFor(""); err == nil {
-			return cli, nil
-		}
-		// lookup 找不到任何账户,退到旧 cfg
+		return f.ClientFor("")
 	}
-	// fallback: 从 config.Store 拿凭据(老逻辑,P2 完全迁移后可删)
+	// 仅在没有注入 lookup 的兼容场景使用旧 config。该路径没有账户级代理
+	// 配置，生产 State 始终通过 ClientFor 进入上面的分支。
 	if f.fallback == nil {
 		return nil, fmt.Errorf("no default OVH account configured")
 	}

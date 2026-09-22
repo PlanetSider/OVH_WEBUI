@@ -43,6 +43,31 @@ function getExpirationMs(item: PurchaseHistory): number {
   return new Date(item.purchaseTime).getTime() + ORDER_VALIDITY_MS;
 }
 
+function orderStatusLabel(status?: string): string {
+  const normalized = status?.trim().toLowerCase();
+  if (!normalized) return "状态查询中";
+  const labels: Record<string, string> = {
+    delivered: "已交付",
+    cancelled: "已取消",
+    cancelledbycustomer: "客户已取消",
+    cancelledbycustomerrequest: "客户请求取消",
+    pending: "待处理",
+    awaitingpayment: "待支付",
+    paymentpending: "支付处理中",
+    processing: "处理中",
+  };
+  return labels[normalized] || status || "未知状态";
+}
+
+function orderStatusTone(status?: string): "default" | "success" | "warning" | "danger" | "info" {
+  const normalized = status?.trim().toLowerCase();
+  if (normalized === "delivered") return "success";
+  if (normalized?.startsWith("cancelled")) return "danger";
+  if (normalized === "pending" || normalized === "awaitingpayment" || normalized === "paymentpending") return "warning";
+  if (normalized === "processing") return "info";
+  return "default";
+}
+
 function HistoryPage() {
   const list = useHistory();
   const clear = useClearHistory();
@@ -57,7 +82,7 @@ function HistoryPage() {
     return () => clearInterval(id);
   }, []);
 
-  const items = list.data || [];
+  const items = useMemo(() => list.data || [], [list.data]);
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
     return items.filter((i) => {
@@ -99,7 +124,11 @@ function HistoryPage() {
                 className="pl-9 rounded-full"
               />
             </div>
-            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
+            <Select value={statusFilter} onValueChange={(value) => {
+              if (value === "all" || value === "success" || value === "failed" || value === "uncertain") {
+                setStatusFilter(value);
+              }
+            }}>
               <SelectTrigger className="rounded-full">
                 <SelectValue placeholder="所有状态" />
               </SelectTrigger>
@@ -203,13 +232,20 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
         )}
       </td>
       <td className="px-4 py-3">
-        {item.status === "success" ? (
-          <Chip tone="success">成功</Chip>
-        ) : item.status === "uncertain" ? (
-          <Chip tone="warning">待核实</Chip>
-        ) : (
-          <Chip tone="danger">失败</Chip>
-        )}
+        <div className="flex flex-wrap gap-1">
+          {item.status === "success" ? (
+            <Chip tone="success">成功</Chip>
+          ) : item.status === "uncertain" ? (
+            <Chip tone="warning">待核实</Chip>
+          ) : (
+            <Chip tone="danger">失败</Chip>
+          )}
+          {item.status === "success" && item.orderId ? (
+            <Chip tone={orderStatusTone(item.orderStatus)} title={item.orderStatusAt ? `更新于 ${item.orderStatusAt}` : undefined}>
+              订单：{orderStatusLabel(item.orderStatus)}
+            </Chip>
+          ) : null}
+        </div>
       </td>
       <td className="px-4 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
         {new Date(item.purchaseTime).toLocaleString("zh-CN", {
@@ -282,13 +318,20 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
             <AccountChip accountId={item.accountId} />
             <Chip tone="default" className="text-[10px]">{item.datacenter.toUpperCase()}</Chip>
           </div>
-          {item.status === "success" ? (
-            <Chip tone="success">成功</Chip>
-          ) : item.status === "uncertain" ? (
-            <Chip tone="warning">待核实</Chip>
-          ) : (
-            <Chip tone="danger">失败</Chip>
-          )}
+          <div className="flex flex-wrap gap-1">
+            {item.status === "success" ? (
+              <Chip tone="success">成功</Chip>
+            ) : item.status === "uncertain" ? (
+              <Chip tone="warning">待核实</Chip>
+            ) : (
+              <Chip tone="danger">失败</Chip>
+            )}
+            {item.status === "success" && item.orderId ? (
+              <Chip tone={orderStatusTone(item.orderStatus)} title={item.orderStatusAt ? `更新于 ${item.orderStatusAt}` : undefined}>
+                订单：{orderStatusLabel(item.orderStatus)}
+              </Chip>
+            ) : null}
+          </div>
         </div>
         <div className={`text-[11px] text-muted-foreground break-all ${isExpired ? "line-through" : ""}`}>
           {item.options && item.options.length > 0 ? item.options.join(", ") : "默认配置"}

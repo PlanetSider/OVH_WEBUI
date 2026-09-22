@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ovh-webui/server/internal/secret"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -25,26 +26,62 @@ type accountRow struct {
 	AppSecret   string `db:"app_secret"`
 	ConsumerKey string `db:"consumer_key"`
 	IAM         string `db:"iam"`
+	ProxyURL    string `db:"proxy_url"`
+	Fingerprint string `db:"fingerprint"`
 	IsDefault   int    `db:"is_default"`
 	CreatedAt   string `db:"created_at"`
 }
 
-func rowToAccount(r accountRow) types.OVHAccount {
+func (db *DB) rowToAccount(r accountRow) (types.OVHAccount, error) {
+	appKey, appSecret, consumerKey, proxyURL := r.AppKey, r.AppSecret, r.ConsumerKey, r.ProxyURL
+	cipher := db.secretCipher()
+	for name, value := range map[string]*string{
+		"app_key": &appKey, "app_secret": &appSecret, "consumer_key": &consumerKey, "proxy_url": &proxyURL,
+	} {
+		if secret.IsEncrypted(*value) {
+			if cipher == nil {
+				return types.OVHAccount{}, fmt.Errorf("encrypted account field %s requires a database key", name)
+			}
+			plain, _, err := cipher.Decrypt(*value)
+			if err != nil {
+				return types.OVHAccount{}, fmt.Errorf("decrypt account field %s: %w", name, err)
+			}
+			*value = plain
+		}
+	}
 	return types.OVHAccount{
 		ID:          r.ID,
 		Name:        r.Name,
 		Endpoint:    r.Endpoint,
 		Zone:        r.Zone,
-		AppKey:      r.AppKey,
-		AppSecret:   r.AppSecret,
-		ConsumerKey: r.ConsumerKey,
+		AppKey:      appKey,
+		AppSecret:   appSecret,
+		ConsumerKey: consumerKey,
 		IAM:         r.IAM,
+		ProxyURL:    proxyURL,
+		Fingerprint: r.Fingerprint,
 		IsDefault:   r.IsDefault == 1,
 		CreatedAt:   r.CreatedAt,
-	}
+	}, nil
 }
 
-func accountToRow(a types.OVHAccount) accountRow {
+func (db *DB) accountToRow(a types.OVHAccount) (accountRow, error) {
+	appKey, appSecret, consumerKey, proxyURL := a.AppKey, a.AppSecret, a.ConsumerKey, a.ProxyURL
+	if cipher := db.secretCipher(); cipher != nil {
+		var err error
+		if appKey, err = cipher.Encrypt(appKey); err != nil {
+			return accountRow{}, fmt.Errorf("encrypt app_key: %w", err)
+		}
+		if appSecret, err = cipher.Encrypt(appSecret); err != nil {
+			return accountRow{}, fmt.Errorf("encrypt app_secret: %w", err)
+		}
+		if consumerKey, err = cipher.Encrypt(consumerKey); err != nil {
+			return accountRow{}, fmt.Errorf("encrypt consumer_key: %w", err)
+		}
+		if proxyURL, err = cipher.Encrypt(proxyURL); err != nil {
+			return accountRow{}, fmt.Errorf("encrypt proxy_url: %w", err)
+		}
+	}
 	bi := 0
 	if a.IsDefault {
 		bi = 1
@@ -54,13 +91,15 @@ func accountToRow(a types.OVHAccount) accountRow {
 		Name:        a.Name,
 		Endpoint:    a.Endpoint,
 		Zone:        a.Zone,
-		AppKey:      a.AppKey,
-		AppSecret:   a.AppSecret,
-		ConsumerKey: a.ConsumerKey,
+		AppKey:      appKey,
+		AppSecret:   appSecret,
+		ConsumerKey: consumerKey,
 		IAM:         a.IAM,
+		ProxyURL:    proxyURL,
+		Fingerprint: a.Fingerprint,
 		IsDefault:   bi,
 		CreatedAt:   a.CreatedAt,
-	}
+	}, nil
 }
 
 // ListAccounts 取全部 OVH 账户,默认账户排最前,然后按创建时间
@@ -71,7 +110,11 @@ func (db *DB) ListAccounts() ([]types.OVHAccount, error) {
 	}
 	out := make([]types.OVHAccount, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, rowToAccount(r))
+		account, err := db.rowToAccount(r)
+		if err != nil {
+			return nil, fmt.Errorf("decode account %s: %w", r.ID, err)
+		}
+		out = append(out, account)
 	}
 	return out, nil
 }
@@ -86,7 +129,11 @@ func (db *DB) GetAccount(id string) (types.OVHAccount, bool, error) {
 	if err != nil {
 		return types.OVHAccount{}, false, fmt.Errorf("get account %s: %w", id, err)
 	}
-	return rowToAccount(r), true, nil
+	account, decodeErr := db.rowToAccount(r)
+	if decodeErr != nil {
+		return types.OVHAccount{}, false, fmt.Errorf("decode account %s: %w", id, decodeErr)
+	}
+	return account, true, nil
 }
 
 // GetDefaultAccount 取当前默认账户;无默认时返回 (zero, false, nil)
@@ -99,7 +146,11 @@ func (db *DB) GetDefaultAccount() (types.OVHAccount, bool, error) {
 	if err != nil {
 		return types.OVHAccount{}, false, fmt.Errorf("get default account: %w", err)
 	}
-	return rowToAccount(r), true, nil
+	account, decodeErr := db.rowToAccount(r)
+	if decodeErr != nil {
+		return types.OVHAccount{}, false, fmt.Errorf("decode default account: %w", decodeErr)
+	}
+	return account, true, nil
 }
 
 // CountAccounts 当前有多少账户
@@ -124,12 +175,15 @@ func (db *DB) UpsertAccount(a types.OVHAccount) error {
 			return fmt.Errorf("clear other defaults: %w", err)
 		}
 	}
-	r := accountToRow(a)
+	r, err := db.accountToRow(a)
+	if err != nil {
+		return err
+	}
 	_, err = tx.NamedExec(`
 		INSERT INTO ovh_accounts
-		(id, name, endpoint, zone, app_key, app_secret, consumer_key, iam, is_default, created_at)
+		(id, name, endpoint, zone, app_key, app_secret, consumer_key, iam, proxy_url, fingerprint, is_default, created_at)
 		VALUES
-		(:id, :name, :endpoint, :zone, :app_key, :app_secret, :consumer_key, :iam, :is_default, :created_at)
+		(:id, :name, :endpoint, :zone, :app_key, :app_secret, :consumer_key, :iam, :proxy_url, :fingerprint, :is_default, :created_at)
 		ON CONFLICT(id) DO UPDATE SET
 		  name         = excluded.name,
 		  endpoint     = excluded.endpoint,
@@ -138,10 +192,61 @@ func (db *DB) UpsertAccount(a types.OVHAccount) error {
 		  app_secret   = excluded.app_secret,
 		  consumer_key = excluded.consumer_key,
 		  iam          = excluded.iam,
+		  proxy_url    = excluded.proxy_url,
+		  fingerprint  = excluded.fingerprint,
 		  is_default   = excluded.is_default
 	`, r)
 	if err != nil {
 		return fmt.Errorf("upsert account %s: %w", a.ID, err)
+	}
+	return tx.Commit()
+}
+
+// MigrateAccountSecrets converts legacy plaintext account credentials and proxy
+// URLs in one transaction. A decrypt error stops before any write.
+func (db *DB) MigrateAccountSecrets() error {
+	cipher := db.secretCipher()
+	if cipher == nil {
+		return nil
+	}
+	var rows []accountRow
+	if err := db.Select(&rows, `SELECT * FROM ovh_accounts`); err != nil {
+		return fmt.Errorf("list account secrets: %w", err)
+	}
+	needsMigration := false
+	accounts := make([]accountRow, 0, len(rows))
+	for _, row := range rows {
+		if (row.AppKey != "" && !secret.IsEncrypted(row.AppKey)) ||
+			(row.AppSecret != "" && !secret.IsEncrypted(row.AppSecret)) ||
+			(row.ConsumerKey != "" && !secret.IsEncrypted(row.ConsumerKey)) ||
+			(row.ProxyURL != "" && !secret.IsEncrypted(row.ProxyURL)) {
+			needsMigration = true
+		}
+		account, err := db.rowToAccount(row)
+		if err != nil {
+			return fmt.Errorf("decode account %s for migration: %w", row.ID, err)
+		}
+		encrypted, err := db.accountToRow(account)
+		if err != nil {
+			return fmt.Errorf("encrypt account %s for migration: %w", row.ID, err)
+		}
+		accounts = append(accounts, encrypted)
+	}
+	if !needsMigration {
+		return nil
+	}
+	tx, err := db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, row := range accounts {
+		if _, err := tx.NamedExec(`
+			UPDATE ovh_accounts SET app_key=:app_key, app_secret=:app_secret,
+			consumer_key=:consumer_key, proxy_url=:proxy_url WHERE id=:id
+		`, row); err != nil {
+			return fmt.Errorf("persist account secret migration %s: %w", row.ID, err)
+		}
 	}
 	return tx.Commit()
 }

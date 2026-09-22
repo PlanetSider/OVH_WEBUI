@@ -12,10 +12,39 @@ import (
 	"github.com/ovh-webui/server/internal/types"
 )
 
+type settingsResponse struct {
+	types.Config
+	AppKeyConfigured              bool `json:"appKeyConfigured"`
+	AppSecretConfigured           bool `json:"appSecretConfigured"`
+	ConsumerKeyConfigured         bool `json:"consumerKeyConfigured"`
+	TelegramTokenConfigured       bool `json:"tgTokenConfigured"`
+	TelegramChatConfigured        bool `json:"tgChatIdConfigured"`
+	TelegramWebhookConfigured     bool `json:"tgWebhookSecretConfigured"`
+	FeishuAppSecretConfigured     bool `json:"feishuAppSecretConfigured"`
+	FeishuVerificationConfigured  bool `json:"feishuVerificationTokenConfigured"`
+	FeishuEncryptConfigured       bool `json:"feishuEncryptKeyConfigured"`
+}
+
+func toSettingsResponse(cfg types.Config) settingsResponse {
+	response := settingsResponse{
+		Config: cfg,
+		AppKeyConfigured: cfg.AppKey != "", AppSecretConfigured: cfg.AppSecret != "",
+		ConsumerKeyConfigured: cfg.ConsumerKey != "", TelegramTokenConfigured: cfg.TgToken != "",
+		TelegramChatConfigured: cfg.TgChatID != "", TelegramWebhookConfigured: cfg.TgWebhookSecret != "",
+		FeishuAppSecretConfigured: cfg.FeishuAppSecret != "",
+		FeishuVerificationConfigured: cfg.FeishuVerificationToken != "",
+		FeishuEncryptConfigured: cfg.FeishuEncryptKey != "",
+	}
+	response.AppKey, response.AppSecret, response.ConsumerKey = "", "", ""
+	response.TgToken, response.TgChatID, response.TgWebhookSecret = "", "", ""
+	response.FeishuAppSecret, response.FeishuVerificationToken, response.FeishuEncryptKey = "", "", ""
+	return response
+}
+
 // GetSettings GET /api/settings
 func GetSettings(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.JSON(http.StatusOK, state.Config.Get())
+		c.JSON(http.StatusOK, toSettingsResponse(state.Config.Get()))
 	}
 }
 

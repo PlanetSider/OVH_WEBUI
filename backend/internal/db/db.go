@@ -9,9 +9,12 @@ import (
 	_ "embed"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+
+	"github.com/ovh-webui/server/internal/secret"
 )
 
 //go:embed schema.sql
@@ -20,11 +23,51 @@ var schemaSQL string
 // DB 包装 *sqlx.DB，所有表的 CRUD 方法都挂在它上面（按文件分散）
 type DB struct {
 	*sqlx.DB
-	Path   string
-	Driver string // 当前实际使用的 driver 名（"sqlite3" / "sqlite"），便于日志展示
+	Path      string
+	Driver    string // 当前实际使用的 driver 名（"sqlite3" / "sqlite"），便于日志展示
+	secretMu  sync.RWMutex
+	cipher    *secret.Cipher
 }
 
-// Open 打开 SQLite 数据库，启动时调一次。
+func (db *DB) SetSecretCipher(cipher *secret.Cipher) {
+	db.secretMu.Lock()
+	db.cipher = cipher
+	db.secretMu.Unlock()
+}
+
+func (db *DB) secretCipher() *secret.Cipher {
+	db.secretMu.RLock()
+	cipher := db.cipher
+	db.secretMu.RUnlock()
+	return cipher
+}
+
+// EncryptSecret/DecryptSecret keep optional encrypted-at-rest fields at the
+// persistence boundary. With no configured cipher, legacy tests and old
+// callers retain plaintext compatibility; the production bootstrap always
+// installs a cipher before any credential store is opened.
+func (db *DB) EncryptSecret(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	cipher := db.secretCipher()
+	if cipher == nil {
+		return value, nil
+	}
+	return cipher.Encrypt(value)
+}
+
+func (db *DB) DecryptSecret(value string) (string, bool, error) {
+	if !secret.IsEncrypted(value) {
+		return value, false, nil
+	}
+	cipher := db.secretCipher()
+	if cipher == nil {
+		return "", true, fmt.Errorf("encrypted secret requires a database key")
+	}
+	return cipher.Decrypt(value)
+}
+
 // dataDir 是数据目录（与原 storage.Paths.DataDir 同一个），DB 文件落在 <dataDir>/sniper.db。
 //
 // PRAGMA 配置（两个 driver 等价，只是 DSN 语法不同）：
@@ -61,13 +104,28 @@ func (db *DB) migrate() error {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("exec schema: %w", err)
 	}
+	if err := db.addColumnIfMissing("ovh_accounts", "proxy_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("ovh_accounts", "fingerprint", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("queue", "account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := db.addColumnIfMissing("queue", "discontinued", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := db.addColumnIfMissing("queue", "failure_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("history", "account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("history", "order_status", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("history", "order_status_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {

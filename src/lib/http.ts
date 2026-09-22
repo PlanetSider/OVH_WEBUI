@@ -18,6 +18,11 @@ import axios, {
 } from "axios";
 import { toast } from "sonner";
 
+export function apiErrorText(error: unknown, fallback: string): string {
+  const value = error as { response?: { data?: { error?: string; message?: string } }; message?: string };
+  return value.response?.data?.error || value.response?.data?.message || value.message || fallback;
+}
+
 // ─── storage keys ───────────────────────────────────────────
 
 export const API_KEY_STORAGE = "ovh_sniper_api_key";

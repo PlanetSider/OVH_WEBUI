@@ -34,6 +34,8 @@ type historyRow struct {
 	AttemptCount   int            `db:"attempt_count"`
 	ExpirationTime string         `db:"expiration_time"`
 	PriceJSON      sql.NullString `db:"price"`
+	OrderStatus    string         `db:"order_status"`
+	OrderStatusAt  string         `db:"order_status_at"`
 }
 
 func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
@@ -71,6 +73,8 @@ func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
 		AttemptCount:   r.AttemptCount,
 		ExpirationTime: r.ExpirationTime,
 		Price:          price,
+		OrderStatus:    r.OrderStatus,
+		OrderStatusAt:  r.OrderStatusAt,
 	}
 }
 
@@ -95,6 +99,8 @@ func historyToRow(h types.PurchaseHistoryEntry) (historyRow, error) {
 		PurchaseTime:   h.PurchaseTime,
 		AttemptCount:   h.AttemptCount,
 		ExpirationTime: h.ExpirationTime,
+		OrderStatus:    h.OrderStatus,
+		OrderStatusAt:  h.OrderStatusAt,
 	}
 	if h.ErrorMessage != nil {
 		row.ErrorMessage = sql.NullString{String: *h.ErrorMessage, Valid: true}
@@ -107,6 +113,47 @@ func historyToRow(h types.PurchaseHistoryEntry) (historyRow, error) {
 		row.PriceJSON = sql.NullString{String: string(priceJSON), Valid: true}
 	}
 	return row, nil
+}
+
+// ListHistory 取全部抢购历史，按时间倒序
+func (db *DB) ListOrderStatusCandidates() ([]types.PurchaseHistoryEntry, error) {
+	var rows []historyRow
+	if err := db.Select(&rows, `SELECT * FROM history WHERE status = 'success' AND order_id != '' AND account_id != '' ORDER BY purchase_time DESC`); err != nil {
+		return nil, fmt.Errorf("list order status candidates: %w", err)
+	}
+	out := make([]types.PurchaseHistoryEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, rowToHistory(r))
+	}
+	return out, nil
+}
+
+// UpdateHistoryOrderStatusWithNotification 在同一事务中更新订单状态并创建可选的
+// outbox 事件。调用方只有在事务成功后才能发布新的内存历史快照。
+func (db *DB) UpdateHistoryOrderStatusWithNotification(id, status, statusAt string, notification *types.NotificationOutboxEntry) error {
+	tx, err := db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`UPDATE history SET order_status = ?, order_status_at = ? WHERE id = ?`, status, statusAt, id)
+	if err != nil {
+		return fmt.Errorf("update history order status %s: %w", id, err)
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("check history order status %s: %w", id, err)
+	} else if n != 1 {
+		return fmt.Errorf("history order status %s not found", id)
+	}
+	if notification != nil {
+		if err := insertNotificationOutboxTx(tx, *notification); err != nil {
+			return fmt.Errorf("enqueue order status notification %s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit order status %s: %w", id, err)
+	}
+	return nil
 }
 
 // ListHistory 取全部抢购历史，按时间倒序
@@ -140,10 +187,10 @@ func (db *DB) ReplaceHistory(items []types.PurchaseHistoryEntry) error {
 		_, err = tx.NamedExec(`
 			INSERT INTO history
 			(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
-			 error_message, purchase_time, attempt_count, expiration_time, price)
+			 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at)
 			VALUES
 			(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
-			 :error_message, :purchase_time, :attempt_count, :expiration_time, :price)
+			 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at)
 		`, r)
 		if err != nil {
 			return fmt.Errorf("insert history %s: %w", h.ID, err)
@@ -203,10 +250,10 @@ func (db *DB) CommitPurchaseSuccessWithNotification(entry types.PurchaseHistoryE
 	if _, err := tx.NamedExec(`
 		INSERT INTO history
 		(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
-		 error_message, purchase_time, attempt_count, expiration_time, price)
+		 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at)
 		VALUES
 		(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
-		 :error_message, :purchase_time, :attempt_count, :expiration_time, :price)
+		 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at)
 	`, r); err != nil {
 		return fmt.Errorf("insert successful history for task %s: %w", entry.TaskID, err)
 	}
@@ -379,10 +426,10 @@ func (db *DB) RecoverCheckoutAttempts(notificationChannels []string) (recoveredS
 				if _, err := tx.NamedExec(`
 					INSERT INTO history
 					(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
-					 error_message, purchase_time, attempt_count, expiration_time, price)
+					 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at)
 					VALUES
 					(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
-					 :error_message, :purchase_time, :attempt_count, :expiration_time, :price)
+					 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at)
 				`, r); err != nil {
 					return 0, 0, fmt.Errorf("insert uncertain checkout history %s: %w", attempt.TaskID, err)
 				}
@@ -439,10 +486,10 @@ func (db *DB) RecoverCheckoutAttempts(notificationChannels []string) (recoveredS
 			if _, err := tx.NamedExec(`
 				INSERT INTO history
 				(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
-				 error_message, purchase_time, attempt_count, expiration_time, price)
+				 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at)
 				VALUES
 				(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
-				 :error_message, :purchase_time, :attempt_count, :expiration_time, :price)
+				 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at)
 			`, r); err != nil {
 				return 0, 0, fmt.Errorf("insert recovered history %s: %w", attempt.TaskID, err)
 			}

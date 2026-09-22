@@ -66,6 +66,8 @@ sudo chown -R 100:100 data
 API_SECRET_KEY=替换为强随机密钥
 TG_WEBHOOK_SECRET=可选的随机密钥
 TG_WEBHOOK_SECRET_OPTIONAL=false
+# 可选：敏感凭据 AES-GCM 密钥；未设置时首次启动自动写入 data/config.key
+OVH_DB_KEY=
 ```
 
 如果 GHCR 镜像是私有的，先登录：

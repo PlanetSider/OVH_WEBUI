@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/http";
+import { api, apiErrorText } from "@/lib/http";
 import { qk } from "@/lib/query";
 import { toast } from "sonner";
 
@@ -7,21 +7,30 @@ export interface SettingsConfig {
   appKey?: string;
   appSecret?: string;
   consumerKey?: string;
+  appKeyConfigured?: boolean;
+  appSecretConfigured?: boolean;
+  consumerKeyConfigured?: boolean;
   endpoint?: string;
   zone?: string;
   iam?: string;
   tgToken?: string;
   tgChatId?: string;
+  tgTokenConfigured?: boolean;
+  tgChatIdConfigured?: boolean;
+  tgWebhookSecretConfigured?: boolean;
   tgNotificationsEnabled?: boolean;
   webhookUrl?: string;
   feishuEnabled?: boolean;
   feishuNotificationsEnabled?: boolean;
   feishuAppId?: string;
   feishuAppSecret?: string;
+  feishuAppSecretConfigured?: boolean;
   feishuDomain?: "feishu" | "lark";
   feishuConnectionMode?: "webhook" | "long_connection";
   feishuVerificationToken?: string;
   feishuEncryptKey?: string;
+  feishuVerificationTokenConfigured?: boolean;
+  feishuEncryptKeyConfigured?: boolean;
   weixinNotificationsEnabled?: boolean;
 }
 
@@ -30,11 +39,6 @@ export interface FeishuBinding {
   openId?: string;
   name?: string;
   updatedAt?: string;
-}
-
-function apiErrorText(error: unknown, fallback: string) {
-  const value = error as { response?: { data?: { error?: string; message?: string } }; message?: string };
-  return value.response?.data?.error || value.response?.data?.message || value.message || fallback;
 }
 
 export function useFeishuBinding(enabled = true) {
@@ -58,7 +62,7 @@ export interface FeishuRegistrationStatus {
   status: "pending" | "complete" | "denied" | "expired" | "error";
   retryAfter?: number;
   appId?: string;
-  appSecret?: string;
+  appSecretConfigured?: boolean;
   domain?: "feishu" | "lark";
   bound?: boolean;
   error?: string;

@@ -30,6 +30,18 @@ type catalogStatusPayload struct {
 	Recovered  bool   `json:"recovered"`
 }
 
+type orderStatusPayload struct {
+	TaskID      string `json:"taskId"`
+	AccountID   string `json:"accountId"`
+	PlanCode    string `json:"planCode"`
+	Datacenter  string `json:"datacenter"`
+	OrderID     string `json:"orderId"`
+	OrderURL    string `json:"orderUrl"`
+	OldStatus   string `json:"oldStatus,omitempty"`
+	OrderStatus string `json:"orderStatus"`
+	StatusAt    string `json:"statusAt"`
+}
+
 func NewPurchaseSuccessNotification(item types.QueueItem, orderID, orderURL string, channels []string) (*types.NotificationOutboxEntry, error) {
 	channels = canonicalNotificationChannels(channels)
 	payload, err := json.Marshal(purchaseSuccessPayload{
@@ -43,6 +55,26 @@ func NewPurchaseSuccessNotification(item types.QueueItem, orderID, orderURL stri
 	return &types.NotificationOutboxEntry{
 		EventKey: "purchase_success:" + item.ID, Kind: NotificationKindPurchaseSuccess,
 		Payload: string(payload), Channels: channels, AwaitingChannels: len(channels) == 0,
+	}, nil
+}
+
+func NewOrderStatusNotification(entry types.PurchaseHistoryEntry, oldStatus string, channels []string) (*types.NotificationOutboxEntry, error) {
+	if strings.TrimSpace(entry.TaskID) == "" || strings.TrimSpace(entry.OrderID) == "" || strings.TrimSpace(entry.OrderStatus) == "" {
+		return nil, fmt.Errorf("order status notification 缺少 taskId、orderId 或 orderStatus")
+	}
+	channels = canonicalNotificationChannels(channels)
+	payload, err := json.Marshal(orderStatusPayload{
+		TaskID: entry.TaskID, AccountID: entry.AccountID, PlanCode: entry.PlanCode,
+		Datacenter: entry.Datacenter, OrderID: entry.OrderID, OrderURL: entry.OrderURL,
+		OldStatus: oldStatus, OrderStatus: entry.OrderStatus, StatusAt: entry.OrderStatusAt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode order status notification: %w", err)
+	}
+	return &types.NotificationOutboxEntry{
+		EventKey: fmt.Sprintf("order_status:%s:%s:%s", entry.OrderID, entry.OrderStatus, entry.OrderStatusAt),
+		Kind: NotificationKindOrderStatus, Payload: string(payload), Channels: channels,
+		AwaitingChannels: len(channels) == 0,
 	}, nil
 }
 
@@ -95,6 +127,11 @@ func purchaseSuccessMessage(payload purchaseSuccessPayload) string {
 	return msg + "\n抢购任务ID: " + payload.TaskID
 }
 
+func orderStatusMessage(payload orderStatusPayload) string {
+	return fmt.Sprintf("📦 OVH 订单状态更新\n\n型号: %s\n数据中心: %s\n订单 ID: %s\n状态: %s\n订单链接: %s\n任务ID: %s",
+		payload.PlanCode, payload.Datacenter, payload.OrderID, payload.OrderStatus, payload.OrderURL, payload.TaskID)
+}
+
 func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (NotificationDeliveryResult, error) {
 	result := NotificationDeliveryResult{}
 	switch entry.Kind {
@@ -107,6 +144,25 @@ func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (Noti
 			return result, fmt.Errorf("解析新服务器通知失败: payload 为空对象")
 		}
 		return m.SendNewServerAlert(server, entry.Channels), nil
+	case NotificationKindOrderStatus:
+		var payload orderStatusPayload
+		if err := json.Unmarshal([]byte(entry.Payload), &payload); err != nil {
+			return result, fmt.Errorf("解析订单状态通知失败: %w", err)
+		}
+		if strings.TrimSpace(payload.TaskID) == "" || strings.TrimSpace(payload.OrderID) == "" || strings.TrimSpace(payload.OrderStatus) == "" {
+			return result, fmt.Errorf("解析订单状态通知失败: 缺少 taskId、orderId 或 orderStatus")
+		}
+		msg := orderStatusMessage(payload)
+		if notificationChannelSelected(entry.Channels, NotificationChannelTelegram) {
+			result[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
+		}
+		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
+			result[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "📦 OVH 订单状态更新", msg, "blue", nil)
+		}
+		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
+			result[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)
+		}
+		return result, nil
 	case NotificationKindPurchaseSuccess:
 		var payload purchaseSuccessPayload
 		if err := json.Unmarshal([]byte(entry.Payload), &payload); err != nil {

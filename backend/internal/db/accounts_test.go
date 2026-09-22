@@ -2,8 +2,10 @@ package db
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/ovh-webui/server/internal/secret"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -12,6 +14,93 @@ func testAccount(id, createdAt string, isDefault bool) types.OVHAccount {
 		ID: id, Name: id, Endpoint: "ovh-eu", Zone: "IE", AppKey: "app-key",
 		AppSecret: "app-secret", ConsumerKey: "consumer-key", IAM: "go-ovh-ie",
 		IsDefault: isDefault, CreatedAt: createdAt,
+	}
+}
+
+
+func TestMigrateAccountSecretsEncryptsLegacyValues(t *testing.T) {
+	database, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	account := testAccount("legacy-secret", "2026-01-01T00:00:00Z", true)
+	account.ProxyURL = "http://user:secret@127.0.0.1:8080"
+	if err := database.UpsertAccount(account); err != nil {
+		t.Fatal(err)
+	}
+	cipher, _ := secret.New([]byte(strings.Repeat("m", 32)))
+	database.SetSecretCipher(cipher)
+	if err := database.MigrateAccountSecrets(); err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		AppKey  string `db:"app_key"`
+		ProxyURL string `db:"proxy_url"`
+	}
+	if err := database.Get(&raw, `SELECT app_key, proxy_url FROM ovh_accounts WHERE id = ?`, account.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !secret.IsEncrypted(raw.AppKey) || !secret.IsEncrypted(raw.ProxyURL) {
+		t.Fatalf("raw account values were not encrypted: %+v", raw)
+	}
+	if err := database.MigrateAccountSecrets(); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := database.GetAccount(account.ID)
+	if err != nil || !ok || got.AppKey != account.AppKey || got.ProxyURL != account.ProxyURL {
+		t.Fatalf("round trip = %#v ok=%v err=%v", got, ok, err)
+	}
+}
+
+func TestUpsertAccountEncryptsNewValues(t *testing.T) {
+	database, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	cipher, _ := secret.New([]byte(strings.Repeat("n", 32)))
+	database.SetSecretCipher(cipher)
+	account := testAccount("encrypted-new", "2026-01-01T00:00:00Z", true)
+	account.ProxyURL = "https://user:password@proxy.example:443"
+	if err := database.UpsertAccount(account); err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		AppKey    string `db:"app_key"`
+		AppSecret string `db:"app_secret"`
+		ProxyURL  string `db:"proxy_url"`
+	}
+	if err := database.Get(&raw, `SELECT app_key, app_secret, proxy_url FROM ovh_accounts WHERE id = ?`, account.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !secret.IsEncrypted(raw.AppKey) || !secret.IsEncrypted(raw.AppSecret) || !secret.IsEncrypted(raw.ProxyURL) {
+		t.Fatalf("new account values were not encrypted: %+v", raw)
+	}
+	got, ok, err := database.GetAccount(account.ID)
+	if err != nil || !ok || got.AppSecret != account.AppSecret || got.ProxyURL != account.ProxyURL {
+		t.Fatalf("decrypted account = %#v ok=%v err=%v", got, ok, err)
+	}
+}
+
+func TestAccountProxyFieldsRoundTrip(t *testing.T) {
+	database, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	account := testAccount("proxy-account", "2026-01-01T00:00:00Z", true)
+	account.ProxyURL = "socks5h://user:secret@127.0.0.1:1080"
+	account.Fingerprint = "ua:test-client"
+	if err := database.UpsertAccount(account); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := database.GetAccount(account.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetAccount() = %#v, ok=%v, err=%v", got, ok, err)
+	}
+	if got.ProxyURL != account.ProxyURL || got.Fingerprint != account.Fingerprint {
+		t.Fatalf("proxy fields = %#v, want %#v", got, account)
 	}
 }
 

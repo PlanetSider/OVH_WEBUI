@@ -142,6 +142,7 @@ func (m *Monitor) WithPersistenceGuard(mutate func() error) error {
 func (m *Monitor) loadFromDBLocked() error {
 	subs, err := m.state.DB.ListMonitorSubscriptions()
 	if err != nil {
+		m.state.MarkLoadFailed("monitor_subscriptions", err)
 		m.state.Logger.Error("加载监控订阅失败（不会写回空列表，也不会启动监控）: "+err.Error(), "monitor")
 		m.subsMu.Lock()
 		m.subscriptions = []*Subscription{}
@@ -154,6 +155,7 @@ func (m *Monitor) loadFromDBLocked() error {
 	known := []string{}
 	knownInitialized, err := m.state.DB.GetKV("monitor_known_servers", &known)
 	if err != nil {
+		m.state.MarkLoadFailed("monitor_known_servers", err)
 		m.state.Logger.Error("加载已知服务器失败（不会启动监控）: "+err.Error(), "monitor")
 		m.subsMu.Lock()
 		m.subscriptions = []*Subscription{}
@@ -166,6 +168,8 @@ func (m *Monitor) loadFromDBLocked() error {
 
 	m.subsMu.Lock()
 	defer m.subsMu.Unlock()
+	m.state.ClearLoadFailure("monitor_subscriptions")
+	m.state.ClearLoadFailure("monitor_known_servers")
 	m.subscriptions = make([]*Subscription, 0, len(subs))
 	for _, s := range subs {
 		m.subscriptions = append(m.subscriptions, fromDBSub(s))
@@ -187,6 +191,12 @@ func (m *Monitor) loadFromDBLocked() error {
 
 // SaveToDB 把订阅 + known_servers 写回 SQLite
 func (m *Monitor) SaveToDB() error {
+	if err := m.state.SaveBlocked("monitor_subscriptions"); err != nil {
+		return err
+	}
+	if err := m.state.SaveBlocked("monitor_known_servers"); err != nil {
+		return err
+	}
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	m.subsMu.Lock()
@@ -244,6 +254,9 @@ func (m *Monitor) persistSubscriptionLocked(sub *Subscription) error {
 // MutateSubscriptions 串行修改订阅，并且只在 SQLite 全表替换成功后发布
 // 新内存快照。mutate 收到的是深副本，可以安全修改。
 func (m *Monitor) MutateSubscriptions(mutate func([]*Subscription) ([]*Subscription, error)) error {
+	if err := m.state.SaveBlocked("monitor_subscriptions"); err != nil {
+		return err
+	}
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	m.subsMu.Lock()

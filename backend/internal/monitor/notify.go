@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ovh-webui/server/internal/telegram"
+	"github.com/ovh-webui/server/internal/types"
 )
 
 var dcDisplayMapCN = map[string]string{
@@ -110,7 +111,7 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 		msg.WriteString("\n")
 		if dtStr, ok := dcInfo["detected_time"].(string); ok && dtStr != "" {
-			if t, err := time.Parse(time.RFC3339Nano, dtStr); err == nil {
+			if t, ok := types.ParseTS(dtStr); ok {
 				detectedTimes = append(detectedTimes, t)
 			}
 		}
@@ -351,7 +352,7 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 			msg.WriteString("⏱️ 上次无货→本次有货: " + strings.TrimPrefix(durationText, "历时 ") + "\n")
 		}
 		if detectedTime != "" {
-			if t, err := time.Parse(time.RFC3339Nano, detectedTime); err == nil {
+			if t, ok := types.ParseTS(detectedTime); ok {
 				delay := pushTime.Sub(t)
 				secs := int(delay.Seconds())
 				minutes := secs / 60

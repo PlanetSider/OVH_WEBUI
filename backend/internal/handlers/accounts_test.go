@@ -114,6 +114,35 @@ func TestSameAccountSnapshotDetectsConcurrentChanges(t *testing.T) {
 	}
 }
 
+func TestSameAccountSnapshotDetectsProxyChanges(t *testing.T) {
+	base := testExistingAccount()
+	changed := base
+	changed.ProxyURL = "http://127.0.0.1:8080"
+	if sameAccountSnapshot(base, changed) {
+		t.Fatal("proxy change should invalidate account snapshot")
+	}
+	if !accountClientConfigChanged(base, changed) {
+		t.Fatal("proxy change should require client verification")
+	}
+}
+
+func TestRedactProxyURLRemovesCredentials(t *testing.T) {
+	got := redactProxyURL("http://user:secret@127.0.0.1:8080?token=secret")
+	if got != "http://127.0.0.1:8080" {
+		t.Fatalf("redacted proxy = %q", got)
+	}
+}
+
+func TestAccountResponseOmitsCredentials(t *testing.T) {
+	response := toAccountResponse(testExistingAccount())
+	if response.AppKey != "" || response.AppSecret != "" || response.ConsumerKey != "" {
+		t.Fatalf("credentials leaked in response: %+v", response)
+	}
+	if !response.AppKeyConfigured || !response.AppSecretConfigured || !response.ConsumerKeyConfigured {
+		t.Fatalf("configured flags = %+v", response)
+	}
+}
+
 func TestSetDefaultAccountByIDReturnsNotFound(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	database, err := db.Open(t.TempDir())

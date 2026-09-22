@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS ovh_accounts (
   app_secret   TEXT NOT NULL,
   consumer_key TEXT NOT NULL,
   iam          TEXT NOT NULL,
+  proxy_url    TEXT NOT NULL DEFAULT '',
+  fingerprint  TEXT NOT NULL DEFAULT '',
   is_default   INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL
 );
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS queue (
   updated_at             TEXT NOT NULL,
   retry_interval         INTEGER NOT NULL DEFAULT 60,
   retry_count            INTEGER NOT NULL DEFAULT 0,
+  failure_count          INTEGER NOT NULL DEFAULT 0,
   max_retries            INTEGER NOT NULL DEFAULT 0,
   last_check_time        REAL    NOT NULL DEFAULT 0,
   quick_order            INTEGER NOT NULL DEFAULT 0,
@@ -73,7 +76,9 @@ CREATE TABLE IF NOT EXISTS history (
   purchase_time   TEXT NOT NULL,
   attempt_count   INTEGER NOT NULL DEFAULT 0,
   expiration_time TEXT NOT NULL DEFAULT '',
-  price           TEXT                        -- JSON nullable (PriceInfo)
+  price           TEXT,                       -- JSON nullable (PriceInfo)
+  order_status    TEXT NOT NULL DEFAULT '',
+  order_status_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_history_status        ON history(status);
 CREATE INDEX IF NOT EXISTS idx_history_purchase_time ON history(purchase_time DESC);

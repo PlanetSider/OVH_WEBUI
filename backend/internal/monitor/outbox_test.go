@@ -53,6 +53,23 @@ func TestDispatchOutboxEntryRejectsInvalidOrUnknownPayload(t *testing.T) {
 	}
 }
 
+func TestNewOrderStatusNotificationUsesStableIdentity(t *testing.T) {
+	entry, err := NewOrderStatusNotification(types.PurchaseHistoryEntry{
+		TaskID: "task-1", AccountID: "account-1", PlanCode: "24sk10", Datacenter: "gra",
+		OrderID: "order-1", OrderURL: "https://example.invalid/order-1",
+		OrderStatus: "delivered", OrderStatusAt: "2026-09-22T13:44:26.123456",
+	}, "pending", []string{"telegram", "telegram", "feishu"})
+	if err != nil || entry == nil {
+		t.Fatalf("entry=%#v err=%v", entry, err)
+	}
+	if entry.EventKey != "order_status:order-1:delivered:2026-09-22T13:44:26.123456" || entry.Kind != NotificationKindOrderStatus {
+		t.Fatalf("entry identity = %#v", entry)
+	}
+	if !strings.Contains(entry.Payload, `"oldStatus":"pending"`) || !strings.Contains(entry.Payload, `"orderStatus":"delivered"`) {
+		t.Fatalf("payload = %s", entry.Payload)
+	}
+}
+
 func TestNewCatalogStatusNotificationUsesStableTransitionIdentity(t *testing.T) {
 	entry, err := NewCatalogStatusNotification("抢购", "24sk502", "KS-5", "1700000000", false, []string{"telegram", "telegram", "feishu"})
 	if err != nil || entry == nil {

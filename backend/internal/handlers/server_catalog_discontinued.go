@@ -110,7 +110,7 @@ func advanceDiscontinuedPlans(
 
 	for _, code := range codes {
 		trackedPlan := tracked[code]
-		record := records[code]
+		record, hadPriorRecord := records[code]
 		if plan, ok := current[code]; ok {
 			if name := strings.TrimSpace(plan.Name); name != "" {
 				record.ServerName = name
@@ -146,6 +146,12 @@ func advanceDiscontinuedPlans(
 		}
 		if record.MissingSince <= 0 {
 			record.MissingSince = float64(now.Unix())
+			// 目录只在启动补采和整点刷新时更新。已有 active tracker
+			// 记录意味着该型号在上一轮仍存在，因此本轮缺失已经覆盖
+			// 一个完整刷新间隔；首次观察到的缺失则仍从当前时刻计时。
+			if hadPriorRecord && strings.TrimSpace(record.ServerName) != "" && !record.Discontinued {
+				record.MissingSince = float64(now.Unix() - int64(types.DiscontinuedCheckIntervalSeconds))
+			}
 		}
 		if record.CycleID == "" {
 			record.CycleID = catalogDiscontinuedCycleID(record.MissingSince)

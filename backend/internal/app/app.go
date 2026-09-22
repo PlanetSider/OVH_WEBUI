@@ -15,6 +15,7 @@ import (
 	"github.com/ovh-webui/server/internal/db"
 	"github.com/ovh-webui/server/internal/logger"
 	"github.com/ovh-webui/server/internal/ovh"
+	"github.com/ovh-webui/server/internal/proxyguard"
 	"github.com/ovh-webui/server/internal/storage"
 	"github.com/ovh-webui/server/internal/types"
 )
@@ -75,11 +76,40 @@ func (s *ServerListCache) Clear() {
 	s.mu.Unlock()
 }
 
-// State 聚合所有共享运行状态
+// AttemptOutcome 是一次购买流程对队列失败预算的明确结论。
+// CountFailure 只在确定性失败时为 true；Transient 仅用于尚未 checkout 的可安全重试错误。
+type AttemptOutcome struct {
+	CountFailure bool
+	Transient    bool
+}
+
+type proxyHealthReporter struct {
+	guard  *proxyguard.Guard
+	logger *logger.Logger
+}
+
+func (r proxyHealthReporter) ReportFailure(accountID string, cause error) {
+	before, _ := r.guard.Get(accountID)
+	after := r.guard.FailureStatus(accountID, cause)
+	if after.Paused && !before.Paused && r.logger != nil {
+		r.logger.Warn("账户 "+accountID+" 的代理连续失败，已暂停该账户自动动作: "+after.LastError, "proxyguard")
+	}
+}
+
+func (r proxyHealthReporter) ReportSuccess(accountID string) {
+	before, _ := r.guard.Get(accountID)
+	after := r.guard.SuccessStatus(accountID)
+	if before.Paused && !after.Paused && r.logger != nil {
+		r.logger.Info("账户 "+accountID+" 的代理已恢复，自动动作可继续", "proxyguard")
+	}
+}
+
+// State 聚合所有共享运行状态。
 type State struct {
 	Paths       storage.Paths
 	Config      *config.Store
 	OVH         *ovh.Factory
+	ProxyGuard  *proxyguard.Guard
 	Logger      *logger.Logger
 	ServerCache *ServerListCache
 	DB          *db.DB // SQLite 持久化层
@@ -138,6 +168,17 @@ type State struct {
 	queueProcessorMu sync.RWMutex
 	queueTickMu       sync.Mutex
 	queueTickRunning  bool
+
+	// loadFailed 记录启动/重载时无法读取的持久化表。对应内存快照不可信时，
+	// 所有整表覆盖写和基于该快照的 mutation 都必须拒绝，避免空快照抹掉磁盘数据。
+	loadFailedMu sync.RWMutex
+	loadFailed   map[string]string
+
+	// attemptOutcomeMu 保存单个队列任务最近一轮购买流程的结果。
+	// PurchaseServer 结束后由队列处理器消费，避免把瞬时网络失败混进
+	// RetryCount 的终止判断；同一任务由 checkout guard 保证不会并发执行。
+	attemptOutcomeMu sync.Mutex
+	attemptOutcomes  map[string]AttemptOutcome // task ID -> latest result
 
 	// notificationOutboxMu 保证整个进程内所有通知发送入口（监控轮次、抢购
 	// 成功即时刷送、后台重试）不会同时发送同一条 outbox 事件。重试时间也
@@ -213,9 +254,12 @@ func NewState(paths storage.Paths, cfg *config.Store, lg *logger.Logger, sqliteD
 		QueueProcessorRunning: false,
 		QueueProcessorEnabled: true,
 		notificationOutboxNextAttempt: make(map[string]time.Time),
+		loadFailed: make(map[string]string),
+		attemptOutcomes: make(map[string]AttemptOutcome),
 	}
-	// Factory 闭包注入 lookup,允许按 id 查账户(空 id → 默认)
-	s.OVH = ovh.NewFactory(cfg, s.FindAccount)
+	guard := proxyguard.New(proxyguard.DefaultFailureThreshold)
+	s.ProxyGuard = guard
+	s.OVH = ovh.NewFactory(cfg, s.FindAccount, proxyHealthReporter{guard: guard, logger: lg})
 	return s
 }
 
@@ -252,14 +296,47 @@ func (s *State) FindAccount(id string) (types.OVHAccount, bool) {
 	return types.OVHAccount{}, false
 }
 
+// IsAccountProxyPaused 只影响绑定该账户的自动动作；不会删除队列、订阅或
+// 改写停售状态。空账户 ID 解析当前默认账户。
+func (s *State) IsAccountProxyPaused(accountID string) bool {
+	if s == nil || s.ProxyGuard == nil {
+		return false
+	}
+	if strings.TrimSpace(accountID) == "" {
+		account, ok := s.FindAccount("")
+		if !ok {
+			return false
+		}
+		accountID = account.ID
+	}
+	return s.ProxyGuard.IsPaused(accountID)
+}
+
+// ResetAccountProxyGuard 供人工健康检查/恢复操作清除单账户熔断状态。
+func (s *State) ResetAccountProxyGuard(accountID string) {
+	if s == nil || s.ProxyGuard == nil || strings.TrimSpace(accountID) == "" {
+		return
+	}
+	s.ProxyGuard.Reset(accountID)
+}
+
+func (s *State) ProxyGuardStatus(accountID string) (proxyguard.Status, bool) {
+	if s == nil || s.ProxyGuard == nil {
+		return proxyguard.Status{}, false
+	}
+	return s.ProxyGuard.Get(accountID)
+}
+
 // ReloadAccounts 从 SQLite 重新加载账户到内存,并把整个 OVH client 缓存清掉,
 // 强制下次 ClientFor() 用最新凭据重建。
 // 账户 CRUD 操作完成后调一次。
 func (s *State) ReloadAccounts() error {
 	accs, err := s.DB.ListAccounts()
 	if err != nil {
+		s.MarkLoadFailed("accounts", err)
 		return err
 	}
+	s.ClearLoadFailure("accounts")
 	s.AccountsMu.Lock()
 	if accs == nil {
 		accs = []types.OVHAccount{}
@@ -313,6 +390,7 @@ func (s *State) LoadAll() {
 	// accounts: 必须最先加载,因为别的数据/loop 都按 account_id 索引
 	s.migrateLegacyConfigToAccount() // 老用户从 kv['config'] 自动建默认账户
 	if accs, err := s.DB.ListAccounts(); err == nil {
+		s.ClearLoadFailure("accounts")
 		if accs == nil {
 			accs = []types.OVHAccount{}
 		}
@@ -321,7 +399,7 @@ func (s *State) LoadAll() {
 		s.AccountsMu.Unlock()
 		s.Logger.Info("已加载 OVH 账户: "+intStr(len(accs))+" 个", "system")
 	} else {
-		s.Logger.Error("load accounts: "+err.Error(), "system")
+		s.MarkLoadFailed("accounts", err)
 		queueSafe = false
 	}
 
@@ -351,9 +429,12 @@ func (s *State) LoadAll() {
 
 	// queue
 	if items, err := s.DB.ListQueue(); err == nil {
+		s.ClearLoadFailure("queue")
+		s.QueueMu.Lock()
 		s.Queue = items
+		s.QueueMu.Unlock()
 	} else {
-		s.Logger.Error("load queue: "+err.Error(), "system")
+		s.MarkLoadFailed("queue", err)
 		queueSafe = false
 	}
 	if s.Queue == nil {
@@ -362,9 +443,12 @@ func (s *State) LoadAll() {
 
 	// history
 	if items, err := s.DB.ListHistory(); err == nil {
+		s.ClearLoadFailure("history")
+		s.HistoryMu.Lock()
 		s.History = items
+		s.HistoryMu.Unlock()
 	} else {
-		s.Logger.Error("load history: "+err.Error(), "system")
+		s.MarkLoadFailed("history", err)
 		queueSafe = false
 	}
 	if s.History == nil {
@@ -372,31 +456,42 @@ func (s *State) LoadAll() {
 	}
 
 	// servers
-	if plans, err := s.DB.ListServers(); err == nil && len(plans) > 0 {
-		s.ServerPlans = plans
-		// 用 SQLite 里真实的 updated_at 重建缓存时间戳，
-		// 这样过期的旧数据下次访问能正确触发刷新；NOW 会导致旧数据被当作"刚刷的"。
-		if tsMs, err := s.DB.ServersUpdatedAt(); err == nil && tsMs > 0 {
-			s.ServerCache.SetAt(plans, time.UnixMilli(tsMs))
-		} else {
-			s.ServerCache.Set(plans)
+	if plans, err := s.DB.ListServers(); err == nil {
+		s.ClearLoadFailure("servers")
+		if plans == nil {
+			plans = []types.ServerPlan{}
 		}
-		s.Logger.Info("已从 SQLite 加载服务器目录并同步到缓存", "system")
-	} else if err != nil {
-		s.Logger.Error("load servers: "+err.Error(), "system")
-	}
-	if s.ServerPlans == nil {
-		s.ServerPlans = []types.ServerPlan{}
+		s.ServerPlansMu.Lock()
+		s.ServerPlans = plans
+		s.ServerPlansMu.Unlock()
+		// 空目录是合法的已加载状态，但不能把它当成可用缓存；下一次启动补采仍会刷新。
+		if len(plans) > 0 {
+			// 用 SQLite 里真实的 updated_at 重建缓存时间戳，
+			// 这样过期的旧数据下次访问能正确触发刷新；NOW 会导致旧数据被当作"刚刷的"。
+			if tsMs, err := s.DB.ServersUpdatedAt(); err == nil && tsMs > 0 {
+				s.ServerCache.SetAt(plans, time.UnixMilli(tsMs))
+			} else {
+				s.ServerCache.Set(plans)
+			}
+			s.Logger.Info("已从 SQLite 加载服务器目录并同步到缓存", "system")
+		} else {
+			s.ServerCache.Clear()
+		}
+	} else {
+		s.MarkLoadFailed("servers", err)
 	}
 
 	// vps subscriptions
 	if subs, err := s.DB.ListVPSSubscriptions(); err == nil {
+		s.ClearLoadFailure("vps_subscriptions")
+		if subs == nil {
+			subs = []types.VPSSubscription{}
+		}
+		s.VPSSubsMu.Lock()
 		s.VPSSubscriptions = subs
+		s.VPSSubsMu.Unlock()
 	} else {
-		s.Logger.Error("load vps subs: "+err.Error(), "system")
-	}
-	if s.VPSSubscriptions == nil {
-		s.VPSSubscriptions = []types.VPSSubscription{}
+		s.MarkLoadFailed("vps_subscriptions", err)
 	}
 	// vps check interval 存 kv
 	var ci int
@@ -486,6 +581,96 @@ func (s *State) ClearNotificationOutboxRetry(id string) {
 		defer s.notificationOutboxRetryMu.Unlock()
 		delete(s.notificationOutboxNextAttempt, id)
 	}
+}
+
+// MarkLoadFailed 记录启动/重载时未能读取的持久化表。
+// 对应内存快照不可信时，任何整表覆盖写都必须被拒绝。
+func (s *State) MarkLoadFailed(table string, err error) {
+	if s == nil || strings.TrimSpace(table) == "" || err == nil {
+		return
+	}
+	s.loadFailedMu.Lock()
+	if s.loadFailed == nil {
+		s.loadFailed = make(map[string]string)
+	}
+	s.loadFailed[table] = err.Error()
+	s.loadFailedMu.Unlock()
+	if s.Logger != nil {
+		s.Logger.Error("load "+table+" 失败，已禁止本次运行覆盖写该表: "+err.Error(), "system")
+	}
+}
+
+// ClearLoadFailure 清除指定表的读取失败标记。只有一次成功读取后才能调用。
+func (s *State) ClearLoadFailure(table string) {
+	if s == nil {
+		return
+	}
+	s.loadFailedMu.Lock()
+	delete(s.loadFailed, table)
+	s.loadFailedMu.Unlock()
+}
+
+// SaveBlocked 返回启动读取失败表的写入闸门错误。
+func (s *State) SaveBlocked(table string) error {
+	if s == nil {
+		return fmt.Errorf("拒绝写 %s: 状态未初始化", table)
+	}
+	s.loadFailedMu.RLock()
+	reason, blocked := s.loadFailed[table]
+	s.loadFailedMu.RUnlock()
+	if !blocked {
+		return nil
+	}
+	return fmt.Errorf("拒绝写 %s: 启动时读取失败 (%s)，继续写入可能用不完整内存快照覆盖磁盘数据；请修复后重启", table, reason)
+}
+
+// LoadFailures 返回当前记录的持久化读取失败副本，供健康检查和诊断使用。
+func (s *State) LoadFailures() map[string]string {
+	if s == nil {
+		return map[string]string{}
+	}
+	s.loadFailedMu.RLock()
+	defer s.loadFailedMu.RUnlock()
+	out := make(map[string]string, len(s.loadFailed))
+	for key, value := range s.loadFailed {
+		out[key] = value
+	}
+	return out
+}
+
+// SetAttemptOutcome 记录最近一轮任务的失败预算结论。
+func (s *State) SetAttemptOutcome(taskID string, outcome AttemptOutcome) {
+	if s == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	s.attemptOutcomeMu.Lock()
+	if s.attemptOutcomes == nil {
+		s.attemptOutcomes = make(map[string]AttemptOutcome)
+	}
+	s.attemptOutcomes[taskID] = outcome
+	s.attemptOutcomeMu.Unlock()
+}
+
+// ClearAttemptOutcome 丢弃任务上一轮残留的临时错误结果。
+func (s *State) ClearAttemptOutcome(taskID string) {
+	if s == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	s.attemptOutcomeMu.Lock()
+	delete(s.attemptOutcomes, taskID)
+	s.attemptOutcomeMu.Unlock()
+}
+
+// TakeAttemptOutcome 读取并清除最近一轮任务结果。
+func (s *State) TakeAttemptOutcome(taskID string) (AttemptOutcome, bool) {
+	if s == nil || strings.TrimSpace(taskID) == "" {
+		return AttemptOutcome{}, false
+	}
+	s.attemptOutcomeMu.Lock()
+	outcome, ok := s.attemptOutcomes[taskID]
+	delete(s.attemptOutcomes, taskID)
+	s.attemptOutcomeMu.Unlock()
+	return outcome, ok
 }
 
 // SetQueueProcessorEnabled 更新启动安全闸门。
@@ -601,6 +786,9 @@ func (s *State) CountPurchase() (success, failed int) {
 
 // SaveQueue 把内存中 Queue 整表覆盖写入 SQLite（串行化，取最新快照）
 func (s *State) SaveQueue() error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
 	s.checkoutMu.Lock()
 	defer s.checkoutMu.Unlock()
 	s.queuePersistMu.Lock()
@@ -615,6 +803,9 @@ func (s *State) SaveQueue() error {
 // MutateQueue 串行完成队列内存变更和 SQLite 持久化。mutate 收到独立副本；
 // 只有落盘成功才会发布到内存，因此调用方无需自行实现容易误删并发任务的回滚。
 func (s *State) MutateQueue(mutate func([]types.QueueItem) ([]types.QueueItem, error)) error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
 	return s.mutateQueue(false, mutate)
 }
 
@@ -622,6 +813,9 @@ func (s *State) MutateQueue(mutate func([]types.QueueItem) ([]types.QueueItem, e
 // 在请求开始时先做一次账户校验，但账户可能在校验与落盘之间被删除；此方法
 // 把最终账户确认与队列写入放进同一临界区，避免产生引用已删除账户的任务。
 func (s *State) MutateQueueForAccount(accountID string, mutate func([]types.QueueItem) ([]types.QueueItem, error)) error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
 	return s.mutateQueueForAccount(false, accountID, mutate)
 }
 
@@ -910,6 +1104,9 @@ func (s *State) IsQueueItemRunning(id string) bool {
 // DeletedTaskIDs 先落内存；即使 SQLite 暂时不可写，队列处理器也会跳过该任务，
 // 而 checkout_attempts 会在下次启动时再次执行持久化隔离。
 func (s *State) QuarantineQueueItem(id string) error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
 	if id == "" {
 		return fmt.Errorf("缺少队列任务 ID")
 	}
@@ -921,6 +1118,9 @@ func (s *State) QuarantineQueueItem(id string) error {
 // QuarantineQueueItemDuringCheckout 供已经登记 checkoutTasks 的下单流程使用。
 // BeginCheckoutAttempt 不会跨网络请求持有互斥锁，因此这里仍需取得 checkoutMu。
 func (s *State) QuarantineQueueItemDuringCheckout(id string) error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
 	if id == "" {
 		return fmt.Errorf("缺少队列任务 ID")
 	}
@@ -957,6 +1157,12 @@ func (s *State) quarantineQueueItemLocked(id string) error {
 // MutateQueueWithHistory 在同一临界区读取购买历史并修改队列。它用于需要同时
 // 根据近期成功记录和当前队列做去重的入口，锁顺序与 CommitPurchaseSuccess 一致。
 func (s *State) MutateQueueWithHistory(mutate func([]types.QueueItem, []types.PurchaseHistoryEntry) ([]types.QueueItem, error)) error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
+	if err := s.SaveBlocked("history"); err != nil {
+		return err
+	}
 	s.checkoutMu.Lock()
 	defer s.checkoutMu.Unlock()
 	s.queuePersistMu.Lock()
@@ -991,6 +1197,12 @@ func (s *State) MutateQueueWithHistory(mutate func([]types.QueueItem, []types.Pu
 // MutateQueueWithHistoryForAccount 同时执行账户最终确认、队列变更和历史快照
 // 读取，供需要按历史去重且明确绑定账户的入队入口使用。
 func (s *State) MutateQueueWithHistoryForAccount(accountID string, mutate func([]types.QueueItem, []types.PurchaseHistoryEntry) ([]types.QueueItem, error)) error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
+	if err := s.SaveBlocked("history"); err != nil {
+		return err
+	}
 	accountID = strings.TrimSpace(accountID)
 	if accountID == "" {
 		return fmt.Errorf("缺少账户 ID")
@@ -1038,6 +1250,12 @@ func (s *State) MutateQueueWithHistoryForAccount(accountID string, mutate func([
 // EnqueueMonitorOrders 将监控订阅状态和本次补货产生的队列任务原子落盘，
 // 数据库提交成功后才发布新的内存队列。
 func (s *State) EnqueueMonitorOrders(sub types.Subscription, items []types.QueueItem) error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
+	if err := s.SaveBlocked("monitor_subscriptions"); err != nil {
+		return err
+	}
 	if len(items) == 0 {
 		return nil
 	}
@@ -1078,6 +1296,9 @@ func (s *State) EnqueueMonitorOrders(sub types.Subscription, items []types.Queue
 
 // SaveHistory 把内存中 History 整表覆盖写入 SQLite（串行化，取最新快照）
 func (s *State) SaveHistory() error {
+	if err := s.SaveBlocked("history"); err != nil {
+		return err
+	}
 	s.historyPersistMu.Lock()
 	defer s.historyPersistMu.Unlock()
 	s.HistoryMu.Lock()
@@ -1087,8 +1308,54 @@ func (s *State) SaveHistory() error {
 	return s.DB.ReplaceHistory(cp)
 }
 
+// UpdateHistoryOrderStatus 原子更新单条历史的订单状态，并可在同一事务中
+// 创建通知 outbox。callback 在 history 持久化锁内执行，只应构造纯数据，不得
+// 发起网络请求或再次修改 State。
+func (s *State) UpdateHistoryOrderStatus(id, status, statusAt string, callback func(types.PurchaseHistoryEntry, string) (*types.NotificationOutboxEntry, error)) (bool, error) {
+	if err := s.SaveBlocked("history"); err != nil {
+		return false, err
+	}
+	s.historyPersistMu.Lock()
+	defer s.historyPersistMu.Unlock()
+	s.HistoryMu.Lock()
+	defer s.HistoryMu.Unlock()
+	index := -1
+	for i := range s.History {
+		if s.History[i].ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return false, fmt.Errorf("history %s not found", id)
+	}
+	current := s.History[index]
+	if current.OrderStatus == status && current.OrderStatusAt == statusAt {
+		return false, nil
+	}
+	next := current
+	next.OrderStatus = status
+	next.OrderStatusAt = statusAt
+	var notification *types.NotificationOutboxEntry
+	if current.OrderStatus != status && callback != nil {
+		var err error
+		notification, err = callback(next, current.OrderStatus)
+		if err != nil {
+			return false, err
+		}
+	}
+	if err := s.DB.UpdateHistoryOrderStatusWithNotification(id, status, statusAt, notification); err != nil {
+		return false, err
+	}
+	s.History[index] = next
+	return true, nil
+}
+
 // MutateHistory 与 MutateQueue 相同，确保失败历史和异步补全不会只修改内存。
 func (s *State) MutateHistory(mutate func([]types.PurchaseHistoryEntry) ([]types.PurchaseHistoryEntry, error)) error {
+	if err := s.SaveBlocked("history"); err != nil {
+		return err
+	}
 	s.historyPersistMu.Lock()
 	defer s.historyPersistMu.Unlock()
 
@@ -1112,6 +1379,9 @@ func (s *State) MutateHistory(mutate func([]types.PurchaseHistoryEntry) ([]types
 // MutateVPSSubscriptions 串行修改 VPS 订阅；数据库写入成功后才发布内存快照。
 // mutate 收到独立副本，写库失败时内存保持不变。
 func (s *State) MutateVPSSubscriptions(mutate func([]types.VPSSubscription) ([]types.VPSSubscription, error)) error {
+	if err := s.SaveBlocked("vps_subscriptions"); err != nil {
+		return err
+	}
 	s.vpsPersistMu.Lock()
 	defer s.vpsPersistMu.Unlock()
 
@@ -1141,6 +1411,9 @@ func (s *State) VPSSubscriptionsSnapshot() []types.VPSSubscription {
 
 // SetVPSCheckInterval 仅在 SQLite 写入成功后发布新的检查间隔。
 func (s *State) SetVPSCheckInterval(interval int) error {
+	if err := s.SaveBlocked("vps_subscriptions"); err != nil {
+		return err
+	}
 	s.vpsPersistMu.Lock()
 	defer s.vpsPersistMu.Unlock()
 	if err := s.DB.SetKV("vps_check_interval", interval); err != nil {
@@ -1246,6 +1519,12 @@ func (s *State) commitPurchaseSuccessLocked(entry types.PurchaseHistoryEntry) er
 }
 
 func (s *State) commitPurchaseSuccessLockedWithNotification(entry types.PurchaseHistoryEntry, notification *types.NotificationOutboxEntry) error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
+	if err := s.SaveBlocked("history"); err != nil {
+		return err
+	}
 	s.queuePersistMu.Lock()
 	defer s.queuePersistMu.Unlock()
 	s.historyPersistMu.Lock()
@@ -1294,6 +1573,9 @@ func (s *State) commitPurchaseSuccessLockedWithNotification(entry types.Purchase
 
 // SaveServers 把内存中 ServerPlans 整表覆盖写入 SQLite
 func (s *State) SaveServers() error {
+	if err := s.SaveBlocked("servers"); err != nil {
+		return err
+	}
 	s.ServerPlansMu.RLock()
 	cp := make([]types.ServerPlan, len(s.ServerPlans))
 	copy(cp, s.ServerPlans)

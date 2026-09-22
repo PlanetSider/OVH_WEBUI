@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/common/Skeleton";
 import { Chip } from "@/components/common/Chip";
@@ -299,14 +300,13 @@ function FeishuSection({
       try {
         const result = await pollFeishuRegistration(registration.sessionId);
         if (cancelled) return;
-        if (result.status === "complete" && result.appId && result.appSecret) {
+        if (result.status === "complete" && result.appId) {
           setFieldRef.current("feishuAppId", result.appId);
-          setFieldRef.current("feishuAppSecret", result.appSecret);
           setFieldRef.current("feishuDomain", result.domain || "feishu");
           setFieldRef.current("feishuEnabled", true);
           setRegistrationStatus("complete");
           void bindingRefetch.current();
-          toast.success("飞书机器人已创建，App ID 和 App Secret 已自动回填并保存");
+          toast.success("飞书机器人已创建，凭据已由服务端安全保存");
           return;
         }
         if (result.status !== "pending") {
@@ -606,8 +606,10 @@ function TelegramSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [webhook.data?.url]);
 
+  const tokenConfigured = !!form.tgToken?.trim() || form.tgTokenConfigured === true;
+
   const onFetch = () => {
-    if (!form.tgToken) {
+    if (!tokenConfigured) {
       toast.error("请先填写并保存 Bot Token");
       return;
     }
@@ -620,7 +622,7 @@ function TelegramSection({
       toast.error("请填写 Webhook 公网地址（如 https://ovh.example.com）");
       return;
     }
-    if (!form.tgToken?.trim()) {
+    if (!tokenConfigured) {
       toast.error("请先填写 Bot Token");
       return;
     }
@@ -646,7 +648,7 @@ function TelegramSection({
           onChange={(value) => set("tgNotificationsEnabled", value)}
         />
       </div>
-      <Field label="Bot Token" hint="保存设置后写入后端；Webhook 需再点下方「注册 Webhook」才会生效">
+      <Field label="Bot Token" hint={tokenConfigured ? "已保存 Token；留空并保存会保留原值，填写新值可替换" : "保存设置后写入后端；Webhook 需再点下方「注册 Webhook」才会生效"}>
         <Input
           type="password"
           value={form.tgToken || ""}
@@ -971,10 +973,14 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
     appKey: acc?.appKey || "",
     appSecret: acc?.appSecret || "",
     consumerKey: acc?.consumerKey || "",
+    proxyUrl: "",
+    fingerprint: acc?.fingerprint || "",
+    clearProxy: false,
+    clearFingerprint: false,
     zone: acc?.zone || "IE",
   });
-  const set = (k: keyof typeof form, v: string) => setForm((p) => ({ ...p, [k]: v }));
-  const canSubmit = form.name.trim() && form.appKey.trim() && form.appSecret.trim() && form.consumerKey.trim();
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((p) => ({ ...p, [k]: v }));
+  const canSubmit = !!form.name.trim() && (isEdit || (!!form.appKey.trim() && !!form.appSecret.trim() && !!form.consumerKey.trim()));
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -983,6 +989,10 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
       appKey: form.appKey.trim(),
       appSecret: form.appSecret.trim(),
       consumerKey: form.consumerKey.trim(),
+      proxyUrl: form.proxyUrl.trim(),
+      fingerprint: form.fingerprint.trim(),
+      clearProxy: form.clearProxy,
+      clearFingerprint: form.clearFingerprint,
       zone: form.zone,
       endpoint: endpointForZone(form.zone),
     };
@@ -1013,6 +1023,24 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
           </Field>
           <Field label="CONSUMER KEY *">
             <Input type="password" value={form.consumerKey} onChange={(e) => set("consumerKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+          </Field>
+          <Field label="代理 URL" hint="可选: http://、https://、socks5:// 或 socks5h://；留空表示直连">
+            <Input value={form.proxyUrl} onChange={(e) => set("proxyUrl", e.target.value)} placeholder="http://user:password@127.0.0.1:8080" autoComplete="off" />
+            {isEdit && (
+              <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <Checkbox checked={form.clearProxy} onCheckedChange={(checked) => set("clearProxy", checked === true)} />
+                清除已保存代理
+              </label>
+            )}
+          </Field>
+          <Field label="请求指纹" hint="可选: 目前仅支持 ua: 前缀，不伪造 TLS 指纹">
+            <Input value={form.fingerprint} onChange={(e) => set("fingerprint", e.target.value)} placeholder="ua:my-client" autoComplete="off" />
+            {isEdit && (
+              <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <Checkbox checked={form.clearFingerprint} onCheckedChange={(checked) => set("clearFingerprint", checked === true)} />
+                清除已保存指纹
+              </label>
+            )}
           </Field>
           <Field
             label="OVH 子公司 (Zone)"

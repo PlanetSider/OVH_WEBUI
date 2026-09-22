@@ -24,7 +24,14 @@ func AccountsStatus(state *app.State) gin.HandlerFunc {
 			wg.Add(1)
 			go func(index int, account types.OVHAccount) {
 				defer wg.Done()
-				item := gin.H{"id": account.ID, "name": account.Name, "alias": account.Name, "zone": account.Zone, "endpoint": account.Endpoint, "valid": false}
+				item := gin.H{"id": account.ID, "name": account.Name, "alias": account.Name, "zone": account.Zone, "endpoint": account.Endpoint, "valid": false, "proxyConfigured": account.ProxyURL != ""}
+				if status, ok := state.ProxyGuardStatus(account.ID); ok {
+					item["proxyPaused"] = status.Paused
+					item["proxyConsecutiveFailures"] = status.ConsecutiveFailures
+					if status.LastError != "" {
+						item["proxyLastError"] = status.LastError
+					}
+				}
 				client, clientErr := state.OVH.ClientFor(account.ID)
 				if clientErr != nil {
 					item["error"] = clientErr.Error()

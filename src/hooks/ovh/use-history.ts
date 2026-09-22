@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/http";
+import { api, apiErrorText } from "@/lib/http";
 import { qk } from "@/lib/query";
 import { toast } from "sonner";
 
@@ -25,6 +25,9 @@ export interface PurchaseHistory {
     tax?: number;
     currencyCode?: string;
   };
+  /** OVH /me/order/{id}/status 的最近状态快照 */
+  orderStatus?: string;
+  orderStatusAt?: string;
 }
 
 /** 抢购历史 */
@@ -44,6 +47,6 @@ export function useClearHistory() {
       qc.invalidateQueries({ queryKey: qk.history() });
       toast.success("已清空购买历史");
     },
-    onError: (e: any) => toast.error(e.response?.data?.error || "清空失败"),
+    onError: (error: unknown) => toast.error(apiErrorText(error, "清空失败")),
   });
 }

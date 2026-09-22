@@ -280,7 +280,7 @@ func PollFeishuRegistration(state *app.State) gin.HandlerFunc {
 			state.Logger.Info("飞书机器人扫码配置成功，凭据已安全保存", "feishu")
 			c.JSON(http.StatusOK, gin.H{
 				"success": true, "status": "complete", "appId": cfg.FeishuAppID,
-				"appSecret": cfg.FeishuAppSecret, "domain": cfg.FeishuDomain,
+				"appSecretConfigured": true, "domain": cfg.FeishuDomain,
 				"bound": result.UserInfo.OpenID != "",
 			})
 			return
