@@ -17,6 +17,7 @@ import {
   useServerServiceInfo,
   useServerMonitoring,
   useToggleMonitoring,
+  useUpdateTerminationPolicy,
   type OwnedServer,
 } from "@/hooks/use-server-control";
 import { useHideIp, maskSensitive } from "@/hooks/use-hide-ip";
@@ -360,6 +361,7 @@ function ServerTabs({ server }: { server: OwnedServer }) {
   const info = useServerServiceInfo(server.serviceName);
   const monitoring = useServerMonitoring(server.serviceName);
   const toggleMon = useToggleMonitoring();
+  const terminationMutation = useUpdateTerminationPolicy(server.serviceName);
   const [netSpecsOpen, setNetSpecsOpen] = useState(false);
   const [renewalOpen, setRenewalOpen] = useState(false);
   const [reinstallOpen, setReinstallOpen] = useState(false);
@@ -487,6 +489,7 @@ function ServerTabs({ server }: { server: OwnedServer }) {
           info={info.data}
           open={renewalOpen}
           onOpenChange={setRenewalOpen}
+           termination={terminationMutation}
         />
       )}
 

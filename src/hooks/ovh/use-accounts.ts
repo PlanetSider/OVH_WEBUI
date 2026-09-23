@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, apiErrorText, getActiveServerControlAccount, setActiveServerControlAccount } from "@/lib/http";
+import { qk } from "@/lib/query";
 import { toast } from "sonner";
 
 export interface OVHAccount {
@@ -82,6 +83,7 @@ export function useCreateAccount() {
     },
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
+      qc.invalidateQueries({ queryKey: qk.accounts.proxyStatus() });
       // 新账户立即设为活跃，避免 localStorage 仍指向旧 ID
       if (data?.account?.id) {
         setActiveServerControlAccount(data.account.id);
@@ -109,6 +111,7 @@ export function useUpdateAccount() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
+      qc.invalidateQueries({ queryKey: qk.accounts.proxyStatus() });
       toast.success("账户已更新");
     },
     onError: (error: unknown) => toast.error(apiErrorText(error, "更新失败")),
@@ -128,6 +131,7 @@ export function useDeleteAccount() {
         setActiveServerControlAccount("");
       }
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
+      qc.invalidateQueries({ queryKey: qk.accounts.proxyStatus() });
       qc.invalidateQueries({ queryKey: ["queue"] });
       qc.invalidateQueries({ queryKey: ["history"] });
       qc.invalidateQueries({ queryKey: ["server-control"] });
@@ -146,6 +150,7 @@ export function useSetDefaultAccount() {
     mutationFn: async (id: string) => (await api.post(`/accounts/${id}/set-default`)).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
+      qc.invalidateQueries({ queryKey: qk.accounts.proxyStatus() });
       toast.success("已设为默认账户");
     },
     onError: (error: unknown) => toast.error(apiErrorText(error, "设默认失败")),
@@ -181,4 +186,148 @@ export function accountChipColor(zone: string): string {
   if (z === "ASIA" || z === "SG" || z === "AU" || z === "IN") return "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300";
   // EU 系
   return "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300";
+}
+
+// ─── 出站代理 / 指纹诊断 ───────────────────────────────────────────────────
+
+export interface AccountProxyStatus {
+  id: string;
+  name: string;
+  zone: string;
+  usingProxy: boolean;
+  proxy: string;
+  fingerprint: string;
+  tripped: boolean;
+  fails: number;
+  trippedAt?: string;
+  lastFailAt?: string;
+}
+
+export interface ProxyStatusResult {
+  success: boolean;
+  profiles: string[];
+  accounts: AccountProxyStatus[];
+}
+
+export interface ProxyTestSuccess {
+  success: true;
+  egressIP: string;
+  usingProxy: boolean;
+  proxy: string;
+  fingerprint: string;
+  warning?: string;
+}
+
+export interface ProxyTestFailure {
+  success: false;
+  error: string;
+  via: string;
+  usingProxy: boolean;
+  fingerprint: string;
+}
+
+export type ProxyTestResult = ProxyTestSuccess | ProxyTestFailure;
+export type ProxyTestRecord = (ProxyTestSuccess | ProxyTestFailure) & { testedAt: number };
+
+export interface ProxyProbeTarget {
+  name: string;
+  url: string;
+  ok: boolean;
+  status?: number;
+  minMs?: number;
+  avgMs?: number;
+  error?: string;
+}
+
+export interface ProxyCheckSuccess {
+  success: true;
+  accountId: string;
+  accountName: string;
+  region: string;
+  usingProxy: boolean;
+  proxy: string;
+  fingerprint: string;
+  egressIP?: string;
+  egressError?: string;
+  checkedAt: string;
+  warning?: string;
+  targets: ProxyProbeTarget[];
+}
+
+export interface ProxyCheckFailure {
+  success: false;
+  error: string;
+}
+
+export type ProxyCheckResult = ProxyCheckSuccess | ProxyCheckFailure;
+export type ProxyCheckRecord = (ProxyCheckSuccess | ProxyCheckFailure) & { receivedAt: number };
+
+export function useProxyStatus() {
+  return useQuery<ProxyStatusResult>({
+    queryKey: qk.accounts.proxyStatus(),
+    queryFn: async () => (await api.get<ProxyStatusResult>("/accounts/proxy-status")).data,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useProxyTest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => (await api.post<ProxyTestResult>(`/accounts/${id}/proxy-test`)).data,
+    onSuccess: (data, id) => {
+      qc.setQueryData(qk.accounts.proxyTest(id), { ...data, testedAt: Date.now() } satisfies ProxyTestRecord);
+      if (data.success === true) {
+        toast.success(`出口 IP ${data.egressIP}${data.usingProxy ? "（经代理）" : "（直连）"}`);
+        if (data.warning) toast.warning(data.warning, { duration: 8000 });
+      } else {
+        toast.error(`出口测试失败（${data.via}）：${data.error}`);
+      }
+    },
+    onError: (error: unknown) => toast.error(apiErrorText(error, "出口测试请求失败")),
+  });
+}
+
+export function useLastProxyTest(accountId: string) {
+  return useQuery<ProxyTestRecord | null>({
+    queryKey: qk.accounts.proxyTest(accountId),
+    queryFn: async () => null,
+    enabled: false,
+    staleTime: Infinity,
+  });
+}
+
+export function useProxyCheck() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => (await api.post<ProxyCheckResult>(`/accounts/${id}/proxy-check`)).data,
+    onSuccess: (data, id) => {
+      qc.setQueryData(qk.accounts.proxyCheck(id), { ...data, receivedAt: Date.now() } satisfies ProxyCheckRecord);
+      if (data.success === false) {
+        toast.error(`链路检测失败：${data.error}`);
+        return;
+      }
+      const down = data.targets.filter((target) => !target.ok);
+      if (down.length > 0) {
+        toast.error(`${down.length}/${data.targets.length} 个目标不通`);
+        return;
+      }
+      const latencies = data.targets.filter((target) => target.ok && typeof target.minMs === "number").map((target) => target.minMs as number);
+      const worst = latencies.length ? Math.max(...latencies) : undefined;
+      if (data.warning) toast.warning(data.warning, { duration: 8000 });
+      if (worst === undefined) toast.warning("链路已返回，但没有可用延迟样本");
+      else if (worst > 800) toast.error(`链路检测完成，最慢目标 ${worst}ms`);
+      else if (worst > 300) toast.warning(`链路检测完成，最慢目标 ${worst}ms`);
+      else toast.success(`链路检测完成，最慢目标 ${worst}ms`);
+    },
+    onError: (error: unknown) => toast.error(apiErrorText(error, "链路检测请求失败")),
+  });
+}
+
+export function useLastProxyCheck(accountId: string) {
+  return useQuery<ProxyCheckRecord | null>({
+    queryKey: qk.accounts.proxyCheck(accountId),
+    queryFn: async () => null,
+    enabled: false,
+    staleTime: Infinity,
+  });
 }

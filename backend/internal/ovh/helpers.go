@@ -17,34 +17,3 @@ func ConvertDisplayDCToAPIDC(datacenter string) string {
 	}
 	return lower
 }
-
-// RegionForDC 根据 dc 返回区域（与 purchase_server 中逻辑一致）
-func RegionForDC(dc string) string {
-	dcLower := strings.ToLower(dc)
-	eu := []string{"gra", "rbx", "sbg", "eri", "lim", "waw", "par", "fra", "lon"}
-	canada := []string{"bhs"}
-	us := []string{"vin", "hil"}
-	apac := []string{"syd", "sgp", "ynm"}
-
-	for _, p := range eu {
-		if strings.HasPrefix(dcLower, p) {
-			return "europe"
-		}
-	}
-	for _, p := range canada {
-		if strings.HasPrefix(dcLower, p) {
-			return "canada"
-		}
-	}
-	for _, p := range us {
-		if strings.HasPrefix(dcLower, p) {
-			return "usa"
-		}
-	}
-	for _, p := range apac {
-		if strings.HasPrefix(dcLower, p) {
-			return "apac"
-		}
-	}
-	return ""
-}

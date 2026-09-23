@@ -79,6 +79,13 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "account_id 不存在"})
 			return
 		}
+		if verdict, hint := catalog.ClassifyPlan(state, body.AccountID, body.PlanCode, "quick_order"); hint != "" {
+			if state.Logger != nil {
+				state.Logger.Warn("[quick_order] "+hint, "quick_order")
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": hint, "verdict": verdict.String()})
+			return
+		}
 		options := body.Options
 		if len(options) == 0 {
 			availabilityResult, availabilityErr := catalog.CheckServerAvailabilityWithConfigsStrict(state, body.PlanCode, body.AccountID)

@@ -40,6 +40,7 @@ import { groupOptions, type OptionGroupKey } from "@/lib/option-groups";
 import { OptionGroupSection } from "@/components/common/OptionGroupSection";
 import { OVH_DATACENTERS, lookupDcStatus } from "@/lib/datacenters";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
+import { formatCurrencyAmount, currencyLabel } from "@/lib/currency";
 import { MonitorSubscriptionDialog } from "@/components/common/MonitorSubscriptionDialog";
 
 /** 服务器列表：卡片网格 + 详情弹窗 */
@@ -541,7 +542,7 @@ function DetailContent({
               {price.installPrice > 0 && (
                 <div>安装费 {fmtMoney(price.installPrice, price.currency)}（一次性）</div>
               )}
-              <div>币种 {price.currency}</div>
+              <div>币种 {currencyLabel(price.currency)}</div>
             </div>
           )}
         </div>
@@ -733,10 +734,8 @@ function DetailContent({
 }
 
 
-/** 简单货币格式化（不需要全名时） */
 function fmtMoney(v: number, currency: string): string {
-  const sym = currency === "EUR" ? "€" : currency === "USD" ? "$" : currency === "GBP" ? "£" : currency === "CAD" ? "CA$" : `${currency} `;
-  return `${sym}${v.toFixed(2)}`;
+  return formatCurrencyAmount(v, currency);
 }
 
 function SpecCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/auth"
+	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/config"
 	"github.com/ovh-webui/server/internal/db"
 	"github.com/ovh-webui/server/internal/handlers"
@@ -91,12 +92,31 @@ func main() {
 		state.Port = "19998"
 	}
 	state.LoadAll()
+	// 公开目录较大，后台预热避免首个监控/下单请求承担整份目录的延迟。
+	go catalog.WarmRegionCache(state)
 
 	// 监控器
 	mon := monitor.New(state)
 	mon.LoadFromDB()
 	mon.LoadMessageUUIDCacheFromDB()
 	mon.SetCheckInterval(5)
+	state.SetProxyGuardMonitorMutator(mon.SetProxyGuardAutoOrder)
+	state.SetProxyGuardNotificationHandler(func(action app.ProxyGuardAction) {
+		if state.DB == nil {
+			return
+		}
+		entry, err := monitor.NewProxyGuardNotification(action, monitor.NotificationTargetChannels(state))
+		if err != nil {
+			if state.Logger != nil {
+				state.Logger.Error("创建代理熔断通知失败: "+err.Error(), "proxyguard")
+			}
+			return
+		}
+		if err := state.DB.EnqueueNotification(*entry); err != nil && state.Logger != nil {
+			state.Logger.Error("写入代理熔断通知 outbox 失败: "+err.Error(), "proxyguard")
+		}
+	})
+	state.RestoreProxyGuardGates()
 
 	// 飞书事件接收：默认使用官方 WebSocket 长连接；设置为 webhook 时保留
 	// HTTP 回调模式，消息和卡片按钮仍复用同一套业务处理逻辑。
@@ -126,10 +146,11 @@ func main() {
 	// 通知 outbox 由同一事务完成，且使用独立 context 参与优雅停机。
 	orderStatusCtx, cancelOrderStatus := context.WithCancel(context.Background())
 	var orderStatusWG sync.WaitGroup
+	orderStatusLoop := purchase.NewOrderStatusLoop(state)
 	orderStatusWG.Add(1)
 	go func() {
 		defer orderStatusWG.Done()
-		purchase.NewOrderStatusLoop(state).Run(orderStatusCtx)
+		orderStatusLoop.Run(orderStatusCtx)
 	}()
 
 	// Gin
@@ -178,6 +199,7 @@ func main() {
 
 		// Queue
 		api.GET("/queue", handlers.GetQueue(state))
+		api.GET("/queue/timings", handlers.GetQueueTimings())
 		api.POST("/queue", handlers.AddQueueItem(state))
 		api.DELETE("/queue/clear", handlers.ClearQueue(state))
 		api.DELETE("/queue/:id", handlers.RemoveQueueItem(state))
@@ -186,6 +208,7 @@ func main() {
 
 		// Purchase history
 		api.GET("/purchase-history", handlers.GetPurchaseHistory(state))
+		api.POST("/purchase-history/refresh-status", handlers.RefreshPurchaseHistoryStatus(orderStatusLoop))
 		api.DELETE("/purchase-history", handlers.ClearPurchaseHistory(state))
 
 		// Monitor
@@ -235,6 +258,7 @@ func main() {
 
 		// Accounts (多账户管理)
 		api.GET("/accounts", handlers.ListAccounts(state))
+		api.GET("/accounts/proxy-status", handlers.ProxyStatus(state))
 		api.GET("/accounts/:id", handlers.GetAccountByID(state))
 		api.POST("/accounts", handlers.CreateAccount(state))
 		api.PUT("/accounts/:id", handlers.UpdateAccount(state))
@@ -242,6 +266,8 @@ func main() {
 		api.POST("/accounts/:id/set-default", handlers.SetDefaultAccountByID(state))
 		api.POST("/accounts/:id/verify", handlers.VerifyAccount(state))
 		api.GET("/accounts/:id/proxy-status", handlers.AccountProxyStatus(state))
+		api.POST("/accounts/:id/proxy-test", handlers.TestAccountProxy(state))
+		api.POST("/accounts/:id/proxy-check", handlers.CheckAccountProxy(state))
 		api.POST("/accounts/:id/proxy-reset", handlers.ResetAccountProxyGuard(state))
 		api.GET("/accounts/status", handlers.AccountsStatus(state))
 
@@ -293,6 +319,7 @@ func main() {
 			sc.GET("/:service_name/serviceinfo", handlers.GetServiceInfo(state))
 			sc.GET("/:service_name/summary", handlers.GetServerSummary(state))
 			sc.PUT("/:service_name/serviceinfo/renewal", handlers.UpdateServiceRenewal(state))
+			sc.PUT("/:service_name/termination-policy", handlers.UpdateTerminationPolicy(state))
 
 			// engagement(合同期切换)
 			sc.GET("/:service_name/engagement", handlers.GetEngagement(state))
@@ -381,6 +408,7 @@ func main() {
 			vc.GET("/:service_name/status", handlers.GetVpsServiceStatus(state))
 			vc.GET("/:service_name/serviceinfo", handlers.GetVpsServiceInfo(state))
 			vc.PUT("/:service_name/serviceinfo/renewal", handlers.UpdateVpsRenewal(state))
+			vc.PUT("/:service_name/termination-policy", handlers.UpdateVpsTerminationPolicy(state))
 			vc.GET("/:service_name/ips", handlers.GetVpsIps(state))
 			vc.PUT("/:service_name/ips/:ip/reverse", handlers.SetVpsIpReverse(state))
 			vc.GET("/:service_name/datacenter", handlers.GetVpsDatacenter(state))
@@ -436,6 +464,7 @@ func main() {
 		}
 
 		// VPS monitor
+		api.GET("/vps-monitor/models", handlers.GetVPSModels(state))
 		api.GET("/vps-monitor/subscriptions", handlers.GetVPSSubscriptions(state))
 		api.POST("/vps-monitor/subscriptions", handlers.AddVPSSubscription(state))
 		api.DELETE("/vps-monitor/subscriptions/clear", handlers.ClearVPSSubscriptions(state))

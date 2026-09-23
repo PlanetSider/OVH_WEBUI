@@ -11,23 +11,11 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/ovh"
 )
 
 // catalogTTL OVH 公开 catalog 缓存时长，与前端 useOvhCatalog 的 staleTime 对齐
 const catalogTTL = 2 * time.Hour
-
-// catalogBaseURLForSubsidiary 把 subsidiary 映射成对应站点的 base URL。
-// 同一个 catalog 只能从对应站点查，跨站点 404。
-func catalogBaseURLForSubsidiary(sub string) string {
-	switch strings.ToUpper(sub) {
-	case "US":
-		return "https://api.us.ovhcloud.com"
-	case "CA", "QC", "ASIA", "SG", "AU", "IN":
-		return "https://ca.api.ovh.com"
-	default:
-		return "https://eu.api.ovh.com"
-	}
-}
 
 // GetCatalog GET /api/catalog?subsidiary=IE[&forceRefresh=true]
 // 返回 OVH 公开 eco catalog 的原始 JSON。优先走 SQLite 缓存（2 小时 TTL），
@@ -59,9 +47,19 @@ func GetCatalog(state *app.State) gin.HandlerFunc {
 		}
 
 		// 2. 直连 OVH 拉新数据
-		baseURL := catalogBaseURLForSubsidiary(sub)
+		baseURL := ovh.CatalogBaseURLForSubsidiary(sub)
 		url := fmt.Sprintf("%s/v1/order/catalog/public/eco?ovhSubsidiary=%s", baseURL, sub)
-		client := &http.Client{Timeout: 30 * time.Second}
+		client, err := state.OVH.SharedHTTPClient(30 * time.Second)
+		if err != nil {
+			if raw, _, ok, _ := state.DB.GetCatalog(sub); ok {
+				c.Header("X-Cache-Warning", "stale (shared public proxy unavailable)")
+				c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(raw))
+				return
+			}
+			state.Logger.Error("catalog 公共代理不可用 "+sub+": "+err.Error(), "catalog")
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
 		req.Header.Set("accept", "application/json")
 

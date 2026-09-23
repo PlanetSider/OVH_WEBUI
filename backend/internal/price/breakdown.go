@@ -65,7 +65,7 @@ func GetDisplayWithContext(ctx context.Context, state *app.State, accountID, pla
 // GetCatalogDisplay 只读取公开 catalog，计算与服务器列表相同口径的月费和
 // 安装费。它不创建购物车，因此可在实时询价失败时继续为通知提供目录价格。
 func GetCatalogDisplay(state *app.State, accountID, planCode string, options []string) (DisplayPrice, error) {
-	return getDisplayFromCatalog(context.Background(), state, accountID, planCode, options, DisplayPrice{Currency: "EUR"})
+	return getDisplayFromCatalog(context.Background(), state, accountID, planCode, options, DisplayPrice{})
 }
 
 // GetDisplayFromResult 复用已经完成的购物车询价结果，再从公开 catalog
@@ -125,10 +125,10 @@ func getDisplayFromCatalog(ctx context.Context, state *app.State, accountID, pla
 
 	currency := strings.TrimSpace(catalog.Locale.CurrencyCode)
 	if currency == "" {
-		currency = display.Currency
+		currency = strings.TrimSpace(display.Currency)
 	}
-	if currency == "" {
-		currency = "EUR"
+	if currency != "" {
+		currency = strings.ToUpper(currency)
 	}
 	display.MonthlyWithTax = monthly.price + monthly.tax
 	display.InstallWithTax = install.price + install.tax
@@ -142,12 +142,12 @@ func getDisplayFromCatalog(ctx context.Context, state *app.State, accountID, pla
 }
 
 func displayPriceFromSummary(info *PriceInfo) DisplayPrice {
-	display := DisplayPrice{Currency: "EUR"}
+	display := DisplayPrice{}
 	if info == nil || info.Prices == nil {
 		return display
 	}
 	if currency, ok := info.Prices["currencyCode"].(string); ok && strings.TrimSpace(currency) != "" {
-		display.Currency = currency
+		display.Currency = strings.ToUpper(strings.TrimSpace(currency))
 	}
 	if total, ok := numconv.ToFloat64(info.Prices["withTax"]); ok {
 		display.TotalWithTax = total

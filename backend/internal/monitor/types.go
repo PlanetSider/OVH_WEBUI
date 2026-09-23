@@ -11,8 +11,8 @@ import (
 type Monitor struct {
 	state *app.State
 
-	lifecycleMu   sync.Mutex
-	subsMu        sync.Mutex
+	lifecycleMu sync.Mutex
+	subsMu      sync.Mutex
 	// persistMu 作为监控状态的读写屏障：单个订阅检查持有读锁，允许不同
 	// 订阅并发查询；订阅替换、账户级联删除和全量持久化持有写锁。
 	persistMu     sync.RWMutex
@@ -25,7 +25,7 @@ type Monitor struct {
 
 	running       bool
 	loaded        bool // SQLite 订阅/已知服务器已安全加载
-	checkInterval int // 全局固定 5 秒
+	checkInterval int  // 全局固定 5 秒
 	thread        *sync.WaitGroup
 	stopCh        chan struct{}
 	maxWorkers    int
@@ -52,6 +52,7 @@ const (
 	NotificationKindPurchaseSuccess = "purchase_success"
 	NotificationKindOrderStatus     = "order_status"
 	NotificationKindCatalogStatus   = "catalog_status"
+	NotificationKindProxyGuard      = "proxy_guard"
 	// MessageButtonTTL 是 Telegram / 飞书一键下单按钮的统一有效期。
 	// 两个渠道共用同一张 SQLite 表，必须使用同一边界，避免飞书按钮
 	// 绕过 Telegram 缓存层后永久有效。
@@ -73,28 +74,29 @@ type CachedMessage struct {
 
 // Subscription 订阅条目(monitor 包内部用,落 SQLite 时转 types.Subscription)
 type Subscription struct {
-	mu                 sync.Mutex             `json:"-"`
-	checkMu            sync.Mutex             `json:"-"`
-	PlanCode           string                 `json:"planCode"`
-	Datacenters        []string               `json:"datacenters"`
-	Memories           []string               `json:"memories,omitempty"`
-	Storages           []string               `json:"storages,omitempty"`
-	Networks           []string               `json:"networks,omitempty"`
-	NotifyAvailable    bool                   `json:"notifyAvailable"`
-	NotifyUnavailable  bool                   `json:"notifyUnavailable"`
-	LastStatus         map[string]string      `json:"lastStatus"`
-	ConfirmedStatus    map[string]string      `json:"confirmedStatus,omitempty"`
-	PendingOrder       map[string]int         `json:"pendingOrder,omitempty"`
-	PendingNotify      map[string]string      `json:"pendingNotify,omitempty"`
-	PendingNotifyChannels map[string][]string `json:"pendingNotifyChannels,omitempty"`
-	CreatedAt          string                 `json:"createdAt"`
-	History            []HistoryEntry         `json:"history"`
-	ServerName         string                 `json:"serverName,omitempty"`
-	AutoOrder          bool                   `json:"autoOrder,omitempty"`
-	Quantity           int                    `json:"quantity,omitempty"`
-	AutoOrderAccountID string                 `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
-	Discontinued        bool                   `json:"discontinued,omitempty"`
-	DiscontinuedNextCheckAt float64            `json:"discontinuedNextCheckAt,omitempty"`
+	mu                          sync.Mutex          `json:"-"`
+	checkMu                     sync.Mutex          `json:"-"`
+	PlanCode                    string              `json:"planCode"`
+	Datacenters                 []string            `json:"datacenters"`
+	Memories                    []string            `json:"memories,omitempty"`
+	Storages                    []string            `json:"storages,omitempty"`
+	Networks                    []string            `json:"networks,omitempty"`
+	NotifyAvailable             bool                `json:"notifyAvailable"`
+	NotifyUnavailable           bool                `json:"notifyUnavailable"`
+	LastStatus                  map[string]string   `json:"lastStatus"`
+	ConfirmedStatus             map[string]string   `json:"confirmedStatus,omitempty"`
+	PendingOrder                map[string]int      `json:"pendingOrder,omitempty"`
+	PendingNotify               map[string]string   `json:"pendingNotify,omitempty"`
+	PendingNotifyChannels       map[string][]string `json:"pendingNotifyChannels,omitempty"`
+	CreatedAt                   string              `json:"createdAt"`
+	History                     []HistoryEntry      `json:"history"`
+	ServerName                  string              `json:"serverName,omitempty"`
+	AutoOrder                   bool                `json:"autoOrder,omitempty"`
+	Quantity                    int                 `json:"quantity,omitempty"`
+	AutoOrderAccountID          string              `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
+	ProxyGuardAutoOrderDisabled bool                `json:"proxyGuardAutoOrderDisabled,omitempty"`
+	Discontinued                bool                `json:"discontinued,omitempty"`
+	DiscontinuedNextCheckAt     float64             `json:"discontinuedNextCheckAt,omitempty"`
 }
 
 // HistoryEntry 历史记录条目
@@ -172,8 +174,9 @@ func cloneSubscriptionUnlocked(source *Subscription) *Subscription {
 		ConfirmedStatus: cloneStringMap(source.ConfirmedStatus), PendingOrder: cloneIntMap(source.PendingOrder),
 		PendingNotify: cloneStringMap(source.PendingNotify), CreatedAt: source.CreatedAt, ServerName: source.ServerName,
 		PendingNotifyChannels: cloneStringSliceMap(source.PendingNotifyChannels),
-		AutoOrder: source.AutoOrder, Quantity: source.Quantity, AutoOrderAccountID: source.AutoOrderAccountID,
-		Discontinued: source.Discontinued, DiscontinuedNextCheckAt: source.DiscontinuedNextCheckAt,
+		AutoOrder:             source.AutoOrder, Quantity: source.Quantity, AutoOrderAccountID: source.AutoOrderAccountID,
+		ProxyGuardAutoOrderDisabled: source.ProxyGuardAutoOrderDisabled,
+		Discontinued:                source.Discontinued, DiscontinuedNextCheckAt: source.DiscontinuedNextCheckAt,
 	}
 	out.History = make([]HistoryEntry, 0, len(source.History))
 	for _, entry := range source.History {

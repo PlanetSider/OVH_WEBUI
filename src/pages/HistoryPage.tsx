@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Chip } from "@/components/common/Chip";
 import { AccountChip } from "@/components/common/AccountChip";
+import { TimingChip } from "@/components/common/TimingChip";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
 import {
@@ -20,7 +21,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useHistory, useClearHistory, type PurchaseHistory } from "@/hooks/use-history";
+import { useHistory, useClearHistory, useRefreshOrderStatus, type PurchaseHistory } from "@/hooks/use-history";
+import { formatCurrencyAmount } from "@/lib/currency";
 
 /** 抢购历史：表格 + 搜索 + 状态过滤 */
 /** 订单有效期 15 天，未提供 expirationTime 时用 purchaseTime + 15d 兜底 */
@@ -71,6 +73,7 @@ function orderStatusTone(status?: string): "default" | "success" | "warning" | "
 function HistoryPage() {
   const list = useHistory();
   const clear = useClearHistory();
+  const refreshOrderStatus = useRefreshOrderStatus();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed" | "uncertain">("all");
   const [confirmClear, setConfirmClear] = useState(false);
@@ -99,12 +102,21 @@ function HistoryPage() {
         title="抢购历史"
         description="查看服务器购买历史记录"
         action={
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => list.refetch()} disabled={list.isFetching}>
+          <div className="flex gap-2 flex-wrap justify-end">
+            <Button
+              variant="outline"
+              onClick={() => refreshOrderStatus.mutate()}
+              disabled={refreshOrderStatus.isPending || list.isFetching || items.every((item) => item.status !== "success" || !item.orderId)}
+              title="查询已有成功订单的最新状态"
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshOrderStatus.isPending ? "animate-spin" : ""}`} />
+              {refreshOrderStatus.isPending ? "刷新订单状态中…" : "刷新订单状态"}
+            </Button>
+            <Button variant="outline" onClick={() => list.refetch()} disabled={list.isFetching || refreshOrderStatus.isPending}>
               <RefreshCw className={`w-4 h-4 ${list.isFetching ? "animate-spin" : ""}`} />
               刷新
             </Button>
-            <Button variant="outline" onClick={() => setConfirmClear(true)} disabled={items.length === 0}>
+            <Button variant="outline" onClick={() => setConfirmClear(true)} disabled={items.length === 0 || refreshOrderStatus.isPending}>
               <Trash2 className="w-4 h-4" />
               清空
             </Button>
@@ -216,6 +228,7 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
         <div className="flex items-center gap-2 flex-wrap">
           {item.planCode}
           <AccountChip accountId={item.accountId} />
+          <TimingChip totalMs={item.totalMs} phases={item.timing} />
         </div>
       </td>
       <td className={`px-4 py-3 ${isExpired ? "line-through" : ""}`}>{item.datacenter.toUpperCase()}</td>
@@ -225,7 +238,7 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
       <td className="px-4 py-3">
         {item.price?.withTax != null ? (
           <span className={`font-mono font-medium text-success ${isExpired ? "line-through" : ""}`}>
-            {item.price.withTax} {item.price.currencyCode || "EUR"}
+            {formatCurrencyAmount(item.price.withTax, item.price.currencyCode)}
           </span>
         ) : (
           <span className="text-muted-foreground">—</span>
@@ -316,6 +329,7 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <span className={`font-mono font-semibold text-[13px] ${isExpired ? "line-through" : ""}`}>{item.planCode}</span>
             <AccountChip accountId={item.accountId} />
+            <TimingChip totalMs={item.totalMs} phases={item.timing} />
             <Chip tone="default" className="text-[10px]">{item.datacenter.toUpperCase()}</Chip>
           </div>
           <div className="flex flex-wrap gap-1">
@@ -342,7 +356,7 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
           </span>
           {item.price?.withTax != null ? (
             <span className={`font-mono font-medium text-success ${isExpired ? "line-through" : ""}`}>
-              {item.price.withTax} {item.price.currencyCode || "EUR"}
+              {formatCurrencyAmount(item.price.withTax, item.price.currencyCode)}
             </span>
           ) : null}
         </div>

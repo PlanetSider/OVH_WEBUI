@@ -32,6 +32,10 @@ export interface VpsServiceInfo {
   renewalType: boolean;
   renewalPeriod: number;
   renewalDeleteAtExpiration: boolean;
+  terminationScheduled?: boolean;
+  terminationAction?: string;
+  terminationDate?: string;
+  terminationStateUnknown?: boolean;
   renewalForced: boolean;
   renewalManualPayment: boolean;
   possibleRenewPeriod: number[];
@@ -131,6 +135,18 @@ export function useUpdateVpsRenewal(svc: string) {
     mutationFn: async (vars: { mode: "auto" | "manual" | "delete"; period?: number }) => {
       const res = await api.put(`/vps-control/${svc}/serviceinfo/renewal`, vars);
       return res.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.vpsControl.serviceInfo(svc) }),
+  });
+}
+
+/** 设置 VPS 终止策略。不要调用 /terminate：那是立即终止。 */
+export function useUpdateVpsTerminationPolicy(svc: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { policy: "empty" | "terminateAtExpirationDate" | "terminateAtEngagementDate" }) => {
+      const res = await api.put(`/vps-control/${svc}/termination-policy`, vars);
+      return res.data as { success: boolean; message: string; policy: string };
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.vpsControl.serviceInfo(svc) }),
   });

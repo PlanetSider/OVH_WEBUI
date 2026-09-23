@@ -3,7 +3,10 @@ package monitor
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/proxyguard"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -83,6 +86,44 @@ func TestNewCatalogStatusNotificationUsesStableTransitionIdentity(t *testing.T) 
 	}
 	if !strings.Contains(entry.Payload, `"serverName":"KS-5"`) || !strings.Contains(entry.Payload, `"recovered":false`) {
 		t.Fatalf("payload = %s", entry.Payload)
+	}
+}
+
+func TestNewProxyGuardNotificationScrubsProxyCredentials(t *testing.T) {
+	entry, err := NewProxyGuardNotification(app.ProxyGuardAction{
+		AccountID: "account-1", AccountName: "primary", AccountZone: "ie",
+		ProxyURL: "http://user:secret@proxy.example:8080",
+		Event: proxyguard.Event{Kind: proxyguard.EventTrip, Status: proxyguard.Status{
+			AccountID: "account-1", ConsecutiveFailures: 3, LastError: "proxyconnect http://user:secret@proxy.example:8080 failed",
+			LastFailureAt: time.Now().UTC(),
+		}},
+	}, []string{"telegram", "telegram"})
+	if err != nil || entry == nil {
+		t.Fatalf("entry=%#v err=%v", entry, err)
+	}
+	if entry.Kind != NotificationKindProxyGuard || !strings.HasPrefix(entry.EventKey, "proxy_guard:trip:account-1:") {
+		t.Fatalf("entry identity = %#v", entry)
+	}
+	if strings.Contains(entry.Payload, "secret") || strings.Contains(entry.Payload, "user:") {
+		t.Fatalf("proxy credentials leaked in payload: %s", entry.Payload)
+	}
+	if !strings.Contains(entry.Payload, "proxy.example") {
+		t.Fatalf("scrubbed proxy missing from payload: %s", entry.Payload)
+	}
+}
+
+func TestDispatchProxyGuardNotificationAcceptsValidPayloadWithoutChannels(t *testing.T) {
+	m := &Monitor{}
+	entry, err := NewProxyGuardNotification(app.ProxyGuardAction{
+		AccountID: "account-1",
+		ProxyURL:  "http://proxy.example:8080",
+		Event:     proxyguard.Event{Kind: proxyguard.EventRecovery, Status: proxyguard.Status{AccountID: "account-1"}},
+	}, nil)
+	if err != nil || entry == nil {
+		t.Fatalf("entry=%#v err=%v", entry, err)
+	}
+	if _, err := m.dispatchOutboxEntry(*entry); err != nil {
+		t.Fatalf("dispatch without selected channels: %v", err)
 	}
 }
 

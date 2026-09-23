@@ -36,23 +36,23 @@ type Config struct {
 	TgToken     string `json:"tgToken"`
 	TgChatID    string `json:"tgChatId"`
 	// 通知开关使用指针以兼容旧配置：字段缺失时按开启处理，显式 false 才关闭。
-	TgNotificationsEnabled      *bool `json:"tgNotificationsEnabled,omitempty"`
+	TgNotificationsEnabled *bool `json:"tgNotificationsEnabled,omitempty"`
 	// TgWebhookSecret 用于 setWebhook(secret_token) + 校验 X-Telegram-Bot-Api-Secret-Token。
 	// 防止任意人伪造 POST /api/telegram/webhook 入队。
-	TgWebhookSecret string `json:"tgWebhookSecret,omitempty"`
-	FeishuEnabled bool `json:"feishuEnabled,omitempty"`
-	FeishuNotificationsEnabled *bool `json:"feishuNotificationsEnabled,omitempty"`
-	FeishuAppID string `json:"feishuAppId,omitempty"`
-	FeishuAppSecret string `json:"feishuAppSecret,omitempty"`
-	FeishuDomain string `json:"feishuDomain,omitempty"`
+	TgWebhookSecret            string `json:"tgWebhookSecret,omitempty"`
+	FeishuEnabled              bool   `json:"feishuEnabled,omitempty"`
+	FeishuNotificationsEnabled *bool  `json:"feishuNotificationsEnabled,omitempty"`
+	FeishuAppID                string `json:"feishuAppId,omitempty"`
+	FeishuAppSecret            string `json:"feishuAppSecret,omitempty"`
+	FeishuDomain               string `json:"feishuDomain,omitempty"`
 	// webhook is the backwards-compatible default; long_connection uses the
 	// official Feishu WebSocket client for events and card callbacks.
-	FeishuConnectionMode string `json:"feishuConnectionMode,omitempty"`
-	FeishuVerificationToken string `json:"feishuVerificationToken,omitempty"`
-	FeishuEncryptKey string `json:"feishuEncryptKey,omitempty"`
-	WeixinNotificationsEnabled *bool `json:"weixinNotificationsEnabled,omitempty"`
-	IAM             string `json:"iam"`
-	Zone            string `json:"zone"`
+	FeishuConnectionMode       string `json:"feishuConnectionMode,omitempty"`
+	FeishuVerificationToken    string `json:"feishuVerificationToken,omitempty"`
+	FeishuEncryptKey           string `json:"feishuEncryptKey,omitempty"`
+	WeixinNotificationsEnabled *bool  `json:"weixinNotificationsEnabled,omitempty"`
+	IAM                        string `json:"iam"`
+	Zone                       string `json:"zone"`
 }
 
 func notificationsEnabled(flag *bool) bool {
@@ -74,8 +74,8 @@ func (c Config) IsWeixinNotificationsEnabled() bool {
 // FeishuBinding 记录全局飞书通知接收人；AccountID 固定为 default。
 type FeishuBinding struct {
 	AccountID string `json:"accountId"`
-	OpenID string `json:"openId"`
-	Name string `json:"name,omitempty"`
+	OpenID    string `json:"openId"`
+	Name      string `json:"name,omitempty"`
 	UpdatedAt string `json:"updatedAt"`
 }
 
@@ -83,11 +83,11 @@ type FeishuBinding struct {
 func DefaultConfig() Config {
 	trueValue := true
 	return Config{
-		Endpoint: "ovh-eu",
-		IAM:      "go-ovh-ie",
-		Zone:     "IE",
-		FeishuConnectionMode: "long_connection",
-		TgNotificationsEnabled: &trueValue,
+		Endpoint:                   "ovh-eu",
+		IAM:                        "go-ovh-ie",
+		Zone:                       "IE",
+		FeishuConnectionMode:       "long_connection",
+		TgNotificationsEnabled:     &trueValue,
 		FeishuNotificationsEnabled: &trueValue,
 		WeixinNotificationsEnabled: &trueValue,
 	}
@@ -115,41 +115,44 @@ type Stats struct {
 
 // OVHAccount OVH 账户凭据。多账户场景下每条记录代表一个 OVH 账户。
 type OVHAccount struct {
-	ID          string `json:"id"`           // UUID
-	Name        string `json:"name"`         // 用户起的名字（"主号" / "小号 A"）
-	Endpoint    string `json:"endpoint"`     // ovh-eu / ovh-us / ovh-ca
-	Zone        string `json:"zone"`         // IE/FR/DE/US/CA/...
+	ID          string `json:"id"`       // UUID
+	Name        string `json:"name"`     // 用户起的名字（"主号" / "小号 A"）
+	Endpoint    string `json:"endpoint"` // ovh-eu / ovh-us / ovh-ca
+	Zone        string `json:"zone"`     // IE/FR/DE/US/CA/...
 	AppKey      string `json:"appKey"`
 	AppSecret   string `json:"appSecret"`
 	ConsumerKey string `json:"consumerKey"`
-	IAM         string `json:"iam"`           // go-ovh-<zone-lower>
+	IAM         string `json:"iam"` // go-ovh-<zone-lower>
 	ProxyURL    string `json:"proxyUrl,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
-	IsDefault   bool   `json:"isDefault"`     // 默认账户（未指定时 fallback 用它）
+	IsDefault   bool   `json:"isDefault"` // 默认账户（未指定时 fallback 用它）
 	CreatedAt   string `json:"createdAt"`
 }
 
 // QueueItem 抢购队列项
 type QueueItem struct {
-	ID                  string   `json:"id"`
-	AccountID           string   `json:"accountId"`    // 该任务下单时用的 OVH 账户
-	PlanCode            string   `json:"planCode"`
-	Datacenter          string   `json:"datacenter"`
-	Options             []string `json:"options"`
-	Status              string   `json:"status"` // running / pending / paused / completed
-	CreatedAt           string   `json:"createdAt"`
-	UpdatedAt           string   `json:"updatedAt"`
-	RetryInterval       int      `json:"retryInterval"`
-	RetryCount          int      `json:"retryCount"`
+	ID            string   `json:"id"`
+	AccountID     string   `json:"accountId"` // 该任务下单时用的 OVH 账户
+	PlanCode      string   `json:"planCode"`
+	Datacenter    string   `json:"datacenter"`
+	Options       []string `json:"options"`
+	Status        string   `json:"status"` // running / pending / paused / completed
+	CreatedAt     string   `json:"createdAt"`
+	UpdatedAt     string   `json:"updatedAt"`
+	RetryInterval int      `json:"retryInterval"`
+	RetryCount    int      `json:"retryCount"`
 	// FailureCount 只统计确定已经走到失败提交阶段的错误；429/5xx/网络错误不计入。
-	FailureCount        int      `json:"failureCount,omitempty"`
-	MaxRetries          int      `json:"maxRetries,omitempty"`
-	LastCheckTime       float64  `json:"lastCheckTime"`
-	QuickOrder          bool     `json:"quickOrder,omitempty"`
-	Priority            int      `json:"priority,omitempty"`
-	FromTelegram        bool     `json:"fromTelegram,omitempty"`
-	ConfigSniperTaskID  string   `json:"configSniperTaskId,omitempty"`
-	Discontinued        bool     `json:"discontinued,omitempty"`
+	FailureCount       int     `json:"failureCount,omitempty"`
+	MaxRetries         int     `json:"maxRetries,omitempty"`
+	LastCheckTime      float64 `json:"lastCheckTime"`
+	QuickOrder         bool    `json:"quickOrder,omitempty"`
+	Priority           int     `json:"priority,omitempty"`
+	FromTelegram       bool    `json:"fromTelegram,omitempty"`
+	ConfigSniperTaskID string  `json:"configSniperTaskId,omitempty"`
+	Discontinued       bool    `json:"discontinued,omitempty"`
+	// ProxyGuardPaused 标记该任务是否因账户代理熔断被自动暂停；
+	// 仅用于恢复时区分用户手动暂停的任务。
+	ProxyGuardPaused bool `json:"proxyGuardPaused,omitempty"`
 }
 
 // PriceInfo 价格信息
@@ -157,27 +160,44 @@ type PriceInfo struct {
 	WithTax      *float64 `json:"withTax"`
 	WithoutTax   *float64 `json:"withoutTax"`
 	Tax          *float64 `json:"tax"`
-	CurrencyCode string   `json:"currencyCode"`
+	CurrencyCode string   `json:"currencyCode"` // API 未返回时为空；调用方必须显示未知，不能猜测默认币种
 }
 
 // PurchaseHistoryEntry 抢购历史
+// Timing/TotalMs 记录本轮抢购已经完成的阶段；旧记录没有这些字段时保持零值。
 type PurchaseHistoryEntry struct {
-	ID             string     `json:"id"`
-	AccountID      string     `json:"accountId"` // 哪个账户买的
-	TaskID         string     `json:"taskId"`
-	PlanCode       string     `json:"planCode"`
-	Datacenter     string     `json:"datacenter"`
-	Options        []string   `json:"options"`
-	Status         string     `json:"status"` // success / failed / uncertain
-	OrderID        string     `json:"orderId"`
-	OrderURL       string     `json:"orderUrl"`
-	ErrorMessage   *string    `json:"errorMessage"`
-	PurchaseTime   string     `json:"purchaseTime"`
-	AttemptCount   int        `json:"attemptCount"`
-	ExpirationTime string     `json:"expirationTime,omitempty"`
-	Price          *PriceInfo `json:"price,omitempty"`
-	OrderStatus    string     `json:"orderStatus,omitempty"`
-	OrderStatusAt  string     `json:"orderStatusAt,omitempty"`
+	ID             string        `json:"id"`
+	AccountID      string        `json:"accountId"` // 哪个账户买的
+	TaskID         string        `json:"taskId"`
+	PlanCode       string        `json:"planCode"`
+	Datacenter     string        `json:"datacenter"`
+	Options        []string      `json:"options"`
+	Status         string        `json:"status"` // success / failed / uncertain
+	OrderID        string        `json:"orderId"`
+	OrderURL       string        `json:"orderUrl"`
+	ErrorMessage   *string       `json:"errorMessage"`
+	PurchaseTime   string        `json:"purchaseTime"`
+	AttemptCount   int           `json:"attemptCount"`
+	ExpirationTime string        `json:"expirationTime,omitempty"`
+	Price          *PriceInfo    `json:"price,omitempty"`
+	OrderStatus    string        `json:"orderStatus,omitempty"`
+	OrderStatusAt  string        `json:"orderStatusAt,omitempty"`
+	Timing         []PhaseTiming `json:"timing,omitempty"`
+	TotalMs        int64         `json:"totalMs,omitempty"`
+}
+
+// PhaseTiming 是一次抢购中已完成阶段的墙钟耗时。
+type PhaseTiming struct {
+	Name string `json:"name"`
+	Ms   int64  `json:"ms"`
+}
+
+// PurchaseTiming 是队列每条 plan@datacenter 链路最近一轮的耗时快照。
+type PurchaseTiming struct {
+	At      string        `json:"at"`
+	TotalMs int64         `json:"totalMs"`
+	Phases  []PhaseTiming `json:"phases"`
+	Outcome string        `json:"outcome"` // ordered / unavailable / failed / cancelled
 }
 
 // Datacenter 服务器目录中单个机房可用性
@@ -213,54 +233,62 @@ type ServerPlan struct {
 
 // SubscriptionHistoryEntry 监控订阅的历史记录条目
 type SubscriptionHistoryEntry struct {
-	Timestamp   string                 `json:"timestamp"`
-	Datacenter  string                 `json:"datacenter"`
-	Status      string                 `json:"status"`
-	ChangeType  string                 `json:"changeType"`
-	OldStatus   interface{}            `json:"oldStatus"`
-	Config      map[string]interface{} `json:"config,omitempty"`
+	Timestamp  string                 `json:"timestamp"`
+	Datacenter string                 `json:"datacenter"`
+	Status     string                 `json:"status"`
+	ChangeType string                 `json:"changeType"`
+	OldStatus  interface{}            `json:"oldStatus"`
+	Config     map[string]interface{} `json:"config,omitempty"`
 }
 
 // Subscription 监控订阅（跨账户共享列表;auto-order 触发时按 AutoOrderAccountID 下单）
 type Subscription struct {
-	PlanCode            string                     `json:"planCode"`
-	Datacenters         []string                   `json:"datacenters"`
-	Memories            []string                   `json:"memories,omitempty"`
-	Storages            []string                   `json:"storages,omitempty"`
-	Networks            []string                   `json:"networks,omitempty"`
-	NotifyAvailable     bool                       `json:"notifyAvailable"`
-	NotifyUnavailable   bool                       `json:"notifyUnavailable"`
-	LastStatus          map[string]string          `json:"lastStatus"`
-	ConfirmedStatus     map[string]string          `json:"confirmedStatus,omitempty"`
-	PendingOrder        map[string]int             `json:"pendingOrder,omitempty"`
-	PendingNotify       map[string]string          `json:"pendingNotify,omitempty"`
-	PendingNotifyChannels map[string][]string      `json:"pendingNotifyChannels,omitempty"`
-	CreatedAt           string                     `json:"createdAt"`
-	History             []SubscriptionHistoryEntry `json:"history"`
-	ServerName          string                     `json:"serverName,omitempty"`
-	AutoOrder           bool                       `json:"autoOrder,omitempty"`
-	Quantity            int                        `json:"quantity,omitempty"`
-	AutoOrderAccountID  string                     `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
-	Discontinued        bool                       `json:"discontinued,omitempty"`
-	DiscontinuedNextCheckAt float64                `json:"discontinuedNextCheckAt,omitempty"`
+	PlanCode                string                     `json:"planCode"`
+	Datacenters             []string                   `json:"datacenters"`
+	Memories                []string                   `json:"memories,omitempty"`
+	Storages                []string                   `json:"storages,omitempty"`
+	Networks                []string                   `json:"networks,omitempty"`
+	NotifyAvailable         bool                       `json:"notifyAvailable"`
+	NotifyUnavailable       bool                       `json:"notifyUnavailable"`
+	LastStatus              map[string]string          `json:"lastStatus"`
+	ConfirmedStatus         map[string]string          `json:"confirmedStatus,omitempty"`
+	PendingOrder            map[string]int             `json:"pendingOrder,omitempty"`
+	PendingNotify           map[string]string          `json:"pendingNotify,omitempty"`
+	PendingNotifyChannels   map[string][]string        `json:"pendingNotifyChannels,omitempty"`
+	CreatedAt               string                     `json:"createdAt"`
+	History                 []SubscriptionHistoryEntry `json:"history"`
+	ServerName              string                     `json:"serverName,omitempty"`
+	AutoOrder               bool                       `json:"autoOrder,omitempty"`
+	Quantity                int                        `json:"quantity,omitempty"`
+	AutoOrderAccountID      string                     `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
+	Discontinued            bool                       `json:"discontinued,omitempty"`
+	DiscontinuedNextCheckAt float64                    `json:"discontinuedNextCheckAt,omitempty"`
+	// ProxyGuardAutoOrderDisabled 标记自动下单是否由 proxyguard 暂时关闭。
+	ProxyGuardAutoOrderDisabled bool `json:"proxyGuardAutoOrderDisabled,omitempty"`
 }
 
 // VPSSubscription VPS 监控订阅
 type VPSSubscription struct {
-	ID                  string                 `json:"id"`
-	PlanCode            string                 `json:"planCode"`
-	OvhSubsidiary       string                 `json:"ovhSubsidiary"`
-	Datacenters         []string               `json:"datacenters"`
-	MonitorLinux        bool                   `json:"monitorLinux"`
-	MonitorWindows      bool                   `json:"monitorWindows"`
-	NotifyAvailable     bool                   `json:"notifyAvailable"`
-	NotifyUnavailable   bool                   `json:"notifyUnavailable"`
-	LastStatus          map[string]string      `json:"lastStatus"`
-	PendingNotify       map[string]string      `json:"pendingNotify,omitempty"`
-	PendingNotifyChannels map[string][]string  `json:"pendingNotifyChannels,omitempty"`
-	History             []map[string]interface{} `json:"history"`
-	CreatedAt           string                 `json:"createdAt"`
-	AutoOrderAccountID  string                 `json:"autoOrderAccountId,omitempty"` // 旧版本兼容，不再对外创建
+	ID                    string                   `json:"id"`
+	PlanCode              string                   `json:"planCode"`
+	OvhSubsidiary         string                   `json:"ovhSubsidiary"`
+	Datacenters           []string                 `json:"datacenters"`
+	MonitorLinux          bool                     `json:"monitorLinux"`
+	MonitorWindows        bool                     `json:"monitorWindows"`
+	NotifyAvailable       bool                     `json:"notifyAvailable"`
+	NotifyUnavailable     bool                     `json:"notifyUnavailable"`
+	LastStatus            map[string]string        `json:"lastStatus"`
+	PendingNotify         map[string]string        `json:"pendingNotify,omitempty"`
+	PendingNotifyChannels map[string][]string      `json:"pendingNotifyChannels,omitempty"`
+	History               []map[string]interface{} `json:"history"`
+	CreatedAt             string                   `json:"createdAt"`
+	AutoOrderAccountID    string                   `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
+	AutoOrder             bool                     `json:"autoOrder,omitempty"`
+	Quantity              int                      `json:"quantity,omitempty"`
+	AutoPay               bool                     `json:"autoPay,omitempty"`
+	OS                    string                   `json:"os,omitempty"`
+	// ProxyGuardAutoOrderDisabled 标记自动下单是否由 proxyguard 暂时关闭。
+	ProxyGuardAutoOrderDisabled bool `json:"proxyGuardAutoOrderDisabled,omitempty"`
 }
 
 // NotificationOutboxEntry 是待发送通知的持久化记录。Channels 保存尚未成功的目标渠道；

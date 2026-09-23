@@ -40,12 +40,15 @@ import {
   useClearQueue,
   useCreateQueueItem,
   useUpdateQueueItem,
+  usePurchaseTimings,
   type QueueItem,
+  type PurchaseTiming,
 } from "@/hooks/use-queue";
 import { useServers } from "@/hooks/use-servers";
 import { OVH_DATACENTERS as OVH_DC_LIST } from "@/lib/datacenters";
 import { AccountSelect } from "@/components/common/AccountSelect";
 import { AccountChip } from "@/components/common/AccountChip";
+import { TimingChip } from "@/components/common/TimingChip";
 import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
 import { OptionGroupSection } from "@/components/common/OptionGroupSection";
 import { groupOptions, type OptionGroupKey } from "@/lib/option-groups";
@@ -70,6 +73,7 @@ function displayDatacenterCode(value: string): string {
 
 function QueuePage() {
   const queue = useQueueList();
+  const timings = usePurchaseTimings();
   const toggle = useToggleQueueItem();
   const remove = useRemoveQueueItem();
   const clear = useClearQueue();
@@ -142,6 +146,7 @@ function QueuePage() {
             <QueueRow
               key={q.id}
               item={q}
+              timing={timings.data?.[`${q.planCode}@${q.datacenter}`]}
               onToggle={() =>
                 toggle.mutate({
                   id: q.id,
@@ -774,11 +779,13 @@ function QueueEditDialog({
 
 function QueueRow({
   item,
+  timing,
   onToggle,
   onDelete,
   onEdit,
 }: {
   item: QueueItem;
+  timing?: PurchaseTiming;
   onToggle: () => void;
   onDelete: () => void;
   onEdit: () => void;
@@ -827,6 +834,7 @@ function QueueRow({
               </Chip>
             )}
             <AccountChip accountId={item.accountId} />
+            <TimingChip totalMs={timing?.totalMs} phases={timing?.phases} />
             <Chip tone="default">DC {item.datacenter.toUpperCase()}</Chip>
             {item.options && item.options.length > 0 && (
               <Chip tone="default">含 {item.options.length} 个可选配置</Chip>

@@ -2,6 +2,7 @@ package purchase
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -74,5 +75,40 @@ func TestOrderStatusDue(t *testing.T) {
 	}
 	if orderStatusDue(types.PurchaseHistoryEntry{OrderID: "o4", PurchaseTime: fresh, OrderStatusAt: now.Add(-time.Minute).Format(types.NowISOLayout)}, now) {
 		t.Fatal("recently checked order should be throttled")
+	}
+}
+
+func TestOrderStatusRefreshEligibleForceBypassesThrottleOnly(t *testing.T) {
+	now := time.Now()
+	recentlyChecked := types.PurchaseHistoryEntry{
+		OrderID: "o1", PurchaseTime: now.Add(-time.Hour).Format(types.NowISOLayout),
+		OrderStatusAt: now.Add(-time.Minute).Format(types.NowISOLayout),
+	}
+	if orderStatusRefreshEligible(recentlyChecked, now, false) {
+		t.Fatal("background refresh should respect the throttle")
+	}
+	if !orderStatusRefreshEligible(recentlyChecked, now, true) {
+		t.Fatal("manual refresh should bypass the throttle")
+	}
+	terminal := recentlyChecked
+	terminal.OrderStatus = "delivered"
+	if orderStatusRefreshEligible(terminal, now, true) {
+		t.Fatal("manual refresh should not query terminal orders")
+	}
+	old := recentlyChecked
+	old.PurchaseTime = now.Add(-31 * 24 * time.Hour).Format(types.NowISOLayout)
+	if orderStatusRefreshEligible(old, now, true) {
+		t.Fatal("manual refresh should respect the maximum age")
+	}
+}
+
+func TestOrderStatusRefreshNowRejectsConcurrentRun(t *testing.T) {
+	loop := &OrderStatusLoop{}
+	loop.refreshMu.Lock()
+	defer loop.refreshMu.Unlock()
+
+	_, err := loop.RefreshNow(context.Background())
+	if !errors.Is(err, ErrOrderStatusRefreshInProgress) {
+		t.Fatalf("RefreshNow() error = %v, want ErrOrderStatusRefreshInProgress", err)
 	}
 }

@@ -2,6 +2,7 @@ package ovh
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -25,9 +26,15 @@ type Factory struct {
 	lookup   AccountLookup
 	fallback *config.Store // 兼容老 Client() 调用,等所有 callsite 迁完可移除
 
-	mu    sync.Mutex
-	cache map[string]*ovh.Client // accountID → client
+	mu          sync.Mutex
+	cache       map[string]*ovh.Client // accountID → client
 	proxyHealth ProxyHealthReporter
+
+	sharedMu        sync.RWMutex
+	sharedClient    *http.Client
+	sharedProxy     string
+	sharedAccountID string
+	sharedErr       error
 }
 
 // NewFactory 构造工厂。lookup 由 State 闭包注入；reporter 可选，负责接收
@@ -37,12 +44,78 @@ func NewFactory(cfg *config.Store, lookup AccountLookup, reporters ...ProxyHealt
 	if len(reporters) > 0 {
 		reporter = reporters[0]
 	}
+	sharedClient, _ := BuildHTTPClient("", "", 60*time.Second)
 	return &Factory{
-		lookup:      lookup,
-		fallback:    cfg,
-		cache:       map[string]*ovh.Client{},
-		proxyHealth: reporter,
+		lookup:       lookup,
+		fallback:     cfg,
+		cache:        map[string]*ovh.Client{},
+		proxyHealth:  reporter,
+		sharedClient: sharedClient,
 	}
+}
+
+// RefreshSharedProxy 让公开、无凭据的请求跟随当前默认账户的代理出口。
+// 公开请求不复用账户认证 client，但复用同一代理 transport；代理配置错误
+// 会保存在 sharedErr 中，调用方随后得到明确错误而不会静默直连。
+func (f *Factory) RefreshSharedProxy() error {
+	if f.lookup == nil {
+		return f.setSharedProxy("", "")
+	}
+	acc, ok := f.lookup("")
+	if !ok {
+		return f.setSharedProxy("", "")
+	}
+	return f.setSharedProxy(acc.ID, acc.ProxyURL)
+}
+
+func (f *Factory) setSharedProxy(accountID, proxyURL string) error {
+	client, err := BuildHTTPClient(proxyURL, "", 60*time.Second)
+	if err == nil {
+		client = withProxyHealthReporter(client, accountID, proxyURL, f.proxyHealth)
+	}
+
+	f.sharedMu.Lock()
+	old := f.sharedClient
+	f.sharedClient = client
+	f.sharedProxy = proxyURL
+	f.sharedAccountID = accountID
+	f.sharedErr = err
+	f.sharedMu.Unlock()
+	if old != nil && old != client {
+		old.CloseIdleConnections()
+	}
+	return err
+}
+
+// SharedHTTPClient 返回公共请求共用的 transport，并只为本次调用设置超时。
+func (f *Factory) SharedHTTPClient(timeout time.Duration) (*http.Client, error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	f.sharedMu.RLock()
+	client, err := f.sharedClient, f.sharedErr
+	f.sharedMu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+	if client == nil {
+		return nil, fmt.Errorf("shared public HTTP client is unavailable")
+	}
+	return &http.Client{Transport: client.Transport, Timeout: timeout}, nil
+}
+
+// SharedProxyAccountID 返回当前公共出口所绑定的账户 ID，仅用于日志关联。
+func (f *Factory) SharedProxyAccountID() string {
+	f.sharedMu.RLock()
+	defer f.sharedMu.RUnlock()
+	return f.sharedAccountID
+}
+
+// SharedProxyURL 返回当前公共出口的原始配置，仅供内部判断；不得写入日志或响应。
+func (f *Factory) SharedProxyURL() string {
+	f.sharedMu.RLock()
+	defer f.sharedMu.RUnlock()
+	return f.sharedProxy
 }
 
 // ClientFor 返回指定账户的 OVH client。accountID="" 走默认账户。

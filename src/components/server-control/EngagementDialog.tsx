@@ -13,6 +13,7 @@ import {
   type EngagementPricing,
 } from "@/hooks/use-server-control";
 import { toast } from "sonner";
+import { currencyLabel } from "@/lib/currency";
 
 /** EngagementDialog 钩子绑定 —— dedicated / vps 各自传入。
  *  类型上接受 (svc, enabled?) → query / mutation 形状即可。 */
@@ -291,7 +292,7 @@ function PricingRow({
   onSubscribe: () => void;
   disabled: boolean;
 }) {
-  const currency = pricing.price?.currencyCode || "USD";
+  const currency = currencyLabel(pricing.price?.currencyCode);
   const totalValue = pricing.price?.value ?? 0;
   const months = parseDurationMonths(pricing.engagementConfiguration?.duration || "");
   const perMonth = months > 0 ? totalValue / months : 0;

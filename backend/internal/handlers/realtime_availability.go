@@ -21,8 +21,6 @@ import (
 
 const realtimeAvailabilityMaxBody = 32 << 20
 
-var realtimeAvailabilityClient = &http.Client{Timeout: 30 * time.Second}
-
 type availabilityComparisonCatalog struct {
 	URL        string
 	Subsidiary string
@@ -247,7 +245,7 @@ func refreshRealtimeAvailabilityRegion(ctx context.Context, state *app.State, re
 	if !ok {
 		return fmt.Errorf("unsupported region %s", region)
 	}
-	items, err := fetchRealtimeAvailabilityItems(ctx, region)
+	items, err := fetchRealtimeAvailabilityItems(ctx, state, region)
 	if err != nil {
 		return err
 	}
@@ -269,7 +267,7 @@ func refreshRealtimeAvailabilityRegion(ctx context.Context, state *app.State, re
 	return nil
 }
 
-func fetchRealtimeAvailabilityItems(ctx context.Context, region string) ([]map[string]interface{}, error) {
+func fetchRealtimeAvailabilityItems(ctx context.Context, state *app.State, region string) ([]map[string]interface{}, error) {
 	_, source, ok := normalizeRealtimeRegion(region)
 	if !ok {
 		return nil, fmt.Errorf("unsupported region %s", region)
@@ -280,7 +278,11 @@ func fetchRealtimeAvailabilityItems(ctx context.Context, region string) ([]map[s
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "OVH-WebUI-Realtime-Availability")
-	resp, err := realtimeAvailabilityClient.Do(req)
+	client, err := state.OVH.SharedHTTPClient(30 * time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("shared public proxy unavailable: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +314,11 @@ func loadComparisonPlanCodes(ctx context.Context, state *app.State, region strin
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "OVH-WebUI-Preadded-Comparison")
-	resp, err := realtimeAvailabilityClient.Do(req)
+	client, err := state.OVH.SharedHTTPClient(30 * time.Second)
+	if err != nil {
+		return nil, comparison.Label, fmt.Errorf("shared public proxy unavailable: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, comparison.Label, err
 	}

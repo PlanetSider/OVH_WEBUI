@@ -1,165 +1,176 @@
 import { useEffect, useState } from "react";
-import { Repeat, AlertCircle, Lock } from "lucide-react";
+import { AlertCircle, Lock, Repeat } from "lucide-react";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useUpdateRenewal, type ServiceInfo } from "@/hooks/use-server-control";
+import { apiErrorText } from "@/lib/http";
+import { useUpdateRenewal, useUpdateTerminationPolicy, type ServiceInfo } from "@/hooks/use-server-control";
 import { toast } from "sonner";
 
 type RenewMode = "auto" | "manual" | "delete";
+export type TerminationPolicy = "empty" | "terminateAtExpirationDate" | "terminateAtEngagementDate";
 
 const MODE_OPTIONS: Array<{ value: RenewMode; label: string; desc: string }> = [
   { value: "auto", label: "自动续费", desc: "到期前 OVH 自动扣款续费" },
-  { value: "manual", label: "手动续费", desc: "到期前需手动付款,不付则服务终止" },
-  { value: "delete", label: "到期注销", desc: "到期不续费,自动销毁服务器" },
+  { value: "manual", label: "手动续费", desc: "到期前需手动付款，不付则服务终止" },
+  { value: "delete", label: "到期终止", desc: "到期日之前照常使用，到期后才销毁" },
 ];
 
-/** 用 VPS / dedicated 各自的 update hook 都行,Dialog 只关心 mutation 接口形状 */
 export type RenewalMutation = {
-  mutateAsync: (vars: { mode: RenewMode; period?: number }) => Promise<any>;
+  mutateAsync: (vars: { mode: RenewMode; period?: number }) => Promise<unknown>;
   isPending: boolean;
 };
 
-/** 续费策略修改对话框:三选一 + 周期选择;forced 套餐禁用全部操作。
- *  默认用 dedicated 的 useUpdateRenewal,VPS 调用方传入自己的 mutation 即可复用。 */
+export type TerminationMutation = {
+  mutateAsync: (vars: { policy: TerminationPolicy }) => Promise<{ message?: string } | unknown>;
+  isPending: boolean;
+};
+
+type RenewalInfo = ServiceInfo | (Omit<ServiceInfo, "possibleRenewPeriod"> & { possibleRenewPeriod?: number[] });
+
+/** 续费策略对话框；到期终止使用 services/{id} 的 terminationPolicy，避免误调用立即终止接口。 */
 export function RenewalDialog({
   serviceName,
   info,
   open,
   onOpenChange,
   mutation,
+  termination,
 }: {
   serviceName: string;
-  info: ServiceInfo | (Omit<ServiceInfo, "possibleRenewPeriod"> & { possibleRenewPeriod?: number[] });
+  info: RenewalInfo;
   open: boolean;
-  onOpenChange: (v: boolean) => void;
-  /** 可选:不传则用 dedicated 的 useUpdateRenewal(serviceName) */
+  onOpenChange: (open: boolean) => void;
   mutation?: RenewalMutation;
+  termination?: TerminationMutation;
 }) {
-  const currentMode: RenewMode = info.renewalDeleteAtExpiration
-    ? "delete"
-    : info.renewalType
-      ? "auto"
-      : "manual";
+  const terminationOn = info.terminationScheduled ?? info.renewalDeleteAtExpiration;
+  const currentMode: RenewMode = terminationOn ? "delete" : info.renewalType ? "auto" : "manual";
   const [mode, setMode] = useState<RenewMode>(currentMode);
-  const [period, setPeriod] = useState<number>(info.renewalPeriod || 1);
+  const [period, setPeriod] = useState(info.renewalPeriod || 1);
   const defaultUpdate = useUpdateRenewal(serviceName);
   const update = mutation ?? defaultUpdate;
+  const defaultPolicy = useUpdateTerminationPolicy(serviceName);
+  const policy = termination ?? defaultPolicy;
 
-  // 弹窗每次打开同步当前状态
   useEffect(() => {
     if (open) {
       setMode(currentMode);
       setPeriod(info.renewalPeriod || 1);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, currentMode, info.renewalPeriod]);
 
   const periods = info.possibleRenewPeriod && info.possibleRenewPeriod.length > 0
     ? info.possibleRenewPeriod
     : [1, 3, 6, 12];
+  const sameSelection =
+    mode === currentMode &&
+    period === info.renewalPeriod &&
+    !(mode === "delete" && info.terminationAction === "terminateAtEngagementDate");
 
   const handleSubmit = async () => {
     try {
-      await update.mutateAsync({
-        mode,
-        period: mode === "delete" ? undefined : period,
-      });
-      toast.success("续费策略已更新");
+      if (mode === "delete") {
+        const result = await policy.mutateAsync({ policy: "terminateAtExpirationDate" });
+        const message = (result as { message?: string } | undefined)?.message;
+        toast.success(message || "已设为到期终止", { duration: 6000 });
+        onOpenChange(false);
+        return;
+      }
+
+      if (terminationOn) {
+        await policy.mutateAsync({ policy: "empty" });
+      }
+      await update.mutateAsync({ mode, period });
+      toast.success(terminationOn ? "已取消终止并更新续费策略" : "续费策略已更新");
       onOpenChange(false);
-    } catch (e: any) {
-      const msg = e?.response?.data?.error || e?.message || "更新失败";
-      toast.error(msg, { duration: 6000 });
+    } catch (error: unknown) {
+      toast.error(apiErrorText(error, "续费策略更新失败"), { duration: 8000 });
     }
   };
+
+  const busy = update.isPending || policy.isPending;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Repeat className="w-5 h-5" />
+            <Repeat className="h-5 w-5" />
             修改续费策略
           </DialogTitle>
           <DialogDescription>{serviceName}</DialogDescription>
         </DialogHeader>
 
+        {info.terminationStateUnknown && (
+          <div className="flex gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <p className="text-[12px] text-muted-foreground">
+              OVH 生命周期状态读取失败，当前显示可能是旧的续费字段。保存前请确认服务状态，避免覆盖未知的终止计划。
+            </p>
+          </div>
+        )}
+
         {info.renewalForced ? (
-          <div className="border border-amber-500/40 bg-amber-500/10 rounded-xl p-3 flex gap-2.5">
-            <Lock className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+          <div className="flex gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
+            <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
             <div className="text-[12px]">
-              <p className="font-semibold text-amber-700 dark:text-amber-300 mb-1">
-                合同期内,无法修改
-              </p>
-              <p className="text-muted-foreground">
-                该服务器处于 OVH 套餐合同期(engaged),续费策略由 OVH 锁定。需要联系 OVH 客服或等合同期结束。
-              </p>
+              <p className="mb-1 font-semibold text-amber-700 dark:text-amber-300">合同期内，无法修改</p>
+              <p className="text-muted-foreground">该服务处于 OVH 合同期内，续费策略由 OVH 锁定。</p>
             </div>
           </div>
         ) : (
           <div className="space-y-3 py-1">
-            {/* 三选一 */}
             <div className="space-y-1.5">
-              {MODE_OPTIONS.map((opt) => {
-                const selected = mode === opt.value;
+              {MODE_OPTIONS.map((option) => {
+                const selected = mode === option.value;
                 return (
                   <button
-                    key={opt.value}
+                    key={option.value}
                     type="button"
-                    onClick={() => setMode(opt.value)}
+                    onClick={() => setMode(option.value)}
                     className={[
-                      "w-full text-left rounded-xl border px-3.5 py-2.5 transition-colors",
-                      selected
-                        ? "border-primary bg-primary/5"
-                        : "border-border bg-secondary/30 hover:bg-secondary/50",
+                      "w-full rounded-xl border px-3.5 py-2.5 text-left transition-colors",
+                      selected ? "border-primary bg-primary/5" : "border-border bg-secondary/30 hover:bg-secondary/50",
                     ].join(" ")}
                   >
                     <div className="flex items-center gap-2">
-                      <div
-                        className={[
-                          "w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0",
-                          selected ? "border-primary" : "border-muted-foreground/40",
-                        ].join(" ")}
-                      >
-                        {selected && <div className="w-2 h-2 rounded-full bg-primary" />}
+                      <div className={["flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2", selected ? "border-primary" : "border-muted-foreground/40"].join(" ")}>
+                        {selected && <div className="h-2 w-2 rounded-full bg-primary" />}
                       </div>
-                      <span className="text-[13px] font-semibold">{opt.label}</span>
-                      {currentMode === opt.value && (
-                        <span className="ml-auto text-[10px] text-muted-foreground">当前</span>
-                      )}
+                      <span className="text-[13px] font-semibold">{option.label}</span>
+                      {currentMode === option.value && <span className="ml-auto text-[10px] text-muted-foreground">当前</span>}
                     </div>
-                    <p className="text-[11px] text-muted-foreground mt-1 ml-6">{opt.desc}</p>
+                    <p className="mt-1 ml-6 text-[11px] text-muted-foreground">{option.desc}</p>
                   </button>
                 );
               })}
             </div>
 
-            {/* 续费周期(到期注销时隐藏) */}
             {mode !== "delete" && (
               <div className="pt-1">
-                <label className="text-[12px] font-semibold block mb-1.5">续费周期</label>
-                <Select value={String(period)} onValueChange={(v) => setPeriod(Number(v))}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
+                <label className="mb-1.5 block text-[12px] font-semibold">续费周期</label>
+                <Select value={String(period)} onValueChange={(value) => setPeriod(Number(value))}>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {periods.map((p) => (
-                      <SelectItem key={p} value={String(p)}>
-                        {p} 个月
-                      </SelectItem>
-                    ))}
+                    {periods.map((item) => <SelectItem key={item} value={String(item)}>{item} 个月</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
             )}
 
             {mode === "delete" && (
-              <div className="border border-destructive/40 bg-destructive/5 rounded-xl p-2.5 flex gap-2">
-                <AlertCircle className="w-3.5 h-3.5 text-destructive flex-shrink-0 mt-0.5" />
+              <div className="flex gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-2.5">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
                 <p className="text-[11px] text-muted-foreground">
-                  设为「到期注销」后,服务器在到期日 ({info.expiration ? new Date(info.expiration).toLocaleDateString("zh-CN") : "—"}) 自动销毁,数据无法恢复。
+                  设为“到期终止”后，服务在到期日（{info.terminationDate || info.expiration ? new Date(info.terminationDate || info.expiration).toLocaleDateString("zh-CN") : "—"}）才会销毁，不会立即关机。
                 </p>
               </div>
             )}
@@ -167,16 +178,10 @@ export function RenewalDialog({
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
           {!info.renewalForced && (
-            <Button
-              onClick={handleSubmit}
-              disabled={update.isPending || (mode === currentMode && period === info.renewalPeriod)}
-              variant={mode === "delete" ? "destructive" : "default"}
-            >
-              {update.isPending ? "提交中…" : "保存"}
+            <Button onClick={handleSubmit} disabled={busy || sameSelection} variant={mode === "delete" ? "destructive" : "default"}>
+              {busy ? "提交中…" : "保存"}
             </Button>
           )}
         </DialogFooter>

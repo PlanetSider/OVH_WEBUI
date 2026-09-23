@@ -86,23 +86,62 @@ type AttemptOutcome struct {
 type proxyHealthReporter struct {
 	guard  *proxyguard.Guard
 	logger *logger.Logger
+	state  *State
 }
 
 func (r proxyHealthReporter) ReportFailure(accountID string, cause error) {
-	before, _ := r.guard.Get(accountID)
-	after := r.guard.FailureStatus(accountID, cause)
-	if after.Paused && !before.Paused && r.logger != nil {
-		r.logger.Warn("账户 "+accountID+" 的代理连续失败，已暂停该账户自动动作: "+after.LastError, "proxyguard")
+	if r.guard == nil || !ovh.IsProxyError(cause) {
+		return
+	}
+	event := r.guard.ObserveFailure(accountID, cause)
+	if event.Kind == proxyguard.EventNone {
+		return
+	}
+	if r.state != nil {
+		r.state.HandleProxyGuardEvent(event)
+		return
+	}
+	if r.logger != nil {
+		r.logger.Warn("账户 "+accountID+" 的代理状态变化: "+event.Status.LastError, "proxyguard")
 	}
 }
 
 func (r proxyHealthReporter) ReportSuccess(accountID string) {
-	before, _ := r.guard.Get(accountID)
-	after := r.guard.SuccessStatus(accountID)
-	if before.Paused && !after.Paused && r.logger != nil {
+	if r.guard == nil {
+		return
+	}
+	event := r.guard.ObserveSuccess(accountID)
+	if event.Kind == proxyguard.EventNone {
+		return
+	}
+	if r.state != nil {
+		r.state.HandleProxyGuardEvent(event)
+		return
+	}
+	if r.logger != nil {
 		r.logger.Info("账户 "+accountID+" 的代理已恢复，自动动作可继续", "proxyguard")
 	}
 }
+
+// ProxyGuardAction 是代理熔断对业务状态产生的可观测变更。
+// 通知层只接收脱敏字段和计数，不接触账户凭据。
+type ProxyGuardAction struct {
+	Event                    proxyguard.Event
+	AccountID                string
+	AccountName              string
+	AccountZone              string
+	ProxyURL                 string
+	PausedQueue              int
+	DisabledMonitorAutoOrder int
+	DisabledVPSAutoOrder     int
+	RestoredQueue            int
+	RestoredMonitorAutoOrder int
+	RestoredVPSAutoOrder     int
+	Errors                   []string
+}
+
+type ProxyGuardMonitorMutator func(accountID string, enabled bool) (int, error)
+type ProxyGuardNotificationHandler func(ProxyGuardAction)
 
 // State 聚合所有共享运行状态。
 type State struct {
@@ -113,6 +152,10 @@ type State struct {
 	Logger      *logger.Logger
 	ServerCache *ServerListCache
 	DB          *db.DB // SQLite 持久化层
+
+	proxyGuardActionMu       sync.Mutex
+	proxyGuardMonitorMutator ProxyGuardMonitorMutator
+	proxyGuardNotify         ProxyGuardNotificationHandler
 
 	APIKey string
 	Port   string
@@ -162,10 +205,10 @@ type State struct {
 
 	// 串行化全表 Replace 落盘，避免并发 SaveHistory/SaveQueue 快照互相覆盖丢数据
 	accountsPersistMu sync.Mutex
-	historyPersistMu sync.Mutex
-	queuePersistMu   sync.Mutex
-	vpsPersistMu     sync.Mutex
-	queueProcessorMu sync.RWMutex
+	historyPersistMu  sync.Mutex
+	queuePersistMu    sync.Mutex
+	vpsPersistMu      sync.Mutex
+	queueProcessorMu  sync.RWMutex
 	queueTickMu       sync.Mutex
 	queueTickRunning  bool
 
@@ -237,33 +280,252 @@ type FeishuConnectionController interface {
 // NewState 构造应用状态。DB 必须已 Open。
 func NewState(paths storage.Paths, cfg *config.Store, lg *logger.Logger, sqliteDB *db.DB) *State {
 	s := &State{
-		Paths:                 paths,
-		Config:                cfg,
-		Logger:                lg,
-		ServerCache:           NewServerListCache(),
-		DB:                    sqliteDB,
-		DeletedTaskIDs:        make(map[string]struct{}),
-		checkoutTasks:         make(map[string]string),
-		purchaseTasks:         make(map[string]string),
-		Accounts:              []types.OVHAccount{},
-		Queue:                 []types.QueueItem{},
-		History:               []types.PurchaseHistoryEntry{},
-		ServerPlans:           []types.ServerPlan{},
-		VPSSubscriptions:      []types.VPSSubscription{},
-		VPSCheckInterval:      60,
-		QueueProcessorRunning: false,
-		QueueProcessorEnabled: true,
+		Paths:                         paths,
+		Config:                        cfg,
+		Logger:                        lg,
+		ServerCache:                   NewServerListCache(),
+		DB:                            sqliteDB,
+		DeletedTaskIDs:                make(map[string]struct{}),
+		checkoutTasks:                 make(map[string]string),
+		purchaseTasks:                 make(map[string]string),
+		Accounts:                      []types.OVHAccount{},
+		Queue:                         []types.QueueItem{},
+		History:                       []types.PurchaseHistoryEntry{},
+		ServerPlans:                   []types.ServerPlan{},
+		VPSSubscriptions:              []types.VPSSubscription{},
+		VPSCheckInterval:              60,
+		QueueProcessorRunning:         false,
+		QueueProcessorEnabled:         true,
 		notificationOutboxNextAttempt: make(map[string]time.Time),
-		loadFailed: make(map[string]string),
-		attemptOutcomes: make(map[string]AttemptOutcome),
+		loadFailed:                    make(map[string]string),
+		attemptOutcomes:               make(map[string]AttemptOutcome),
 	}
 	guard := proxyguard.New(proxyguard.DefaultFailureThreshold)
 	s.ProxyGuard = guard
-	s.OVH = ovh.NewFactory(cfg, s.FindAccount, proxyHealthReporter{guard: guard, logger: lg})
+	s.OVH = ovh.NewFactory(cfg, s.FindAccount, proxyHealthReporter{guard: guard, logger: lg, state: s})
 	return s
 }
 
-// HasAnyAccount 是否至少有一个 OVH 账户。
+// SetProxyGuardMonitorMutator 注入监控订阅的持久化 owner。app 不直接依赖
+// monitor 包，避免循环依赖；生产启动层传入 Monitor.MutateSubscriptions 的适配器。
+func (s *State) SetProxyGuardMonitorMutator(mutator ProxyGuardMonitorMutator) {
+	if s == nil {
+		return
+	}
+	s.proxyGuardActionMu.Lock()
+	s.proxyGuardMonitorMutator = mutator
+	s.proxyGuardActionMu.Unlock()
+}
+
+// SetProxyGuardNotificationHandler 注入通知 outbox 适配器。核心状态提交不依赖
+// 该回调成功，通知故障只能进入 action.Errors/日志。
+func (s *State) SetProxyGuardNotificationHandler(handler ProxyGuardNotificationHandler) {
+	if s == nil {
+		return
+	}
+	s.proxyGuardActionMu.Lock()
+	s.proxyGuardNotify = handler
+	s.proxyGuardActionMu.Unlock()
+}
+
+// HandleProxyGuardEvent 把 Guard 的单次状态转换映射到持久化业务动作。
+// 调用方不应直接修改队列或订阅；所有变化都经过既有 mutation owner。
+func (s *State) HandleProxyGuardEvent(event proxyguard.Event) {
+	if s == nil || event.Kind == proxyguard.EventNone || strings.TrimSpace(event.Status.AccountID) == "" {
+		return
+	}
+
+	s.proxyGuardActionMu.Lock()
+	var action ProxyGuardAction
+	accountID := strings.TrimSpace(event.Status.AccountID)
+	account, _ := s.FindAccount(accountID)
+	action = ProxyGuardAction{
+		Event:       event,
+		AccountID:   accountID,
+		AccountName: account.Name,
+		AccountZone: account.Zone,
+		ProxyURL:    ovh.ScrubProxyURL(account.ProxyURL),
+		Errors:      []string{},
+	}
+
+	switch event.Kind {
+	case proxyguard.EventTrip:
+		if count, err := s.mutateProxyGuardQueue(accountID, false); err != nil {
+			action.Errors = append(action.Errors, "抢购队列: "+err.Error())
+		} else {
+			action.PausedQueue = count
+		}
+		if count, err := s.mutateProxyGuardMonitor(accountID, false); err != nil {
+			action.Errors = append(action.Errors, "独服订阅: "+err.Error())
+		} else {
+			action.DisabledMonitorAutoOrder = count
+		}
+		if count, err := s.mutateProxyGuardVPS(accountID, false); err != nil {
+			action.Errors = append(action.Errors, "VPS 订阅: "+err.Error())
+		} else {
+			action.DisabledVPSAutoOrder = count
+		}
+	case proxyguard.EventRecovery:
+		if count, err := s.mutateProxyGuardQueue(accountID, true); err != nil {
+			action.Errors = append(action.Errors, "恢复抢购队列: "+err.Error())
+		} else {
+			action.RestoredQueue = count
+		}
+		if count, err := s.mutateProxyGuardMonitor(accountID, true); err != nil {
+			action.Errors = append(action.Errors, "恢复独服订阅: "+err.Error())
+		} else {
+			action.RestoredMonitorAutoOrder = count
+		}
+		if count, err := s.mutateProxyGuardVPS(accountID, true); err != nil {
+			action.Errors = append(action.Errors, "恢复 VPS 订阅: "+err.Error())
+		} else {
+			action.RestoredVPSAutoOrder = count
+		}
+	case proxyguard.EventReminder:
+		// Reminder 只进入 outbox，不重复写业务状态。
+	default:
+		s.proxyGuardActionMu.Unlock()
+		return
+	}
+	logger := s.Logger
+	notify := s.proxyGuardNotify
+	s.proxyGuardActionMu.Unlock()
+
+	if logger != nil {
+		switch event.Kind {
+		case proxyguard.EventTrip:
+			logger.Warn(fmt.Sprintf("账户 %s 代理熔断：暂停队列 %d，关闭独服自动下单 %d，关闭 VPS 自动下单 %d",
+				accountID, action.PausedQueue, action.DisabledMonitorAutoOrder, action.DisabledVPSAutoOrder), "proxyguard")
+		case proxyguard.EventRecovery:
+			logger.Info(fmt.Sprintf("账户 %s 代理恢复：恢复队列 %d，恢复独服自动下单 %d，恢复 VPS 自动下单 %d",
+				accountID, action.RestoredQueue, action.RestoredMonitorAutoOrder, action.RestoredVPSAutoOrder), "proxyguard")
+		case proxyguard.EventReminder:
+			logger.Warn("账户 "+accountID+" 的代理仍不可用: "+event.Status.LastError, "proxyguard")
+		}
+		for _, errText := range action.Errors {
+			logger.Error("代理熔断状态变更未完全落库: "+errText, "proxyguard")
+		}
+	}
+	if notify != nil {
+		notify(action)
+	}
+}
+
+func (s *State) mutateProxyGuardQueue(accountID string, recover bool) (int, error) {
+	changed := 0
+	err := s.MutateQueue(func(queue []types.QueueItem) ([]types.QueueItem, error) {
+		for i := range queue {
+			item := &queue[i]
+			if item.AccountID != accountID {
+				continue
+			}
+			if recover {
+				if !item.ProxyGuardPaused {
+					continue
+				}
+				item.ProxyGuardPaused = false
+				if item.Status == "paused" {
+					item.Status = "running"
+					changed++
+				}
+				item.UpdatedAt = types.NowISO()
+				continue
+			}
+			if item.ProxyGuardPaused || (item.Status != "running" && item.Status != "pending") {
+				continue
+			}
+			if _, active := s.checkoutTasks[item.ID]; active {
+				continue
+			}
+			item.Status = "paused"
+			item.ProxyGuardPaused = true
+			item.UpdatedAt = types.NowISO()
+			changed++
+		}
+		return queue, nil
+	})
+	return changed, err
+}
+
+func (s *State) mutateProxyGuardMonitor(accountID string, enabled bool) (int, error) {
+	mutator := s.proxyGuardMonitorMutator
+	if mutator == nil {
+		return 0, errors.New("监控订阅持久化 owner 未注入")
+	}
+	return mutator(accountID, enabled)
+}
+
+func (s *State) mutateProxyGuardVPS(accountID string, enabled bool) (int, error) {
+	changed := 0
+	err := s.MutateVPSSubscriptions(func(subscriptions []types.VPSSubscription) ([]types.VPSSubscription, error) {
+		for i := range subscriptions {
+			sub := &subscriptions[i]
+			if enabled {
+				if sub.ProxyGuardAutoOrderDisabled && !sub.AutoOrder && sub.AutoOrderAccountID == accountID {
+					sub.AutoOrder = true
+					sub.ProxyGuardAutoOrderDisabled = false
+					if sub.Quantity < 1 {
+						sub.Quantity = 1
+					}
+					changed++
+				}
+				continue
+			}
+			if sub.AutoOrder && sub.AutoOrderAccountID == accountID {
+				sub.AutoOrder = false
+				sub.ProxyGuardAutoOrderDisabled = true
+				changed++
+			}
+		}
+		return subscriptions, nil
+	})
+	return changed, err
+}
+
+// RestoreProxyGuardGates 在启动加载持久化状态后恢复代理熔断门禁；只读标记，
+// 不重新发送历史告警，也不修改队列/订阅。
+func (s *State) RestoreProxyGuardGates() {
+	if s == nil || s.ProxyGuard == nil {
+		return
+	}
+	seed := func(accountID, timestamp string) {
+		accountID = strings.TrimSpace(accountID)
+		if accountID == "" {
+			return
+		}
+		at := time.Now().UTC()
+		if parsed, ok := types.ParseTS(timestamp); ok {
+			at = parsed
+		}
+		s.ProxyGuard.SeedTripped(accountID, at)
+	}
+	s.QueueMu.Lock()
+	for _, item := range s.Queue {
+		if item.ProxyGuardPaused {
+			seed(item.AccountID, item.UpdatedAt)
+		}
+	}
+	s.QueueMu.Unlock()
+	s.VPSSubsMu.Lock()
+	for _, sub := range s.VPSSubscriptions {
+		if sub.ProxyGuardAutoOrderDisabled {
+			seed(sub.AutoOrderAccountID, sub.CreatedAt)
+		}
+	}
+	s.VPSSubsMu.Unlock()
+	if s.DB != nil {
+		if subs, err := s.DB.ListMonitorSubscriptions(); err == nil {
+			for _, sub := range subs {
+				if sub.ProxyGuardAutoOrderDisabled {
+					seed(sub.AutoOrderAccountID, sub.CreatedAt)
+				}
+			}
+		} else if s.Logger != nil {
+			s.Logger.Warn("恢复代理熔断门禁时读取独服订阅失败: "+err.Error(), "proxyguard")
+		}
+	}
+}
+
 // 多账户场景下,旧的 state.Config.HasCredentials() 不再可靠(新用户的 kv['config'] 可能为空),
 // 凡是判断"系统能不能调 OVH"都应该走这个。
 func (s *State) HasAnyAccount() bool {
@@ -317,7 +579,10 @@ func (s *State) ResetAccountProxyGuard(accountID string) {
 	if s == nil || s.ProxyGuard == nil || strings.TrimSpace(accountID) == "" {
 		return
 	}
-	s.ProxyGuard.Reset(accountID)
+	event := s.ProxyGuard.ObserveSuccess(accountID)
+	if event.Kind == proxyguard.EventRecovery {
+		s.HandleProxyGuardEvent(event)
+	}
 }
 
 func (s *State) ProxyGuardStatus(accountID string) (proxyguard.Status, bool) {
@@ -344,6 +609,11 @@ func (s *State) ReloadAccounts() error {
 	s.Accounts = accs
 	s.AccountsMu.Unlock()
 	s.OVH.InvalidateAll()
+	if err := s.OVH.RefreshSharedProxy(); err != nil {
+		s.MarkLoadFailed("shared_proxy", err)
+		return err
+	}
+	s.ClearLoadFailure("shared_proxy")
 	return nil
 }
 
@@ -398,6 +668,12 @@ func (s *State) LoadAll() {
 		s.Accounts = accs
 		s.AccountsMu.Unlock()
 		s.Logger.Info("已加载 OVH 账户: "+intStr(len(accs))+" 个", "system")
+		if err := s.OVH.RefreshSharedProxy(); err != nil {
+			s.MarkLoadFailed("shared_proxy", err)
+			queueSafe = false
+		} else {
+			s.ClearLoadFailure("shared_proxy")
+		}
 	} else {
 		s.MarkLoadFailed("accounts", err)
 		queueSafe = false

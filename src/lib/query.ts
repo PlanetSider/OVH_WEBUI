@@ -60,6 +60,7 @@ export const qk = {
     list: () => ["vps-monitor", "list"] as const,
     status: () => ["vps-monitor", "status"] as const,
     history: (id: string) => ["vps-monitor", "history", id] as const,
+    models: (subsidiary: string) => ["vps-monitor", "models", subsidiary] as const,
   },
 
   // 服务器控制（已购）
@@ -131,6 +132,14 @@ export const qk = {
     info: () => ["account", "info"] as const,
     refunds: () => ["account", "refunds"] as const,
     emails: () => ["account", "emails"] as const,
+  },
+
+  // 账户及代理诊断
+  accounts: {
+    list: () => ["accounts", "list"] as const,
+    proxyStatus: () => ["accounts", "proxy-status"] as const,
+    proxyTest: (id: string) => ["accounts", "proxy-test", id] as const,
+    proxyCheck: (id: string) => ["accounts", "proxy-check", id] as const,
   },
 
   // 历史与日志

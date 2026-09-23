@@ -14,6 +14,26 @@ export interface VPSSubscription {
   notifyUnavailable: boolean;
   lastStatus: Record<string, string>;
   createdAt: string;
+  autoOrder?: boolean;
+  quantity?: number;
+  autoPay?: boolean;
+  os?: string;
+  autoOrderAccountId?: string;
+}
+
+export interface VPSModel {
+  planCode: string;
+  name: string;
+  generation: string;
+  price?: string;
+  location?: string;
+  datacenters?: string[];
+  osChoices?: string[];
+}
+
+export interface VPSModelsResponse {
+  subsidiary: string;
+  models: VPSModel[];
 }
 
 export interface VPSMonitorStatus {
@@ -45,6 +65,17 @@ export function useVPSMonitorStatus() {
     queryKey: qk.vpsMonitor.status(),
     queryFn: async () => (await api.get<VPSMonitorStatus>("/vps-monitor/status")).data,
     refetchInterval: 30_000,
+  });
+}
+
+/** 当前子公司在售 VPS 目录，失败时由后端回退最近成功缓存。 */
+export function useVPSModels(subsidiary: string) {
+  return useQuery({
+    queryKey: qk.vpsMonitor.models(subsidiary),
+    queryFn: async () =>
+      (await api.get<VPSModelsResponse>(`/vps-monitor/models?subsidiary=${encodeURIComponent(subsidiary)}`)).data,
+    enabled: Boolean(subsidiary),
+    staleTime: 5 * 60_000,
   });
 }
 

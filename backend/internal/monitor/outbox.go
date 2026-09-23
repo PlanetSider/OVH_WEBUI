@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/ovh"
+	"github.com/ovh-webui/server/internal/proxyguard"
 	"github.com/ovh-webui/server/internal/telegram"
 	"github.com/ovh-webui/server/internal/types"
 )
@@ -42,6 +44,24 @@ type orderStatusPayload struct {
 	StatusAt    string `json:"statusAt"`
 }
 
+type proxyGuardPayload struct {
+	EventKind                string   `json:"eventKind"`
+	AccountID                string   `json:"accountId"`
+	AccountName              string   `json:"accountName,omitempty"`
+	AccountZone              string   `json:"accountZone,omitempty"`
+	ProxyURL                 string   `json:"proxyUrl,omitempty"`
+	LastError                string   `json:"lastError,omitempty"`
+	ConsecutiveFailures      int      `json:"consecutiveFailures,omitempty"`
+	PausedQueue              int      `json:"pausedQueue,omitempty"`
+	DisabledMonitorAutoOrder int      `json:"disabledMonitorAutoOrder,omitempty"`
+	DisabledVPSAutoOrder     int      `json:"disabledVpsAutoOrder,omitempty"`
+	RestoredQueue            int      `json:"restoredQueue,omitempty"`
+	RestoredMonitorAutoOrder int      `json:"restoredMonitorAutoOrder,omitempty"`
+	RestoredVPSAutoOrder     int      `json:"restoredVpsAutoOrder,omitempty"`
+	DurationSeconds          int64    `json:"durationSeconds,omitempty"`
+	Errors                   []string `json:"errors,omitempty"`
+}
+
 func NewPurchaseSuccessNotification(item types.QueueItem, orderID, orderURL string, channels []string) (*types.NotificationOutboxEntry, error) {
 	channels = canonicalNotificationChannels(channels)
 	payload, err := json.Marshal(purchaseSuccessPayload{
@@ -73,7 +93,50 @@ func NewOrderStatusNotification(entry types.PurchaseHistoryEntry, oldStatus stri
 	}
 	return &types.NotificationOutboxEntry{
 		EventKey: fmt.Sprintf("order_status:%s:%s:%s", entry.OrderID, entry.OrderStatus, entry.OrderStatusAt),
-		Kind: NotificationKindOrderStatus, Payload: string(payload), Channels: channels,
+		Kind:     NotificationKindOrderStatus, Payload: string(payload), Channels: channels,
+		AwaitingChannels: len(channels) == 0,
+	}, nil
+}
+
+func NewProxyGuardNotification(action app.ProxyGuardAction, channels []string) (*types.NotificationOutboxEntry, error) {
+	accountID := strings.TrimSpace(action.AccountID)
+	if accountID == "" || action.Event.Kind == "" {
+		return nil, fmt.Errorf("proxy guard notification 缺少 accountId 或 eventKind")
+	}
+	if action.Event.Kind != proxyguard.EventTrip && action.Event.Kind != proxyguard.EventReminder && action.Event.Kind != proxyguard.EventRecovery {
+		return nil, fmt.Errorf("proxy guard notification eventKind 无效: %q", action.Event.Kind)
+	}
+	channels = canonicalNotificationChannels(channels)
+	sanitizedErrors := make([]string, len(action.Errors))
+	for i, issue := range action.Errors {
+		sanitizedErrors[i] = ovh.ScrubProxyText(issue)
+	}
+	payload := proxyGuardPayload{
+		EventKind: string(action.Event.Kind), AccountID: accountID,
+		AccountName: action.AccountName, AccountZone: action.AccountZone,
+		ProxyURL: ovh.ScrubProxyURL(action.ProxyURL), LastError: ovh.ScrubProxyText(action.Event.Status.LastError),
+		ConsecutiveFailures: action.Event.Status.ConsecutiveFailures,
+		PausedQueue:         action.PausedQueue, DisabledMonitorAutoOrder: action.DisabledMonitorAutoOrder,
+		DisabledVPSAutoOrder: action.DisabledVPSAutoOrder, RestoredQueue: action.RestoredQueue,
+		RestoredMonitorAutoOrder: action.RestoredMonitorAutoOrder,
+		RestoredVPSAutoOrder:     action.RestoredVPSAutoOrder,
+		DurationSeconds:          int64(action.Event.Duration / time.Second),
+		Errors:                   sanitizedErrors,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode proxy guard notification: %w", err)
+	}
+	stamp := action.Event.Status.LastFailureAt
+	if action.Event.Kind == "recovery" {
+		stamp = action.Event.Status.LastSuccessAt
+	}
+	if stamp.IsZero() {
+		stamp = time.Now().UTC()
+	}
+	return &types.NotificationOutboxEntry{
+		EventKey: fmt.Sprintf("proxy_guard:%s:%s:%d", action.Event.Kind, accountID, stamp.UnixNano()),
+		Kind:     NotificationKindProxyGuard, Payload: string(payloadBytes), Channels: channels,
 		AwaitingChannels: len(channels) == 0,
 	}, nil
 }
@@ -102,7 +165,7 @@ func NewCatalogStatusNotification(mode, planCode, serverName, cycleID string, re
 	}
 	return &types.NotificationOutboxEntry{
 		EventKey: fmt.Sprintf("catalog_status:%s:%s:%s:%s", state, mode, planCode, cycleID),
-		Kind: NotificationKindCatalogStatus, Payload: string(payload),
+		Kind:     NotificationKindCatalogStatus, Payload: string(payload),
 		Channels: channels, AwaitingChannels: len(channels) == 0,
 	}, nil
 }
@@ -130,6 +193,31 @@ func purchaseSuccessMessage(payload purchaseSuccessPayload) string {
 func orderStatusMessage(payload orderStatusPayload) string {
 	return fmt.Sprintf("📦 OVH 订单状态更新\n\n型号: %s\n数据中心: %s\n订单 ID: %s\n状态: %s\n订单链接: %s\n任务ID: %s",
 		payload.PlanCode, payload.Datacenter, payload.OrderID, payload.OrderStatus, payload.OrderURL, payload.TaskID)
+}
+
+func proxyGuardMessage(payload proxyGuardPayload) (string, string, string) {
+	label := payload.AccountName
+	if label == "" {
+		label = payload.AccountID
+	}
+	if payload.AccountZone != "" {
+		label += "（" + strings.ToUpper(payload.AccountZone) + "）"
+	}
+	issues := ""
+	if len(payload.Errors) > 0 {
+		issues = "\n\n状态落库告警:\n- " + strings.Join(payload.Errors, "\n- ")
+	}
+	switch payload.EventKind {
+	case "trip":
+		return "🚨 账户代理已熔断", fmt.Sprintf("账户 %s 的出站代理连续失败，已暂停 %d 个抢购任务，关闭独服自动下单 %d 条、VPS 自动下单 %d 条。\n\n代理: %s\n原因: %s\n\n代理恢复后将自动恢复本次暂停的任务和自动下单。%s",
+			label, payload.PausedQueue, payload.DisabledMonitorAutoOrder, payload.DisabledVPSAutoOrder, payload.ProxyURL, payload.LastError, issues), "red"
+	case "recovery":
+		return "✅ 账户代理已恢复", fmt.Sprintf("账户 %s 的出站代理已恢复，已恢复 %d 个抢购任务、独服自动下单 %d 条、VPS 自动下单 %d 条。\n\n中断约 %d 秒。\n代理: %s%s",
+			label, payload.RestoredQueue, payload.RestoredMonitorAutoOrder, payload.RestoredVPSAutoOrder, payload.DurationSeconds, payload.ProxyURL, issues), "green"
+	default:
+		return "⚠️ 账户代理仍不可用", fmt.Sprintf("账户 %s 的出站代理仍不可用。\n\n连续失败: %d\n代理: %s\n原因: %s%s",
+			label, payload.ConsecutiveFailures, payload.ProxyURL, payload.LastError, issues), "orange"
+	}
 }
 
 func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (NotificationDeliveryResult, error) {
@@ -191,6 +279,33 @@ func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (Noti
 			return result, fmt.Errorf("解析型号状态通知失败: mode、planCode 或 cycleId 无效")
 		}
 		title, msg, template := catalogStatusMessage(payload)
+		if notificationChannelSelected(entry.Channels, NotificationChannelTelegram) {
+			result[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
+		}
+		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
+			result[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, title, msg, template, nil)
+		}
+		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
+			result[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)
+		}
+		return result, nil
+	case NotificationKindProxyGuard:
+		var payload proxyGuardPayload
+		if err := json.Unmarshal([]byte(entry.Payload), &payload); err != nil {
+			return result, fmt.Errorf("解析代理熔断通知失败: %w", err)
+		}
+		if strings.TrimSpace(payload.AccountID) == "" || payload.EventKind == "" {
+			return result, fmt.Errorf("解析代理熔断通知失败: 缺少 accountId 或 eventKind")
+		}
+		if payload.EventKind != string(proxyguard.EventTrip) && payload.EventKind != string(proxyguard.EventReminder) && payload.EventKind != string(proxyguard.EventRecovery) {
+			return result, fmt.Errorf("解析代理熔断通知失败: eventKind 无效")
+		}
+		payload.ProxyURL = ovh.ScrubProxyURL(payload.ProxyURL)
+		payload.LastError = ovh.ScrubProxyText(payload.LastError)
+		for i, issue := range payload.Errors {
+			payload.Errors[i] = ovh.ScrubProxyText(issue)
+		}
+		title, msg, template := proxyGuardMessage(payload)
 		if notificationChannelSelected(entry.Channels, NotificationChannelTelegram) {
 			result[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
 		}

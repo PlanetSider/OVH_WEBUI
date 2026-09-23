@@ -16,6 +16,7 @@ import (
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/numconv"
+	"github.com/ovh-webui/server/internal/ovh"
 	"github.com/ovh-webui/server/internal/telegram"
 	"github.com/ovh-webui/server/internal/types"
 )
@@ -60,14 +61,7 @@ func checkNotifications(state *app.State) {
 // VPS 可用性接口是 public 的,但必须连对 region 才能查到对应 subsidiary 的 VPS。
 // 默认走 EU(覆盖大部分情况);CA / ASIA / SG / IN / AU 走 CA;US 走 US 独立域名。
 func vpsAPIBaseURL(subsidiary string) string {
-	switch strings.ToUpper(subsidiary) {
-	case "US":
-		return "https://api.us.ovhcloud.com"
-	case "CA", "QC", "ASIA", "SG", "AU", "IN", "MA", "TN", "SN", "WS":
-		return "https://ca.api.ovh.com"
-	default:
-		return "https://eu.api.ovh.com"
-	}
+	return ovh.CatalogBaseURLForSubsidiary(subsidiary)
 }
 
 // CheckVPSDCAvailability 对应 Python: check_vps_datacenter_availability
@@ -89,7 +83,11 @@ func checkVPSDCAvailability(ctx context.Context, state *app.State, planCode, ovh
 		return nil
 	}
 	req.Header.Set("accept", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client, err := state.OVH.SharedHTTPClient(10 * time.Second)
+	if err != nil {
+		state.Logger.Error("VPS 公共代理不可用: "+err.Error(), "vps_monitor")
+		return nil
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		state.Logger.Error("检查VPS可用性时出错: "+err.Error(), "vps_monitor")
@@ -179,7 +177,9 @@ func SendSummaryNotification(state *app.State, planCode string, dcs []map[string
 		sb.WriteString("\n💡 快去抢购吧！")
 	}
 	expected := monitor.ConfiguredNotificationChannels(state)
-	if len(expectedChannels) > 0 { expected = expectedChannels[0] }
+	if len(expectedChannels) > 0 {
+		expected = expectedChannels[0]
+	}
 	result := monitor.NotificationDeliveryResult{}
 	for _, channel := range expected {
 		switch channel {
@@ -320,7 +320,9 @@ func vpsPendingChannels(sub *types.VPSSubscription, keys []string, defaults []st
 	combined := make([]string, 0)
 	for _, key := range keys {
 		channels, exists := sub.PendingNotifyChannels[key]
-		if !exists { channels = defaults }
+		if !exists {
+			channels = defaults
+		}
 		combined = append(combined, channels...)
 	}
 	return canonicalVPSNotificationChannels(combined)
@@ -331,7 +333,9 @@ func canonicalVPSNotificationChannels(channels []string) []string {
 	out := make([]string, 0, len(channels))
 	for _, channel := range channels {
 		channel = strings.ToLower(strings.TrimSpace(channel))
-		if _, ok := seen[channel]; ok { continue }
+		if _, ok := seen[channel]; ok {
+			continue
+		}
 		switch channel {
 		case monitor.NotificationChannelTelegram, monitor.NotificationChannelFeishu, monitor.NotificationChannelWeixin:
 			seen[channel] = struct{}{}
@@ -469,12 +473,9 @@ func processSubscription(ctx context.Context, state *app.State, sub *types.VPSSu
 // processSubscriptionWithAvailability 把公开库存查询作为显式依赖传入，便于在
 // 生命周期测试中覆盖异常、缺字段和部分机房响应，而不访问真实 OVH API。
 func processSubscriptionWithAvailability(ctx context.Context, state *app.State, sub *types.VPSSubscription, fetch vpsAvailabilityFetcher) bool {
-	ovhSub := strings.TrimSpace(sub.OvhSubsidiary)
+	ovhSub := NormalizeSubsidiary(sub.OvhSubsidiary)
 	if ovhSub == "" {
-		ovhSub = "IE"
-		if account, ok := state.FindAccount(""); ok && account.Zone != "" {
-			ovhSub = account.Zone
-		}
+		ovhSub = DefaultSubsidiary(state, "")
 	}
 	if fetch == nil {
 		return false
@@ -559,6 +560,7 @@ func processSubscriptionWithAvailability(ctx context.Context, state *app.State, 
 	}
 
 	// API 可能返回部分机房结果。缺失机房保留旧状态，只有明确状态才更新基线。
+	var restocked []map[string]interface{}
 	for code, current := range statuses {
 		old, existed := oldStatus[code]
 		sub.LastStatus[code] = current.status
@@ -573,8 +575,13 @@ func processSubscriptionWithAvailability(ctx context.Context, state *app.State, 
 		wasUnavailable := statusUnavailable(old)
 		isUnavailable := statusUnavailable(current.status)
 		switch {
-		case wasUnavailable && !isUnavailable && sub.NotifyAvailable:
-			setVPSPendingNotification(sub, code, "available", notificationChannels)
+		case wasUnavailable && !isUnavailable:
+			if sub.NotifyAvailable {
+				setVPSPendingNotification(sub, code, "available", notificationChannels)
+			}
+			if sub.AutoOrder {
+				restocked = append(restocked, map[string]interface{}{"code": code, "datacenter": current.name, "status": current.status, "days": current.days})
+			}
 		case !wasUnavailable && isUnavailable && sub.NotifyUnavailable:
 			setVPSPendingNotification(sub, code, "unavailable", notificationChannels)
 		case wasUnavailable != isUnavailable:
@@ -691,6 +698,9 @@ func processSubscriptionWithAvailability(ctx context.Context, state *app.State, 
 			persistedState = cloneVPSSubscription(*sub)
 		}
 	}
+	if len(restocked) > 0 && sub.AutoOrder && strings.TrimSpace(sub.AutoOrderAccountID) != "" {
+		autoOrderOnRestock(state, cloneVPSSubscription(*sub), restocked)
+	}
 	return true
 }
 
@@ -713,7 +723,13 @@ func mergeSubscriptionStateIfCurrent(state *app.State, checked types.VPSSubscrip
 					current.MonitorLinux != checked.MonitorLinux ||
 					current.MonitorWindows != checked.MonitorWindows ||
 					current.NotifyAvailable != checked.NotifyAvailable ||
-					current.NotifyUnavailable != checked.NotifyUnavailable {
+					current.NotifyUnavailable != checked.NotifyUnavailable ||
+					current.AutoOrder != checked.AutoOrder ||
+					current.Quantity != checked.Quantity ||
+					current.AutoPay != checked.AutoPay ||
+					current.OS != checked.OS ||
+					current.AutoOrderAccountID != checked.AutoOrderAccountID ||
+					current.ProxyGuardAutoOrderDisabled != checked.ProxyGuardAutoOrderDisabled {
 					// 用户在本轮网络请求期间更新了订阅，丢弃基于旧配置的检查结果。
 					return subscriptions, nil
 				}
@@ -876,7 +892,10 @@ func monitorLoop(ctx context.Context, state *app.State, done chan struct{}) {
 				case <-timer.C:
 				case <-ctx.Done():
 					if !timer.Stop() {
-						select { case <-timer.C: default: }
+						select {
+						case <-timer.C:
+						default:
+						}
 					}
 					state.Logger.Info("VPS监控循环已停止", "vps_monitor")
 					return
@@ -890,7 +909,10 @@ func monitorLoop(ctx context.Context, state *app.State, done chan struct{}) {
 		case <-timer.C:
 		case <-ctx.Done():
 			if !timer.Stop() {
-				select { case <-timer.C: default: }
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			state.Logger.Info("VPS监控循环已停止", "vps_monitor")
 			return

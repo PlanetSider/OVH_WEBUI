@@ -2,12 +2,15 @@ package purchase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/monitor"
+	"github.com/ovh-webui/server/internal/ovh"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -15,6 +18,18 @@ const (
 	orderStatusMinInterval = 2 * time.Minute
 	orderStatusMaxAge      = 30 * 24 * time.Hour
 )
+
+var ErrOrderStatusRefreshInProgress = errors.New("order status refresh already in progress")
+
+// OrderStatusRefreshResult 描述一次后台或手动刷新，不暴露订单创建/支付操作。
+type OrderStatusRefreshResult struct {
+	Candidates int      `json:"candidates"`
+	Selected   int      `json:"selected"`
+	Updated    int      `json:"updated"`
+	Skipped    int      `json:"skipped"`
+	Failed     int      `json:"failed"`
+	Errors     []string `json:"errors,omitempty"`
+}
 
 var orderStatusTerminal = map[string]struct{}{
 	"delivered":                  {},
@@ -54,7 +69,8 @@ func FetchOrderStatus(ctx context.Context, fetcher StatusFetcher, orderID string
 }
 
 type OrderStatusLoop struct {
-	state *app.State
+	state     *app.State
+	refreshMu sync.Mutex
 }
 
 func NewOrderStatusLoop(state *app.State) *OrderStatusLoop {
@@ -78,28 +94,91 @@ func (l *OrderStatusLoop) Run(ctx context.Context) {
 	}
 }
 
+// Refresh 执行一轮后台刷新；若手动刷新正在运行则跳过本轮，避免重复查询。
 func (l *OrderStatusLoop) Refresh(ctx context.Context) {
-	if l == nil || l.state == nil || l.state.DB == nil {
-		return
+	_, _ = l.refresh(ctx, false)
+}
+
+// RefreshNow 强制刷新当前可刷新的成功订单，绕过两分钟节流，但仍跳过
+// 终态和超过保留窗口的订单。后台轮询与手动入口共享同一互斥锁。
+func (l *OrderStatusLoop) RefreshNow(ctx context.Context) (OrderStatusRefreshResult, error) {
+	result, acquired := l.refresh(ctx, true)
+	if !acquired {
+		return result, ErrOrderStatusRefreshInProgress
+	}
+	return result, nil
+}
+
+func (l *OrderStatusLoop) refresh(ctx context.Context, force bool) (OrderStatusRefreshResult, bool) {
+	result := OrderStatusRefreshResult{Errors: []string{}}
+	if l == nil {
+		result.Failed = 1
+		result.Errors = append(result.Errors, "订单状态刷新器不可用")
+		return result, true
+	}
+	if !l.refreshMu.TryLock() {
+		return result, false
+	}
+	defer l.refreshMu.Unlock()
+	if l.state == nil || l.state.DB == nil {
+		result.Failed = 1
+		result.Errors = append(result.Errors, "订单状态存储不可用")
+		return result, true
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	candidates, err := l.state.DB.ListOrderStatusCandidates()
 	if err != nil {
-		l.state.Logger.Warn("读取订单状态候选失败: "+err.Error(), "order-status")
-		return
+		result.Failed = 1
+		result.Errors = append(result.Errors, scrubRefreshError("读取订单状态候选失败", err))
+		if l.state.Logger != nil {
+			l.state.Logger.Warn("读取订单状态候选失败: "+err.Error(), "order-status")
+		}
+		return result, true
 	}
+	result.Candidates = len(candidates)
 	now := time.Now()
 	for _, entry := range candidates {
 		if ctx.Err() != nil {
-			return
+			result.Failed++
+			result.Errors = append(result.Errors, "订单状态刷新已取消")
+			break
 		}
-		if !orderStatusDue(entry, now) {
+		if !orderStatusRefreshEligible(entry, now, force) {
+			result.Skipped++
 			continue
 		}
-		l.refreshOne(ctx, entry)
+		result.Selected++
+		changed, refreshErr := l.refreshOne(ctx, entry)
+		if refreshErr != nil {
+			result.Failed++
+			result.Errors = append(result.Errors, scrubRefreshError("订单 "+entry.OrderID+" 刷新失败", refreshErr))
+			continue
+		}
+		if changed {
+			result.Updated++
+		}
 	}
+	return result, true
+}
+
+func orderStatusRefreshEligible(entry types.PurchaseHistoryEntry, now time.Time, force bool) bool {
+	if strings.TrimSpace(entry.OrderID) == "" || isOrderStatusTerminal(entry.OrderStatus) {
+		return false
+	}
+	purchasedAt, ok := types.ParseTS(entry.PurchaseTime)
+	if !ok || now.Sub(purchasedAt) > orderStatusMaxAge {
+		return false
+	}
+	return force || orderStatusDue(entry, now)
+}
+
+func scrubRefreshError(prefix string, err error) string {
+	if err == nil {
+		return prefix
+	}
+	return prefix + ": " + ovh.ScrubProxyText(err.Error())
 }
 
 func orderStatusDue(entry types.PurchaseHistoryEntry, now time.Time) bool {
@@ -122,33 +201,46 @@ func isOrderStatusTerminal(status string) bool {
 	return ok
 }
 
-func (l *OrderStatusLoop) refreshOne(ctx context.Context, entry types.PurchaseHistoryEntry) {
+func (l *OrderStatusLoop) refreshOne(ctx context.Context, entry types.PurchaseHistoryEntry) (bool, error) {
+	if l.state.OVH == nil {
+		return false, fmt.Errorf("OVH client factory unavailable")
+	}
 	client, err := l.state.OVH.ClientFor(entry.AccountID)
 	if err != nil {
-		l.state.Logger.Warn(fmt.Sprintf("订单 %s 获取账户 client 失败: %s", entry.OrderID, err), "order-status")
-		return
+		if l.state.Logger != nil {
+			l.state.Logger.Warn(fmt.Sprintf("订单 %s 获取账户 client 失败: %s", entry.OrderID, err), "order-status")
+		}
+		return false, err
 	}
 	status, err := FetchOrderStatus(ctx, client, entry.OrderID)
 	if err != nil {
-		l.state.Logger.Warn(fmt.Sprintf("查询订单 %s 状态失败: %s", entry.OrderID, err), "order-status")
-		return
+		if l.state.Logger != nil {
+			l.state.Logger.Warn(fmt.Sprintf("查询订单 %s 状态失败: %s", entry.OrderID, err), "order-status")
+		}
+		return false, err
 	}
 	statusAt := types.NowISO()
+	statusChanged := strings.TrimSpace(entry.OrderStatus) != strings.TrimSpace(status)
 	changed, err := l.state.UpdateHistoryOrderStatus(entry.ID, status, statusAt, func(next types.PurchaseHistoryEntry, old string) (*types.NotificationOutboxEntry, error) {
 		notification, notificationErr := monitor.NewOrderStatusNotification(next, old, monitor.NotificationTargetChannels(l.state))
 		if notificationErr != nil {
-			l.state.Logger.Warn(fmt.Sprintf("订单 %s 状态已变更，但通知载荷构造失败: %s", next.OrderID, notificationErr), "order-status")
+			if l.state.Logger != nil {
+				l.state.Logger.Warn(fmt.Sprintf("订单 %s 状态已变更，但通知载荷构造失败: %s", next.OrderID, notificationErr), "order-status")
+			}
 			return nil, nil
 		}
 		return notification, nil
 	})
 	if err != nil {
-		l.state.Logger.Warn(fmt.Sprintf("保存订单 %s 状态失败: %s", entry.OrderID, err), "order-status")
-		return
+		if l.state.Logger != nil {
+			l.state.Logger.Warn(fmt.Sprintf("保存订单 %s 状态失败: %s", entry.OrderID, err), "order-status")
+		}
+		return false, err
 	}
-	if changed {
+	if changed && l.state.Logger != nil {
 		l.state.Logger.Info(fmt.Sprintf("订单 %s 状态更新为 %s", entry.OrderID, status), "order-status")
 	}
+	return statusChanged, nil
 }
 
 func parseOrderStatus(value interface{}) string {

@@ -36,6 +36,8 @@ type historyRow struct {
 	PriceJSON      sql.NullString `db:"price"`
 	OrderStatus    string         `db:"order_status"`
 	OrderStatusAt  string         `db:"order_status_at"`
+	TimingJSON     sql.NullString `db:"timing"`
+	TotalMs        int64          `db:"total_ms"`
 }
 
 func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
@@ -58,6 +60,10 @@ func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
 		s := r.ErrorMessage.String
 		errMsg = &s
 	}
+	var timing []types.PhaseTiming
+	if r.TimingJSON.Valid && strings.TrimSpace(r.TimingJSON.String) != "" {
+		_ = json.Unmarshal([]byte(r.TimingJSON.String), &timing)
+	}
 	return types.PurchaseHistoryEntry{
 		ID:             r.ID,
 		AccountID:      r.AccountID,
@@ -75,6 +81,8 @@ func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
 		Price:          price,
 		OrderStatus:    r.OrderStatus,
 		OrderStatusAt:  r.OrderStatusAt,
+		Timing:         timing,
+		TotalMs:        r.TotalMs,
 	}
 }
 
@@ -101,6 +109,15 @@ func historyToRow(h types.PurchaseHistoryEntry) (historyRow, error) {
 		ExpirationTime: h.ExpirationTime,
 		OrderStatus:    h.OrderStatus,
 		OrderStatusAt:  h.OrderStatusAt,
+		TimingJSON:     sql.NullString{String: "", Valid: true},
+		TotalMs:        h.TotalMs,
+	}
+	if len(h.Timing) > 0 {
+		if timingJSON, err := json.Marshal(h.Timing); err == nil {
+			row.TimingJSON = sql.NullString{String: string(timingJSON), Valid: true}
+		} else {
+			return row, err
+		}
 	}
 	if h.ErrorMessage != nil {
 		row.ErrorMessage = sql.NullString{String: *h.ErrorMessage, Valid: true}
@@ -187,10 +204,12 @@ func (db *DB) ReplaceHistory(items []types.PurchaseHistoryEntry) error {
 		_, err = tx.NamedExec(`
 			INSERT INTO history
 			(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
-			 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at)
+			 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at,
+			 timing, total_ms)
 			VALUES
 			(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
-			 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at)
+			 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at,
+			 :timing, :total_ms)
 		`, r)
 		if err != nil {
 			return fmt.Errorf("insert history %s: %w", h.ID, err)
@@ -250,10 +269,12 @@ func (db *DB) CommitPurchaseSuccessWithNotification(entry types.PurchaseHistoryE
 	if _, err := tx.NamedExec(`
 		INSERT INTO history
 		(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
-		 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at)
+		 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at,
+		 timing, total_ms)
 		VALUES
 		(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
-		 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at)
+		 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at,
+		 :timing, :total_ms)
 	`, r); err != nil {
 		return fmt.Errorf("insert successful history for task %s: %w", entry.TaskID, err)
 	}
@@ -426,10 +447,12 @@ func (db *DB) RecoverCheckoutAttempts(notificationChannels []string) (recoveredS
 				if _, err := tx.NamedExec(`
 					INSERT INTO history
 					(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
-					 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at)
+					 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at,
+			 timing, total_ms)
 					VALUES
 					(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
-					 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at)
+					 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at,
+			 :timing, :total_ms)
 				`, r); err != nil {
 					return 0, 0, fmt.Errorf("insert uncertain checkout history %s: %w", attempt.TaskID, err)
 				}
@@ -486,10 +509,12 @@ func (db *DB) RecoverCheckoutAttempts(notificationChannels []string) (recoveredS
 			if _, err := tx.NamedExec(`
 				INSERT INTO history
 				(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
-				 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at)
+				 error_message, purchase_time, attempt_count, expiration_time, price, order_status, order_status_at,
+			 timing, total_ms)
 				VALUES
 				(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
-				 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at)
+				 :error_message, :purchase_time, :attempt_count, :expiration_time, :price, :order_status, :order_status_at,
+			 :timing, :total_ms)
 			`, r); err != nil {
 				return 0, 0, fmt.Errorf("insert recovered history %s: %w", attempt.TaskID, err)
 			}

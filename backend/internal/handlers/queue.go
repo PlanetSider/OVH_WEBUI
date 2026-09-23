@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -63,6 +64,15 @@ func AddQueueItem(state *app.State) gin.HandlerFunc {
 		}
 		if body.PlanCode == "" || body.Datacenter == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "缺少 planCode 或 datacenter"})
+			return
+		}
+		// 入队前复用统一 plan verdict。Unknown 不阻断，避免一次目录/探测
+		// 瞬断把正常任务永久拒绝；能够确认的跨区、非 Eco、已下架则不入队。
+		if verdict, hint := catalog.ClassifyPlan(state, body.AccountID, body.PlanCode, "queue"); hint != "" {
+			if state.Logger != nil {
+				state.Logger.Warn(fmt.Sprintf("[queue] 拒绝任务(判定 %s): %s", verdict.String(), hint), "queue")
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": hint})
 			return
 		}
 		if body.RetryInterval == 0 {
@@ -208,6 +218,7 @@ func UpdateQueueStatus(state *app.State) gin.HandlerFunc {
 			for i := range queue {
 				if queue[i].ID == id {
 					queue[i].Status = body.Status
+					queue[i].ProxyGuardPaused = false
 					queue[i].UpdatedAt = types.NowISO()
 					planCode = queue[i].PlanCode
 					return queue, nil
@@ -351,6 +362,7 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 			queue[index].LastCheckTime = 0
 			queue[index].Discontinued = discontinued
 			queue[index].Status = "running"
+			queue[index].ProxyGuardPaused = false
 			queue[index].UpdatedAt = now
 			for _, dc := range dcs {
 				for n := 0; n < qty; n++ {

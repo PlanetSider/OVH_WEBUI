@@ -290,7 +290,13 @@ func cmdPrice(state *app.State, args []string, accountID string) string {
 		if result.Price.Prices != nil {
 			withTax = result.Price.Prices["withTax"]
 			withoutTax = result.Price.Prices["withoutTax"]
+			if code, ok := result.Price.Prices["currencyCode"].(string); ok {
+				currency = strings.ToUpper(strings.TrimSpace(code))
+			}
 		}
+	}
+	if currency == "" {
+		currency = "币种未知"
 	}
 	// 尝试从 items 里找货币
 	optsText := "默认/匹配配置"

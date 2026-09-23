@@ -435,20 +435,19 @@ func GetServiceInfo(state *app.State) gin.HandlerFunc {
 				}
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"serviceInfo": gin.H{
-				"status":                    valueOr(info, "status", "unknown"),
-				"expiration":                valueOr(info, "expiration", ""),
-				"creation":                  valueOr(info, "creation", ""),
-				"renewalType":               automatic, // 自动续费 yes/no
-				"renewalPeriod":             period,    // 续费周期(月)
-				"renewalDeleteAtExpiration": deleteAtExpiration,
-				"renewalForced":             forced, // OVH 强制自动续费(不能改)
-				"renewalManualPayment":      manualPayment,
-				"possibleRenewPeriod":       possiblePeriods,
-			},
-		})
+		serviceInfo := map[string]interface{}{
+			"status":                    valueOr(info, "status", "unknown"),
+			"expiration":                valueOr(info, "expiration", ""),
+			"creation":                  valueOr(info, "creation", ""),
+			"renewalType":               automatic,
+			"renewalPeriod":             period,
+			"renewalDeleteAtExpiration": deleteAtExpiration,
+			"renewalForced":             forced,
+			"renewalManualPayment":      manualPayment,
+			"possibleRenewPeriod":       possiblePeriods,
+		}
+		attachTerminationState(state, client, serviceIDForDedicated, svc, "server_control", serviceInfo)
+		c.JSON(http.StatusOK, gin.H{"success": true, "serviceInfo": serviceInfo})
 	}
 }
 
@@ -849,9 +848,9 @@ func GetPartitionSchemes(state *app.State) gin.HandlerFunc {
 		// 双层嵌套并发：先并发拉每个 scheme 的 info + partition list，
 		// 再对每个 scheme 内的 partition 并发拉详情
 		type schemeResult struct {
-			name       string
-			info       map[string]interface{}
-			parts      []string
+			name        string
+			info        map[string]interface{}
+			parts       []string
 			missingInfo bool
 		}
 		schemeResults := make([]schemeResult, len(schemes))

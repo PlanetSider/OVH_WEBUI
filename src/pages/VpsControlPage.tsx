@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/input";
 import {
   useOwnedVps, useVpsServiceInfo, useVpsIps, useVpsCurrentOS,
   useVpsStart, useVpsStop, useVpsReboot, useVpsConsoleUrl, useVpsSetPassword,
-  useUpdateVpsRenewal, useChangeVpsContact,
+  useUpdateVpsRenewal, useUpdateVpsTerminationPolicy, useChangeVpsContact,
   useTerminateVps, useConfirmTerminateVps,
   useVpsEngagement, useVpsEngagementAvailable, useVpsEngagementRequest,
   useCreateVpsEngagementRequest, useDeleteVpsEngagementRequest, useUpdateVpsEngagementEndRule,
@@ -195,6 +195,7 @@ function VpsDetail({
   const [engagementOpen, setEngagementOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
   const renewalMutation = useUpdateVpsRenewal(server.serviceName);
+  const terminationMutation = useUpdateVpsTerminationPolicy(server.serviceName);
   const contactMutation = useChangeVpsContact();
 
   // 把 VPS engagement hooks 打包成 EngagementHooks bundle 传给共用对话框
@@ -554,6 +555,7 @@ function VpsDetail({
           info={info.data}
           open={renewalOpen}
           onOpenChange={setRenewalOpen}
+           termination={terminationMutation}
           mutation={renewalMutation}
         />
       )}

@@ -2,6 +2,7 @@
 // 双 driver 设计：
 //   - CGO 可用时（默认 go build）走 mattn/go-sqlite3，性能更好；
 //   - CGO_ENABLED=0 时走 modernc.org/sqlite（纯 Go），零 C 依赖，方便交叉编译/无 gcc 环境。
+//
 // 切换由 build tag 自动完成，详见 driver_cgo.go / driver_purego.go。
 package db
 
@@ -23,10 +24,10 @@ var schemaSQL string
 // DB 包装 *sqlx.DB，所有表的 CRUD 方法都挂在它上面（按文件分散）
 type DB struct {
 	*sqlx.DB
-	Path      string
-	Driver    string // 当前实际使用的 driver 名（"sqlite3" / "sqlite"），便于日志展示
-	secretMu  sync.RWMutex
-	cipher    *secret.Cipher
+	Path     string
+	Driver   string // 当前实际使用的 driver 名（"sqlite3" / "sqlite"），便于日志展示
+	secretMu sync.RWMutex
+	cipher   *secret.Cipher
 }
 
 func (db *DB) SetSecretCipher(cipher *secret.Cipher) {
@@ -119,6 +120,9 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("queue", "failure_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := db.addColumnIfMissing("queue", "proxy_guard_paused", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("history", "account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
@@ -128,6 +132,12 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("history", "order_status_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := db.addColumnIfMissing("history", "timing", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("history", "total_ms", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
@@ -135,6 +145,9 @@ func (db *DB) migrate() error {
 		return err
 	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "discontinued_next_check_at", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("monitor_subscriptions", "proxy_guard_auto_order_disabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "memories", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
@@ -165,6 +178,21 @@ func (db *DB) migrate() error {
 		return err
 	}
 	if err := db.addColumnIfMissing("vps_subscriptions", "pending_notify_channels", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("vps_subscriptions", "auto_order", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("vps_subscriptions", "quantity", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("vps_subscriptions", "auto_pay", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("vps_subscriptions", "os", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("vps_subscriptions", "proxy_guard_auto_order_disabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := db.addColumnIfMissing("telegram_order_buttons", "used_at", "REAL NOT NULL DEFAULT 0"); err != nil {

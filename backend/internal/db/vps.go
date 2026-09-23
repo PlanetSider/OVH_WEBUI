@@ -10,20 +10,25 @@ import (
 )
 
 type vpsSubRow struct {
-	ID                 string         `db:"id"`
-	PlanCode           string         `db:"plan_code"`
-	OvhSubsidiary      string         `db:"ovh_subsidiary"`
-	DatacentersJSON    sql.NullString `db:"datacenters"`
-	MonitorLinux       int            `db:"monitor_linux"`
-	MonitorWindows     int            `db:"monitor_windows"`
-	NotifyAvailable    int            `db:"notify_available"`
-	NotifyUnavailable  int            `db:"notify_unavailable"`
-	LastStatusJSON     sql.NullString `db:"last_status"`
-	HistoryJSON        sql.NullString `db:"history"`
-	CreatedAt          string         `db:"created_at"`
-	PendingNotifyJSON  sql.NullString `db:"pending_notify"`
-	PendingNotifyChannelsJSON sql.NullString `db:"pending_notify_channels"`
-	AutoOrderAccountID string         `db:"auto_order_account_id"` // 旧列兼容，始终写空
+	ID                          string         `db:"id"`
+	PlanCode                    string         `db:"plan_code"`
+	OvhSubsidiary               string         `db:"ovh_subsidiary"`
+	DatacentersJSON             sql.NullString `db:"datacenters"`
+	MonitorLinux                int            `db:"monitor_linux"`
+	MonitorWindows              int            `db:"monitor_windows"`
+	NotifyAvailable             int            `db:"notify_available"`
+	NotifyUnavailable           int            `db:"notify_unavailable"`
+	LastStatusJSON              sql.NullString `db:"last_status"`
+	HistoryJSON                 sql.NullString `db:"history"`
+	CreatedAt                   string         `db:"created_at"`
+	PendingNotifyJSON           sql.NullString `db:"pending_notify"`
+	PendingNotifyChannelsJSON   sql.NullString `db:"pending_notify_channels"`
+	AutoOrder                   int            `db:"auto_order"`
+	Quantity                    int            `db:"quantity"`
+	AutoPay                     int            `db:"auto_pay"`
+	OS                          string         `db:"os"`
+	AutoOrderAccountID          string         `db:"auto_order_account_id"`
+	ProxyGuardAutoOrderDisabled int            `db:"proxy_guard_auto_order_disabled"`
 }
 
 func rowToVPSSub(r vpsSubRow) (types.VPSSubscription, error) {
@@ -63,21 +68,29 @@ func rowToVPSSub(r vpsSubRow) (types.VPSSubscription, error) {
 	if hist == nil {
 		hist = []map[string]interface{}{}
 	}
-	if pendingChannels == nil { pendingChannels = map[string][]string{} }
+	if pendingChannels == nil {
+		pendingChannels = map[string][]string{}
+	}
 	return types.VPSSubscription{
-		ID:                 r.ID,
-		PlanCode:           r.PlanCode,
-		OvhSubsidiary:      r.OvhSubsidiary,
-		Datacenters:        dcs,
-		MonitorLinux:       r.MonitorLinux == 1,
-		MonitorWindows:     r.MonitorWindows == 1,
-		NotifyAvailable:    r.NotifyAvailable == 1,
-		NotifyUnavailable:  r.NotifyUnavailable == 1,
-		LastStatus:         last,
-		PendingNotify:      pending,
-		PendingNotifyChannels: pendingChannels,
-		History:            hist,
-		CreatedAt:          r.CreatedAt,
+		ID:                          r.ID,
+		PlanCode:                    r.PlanCode,
+		OvhSubsidiary:               r.OvhSubsidiary,
+		Datacenters:                 dcs,
+		MonitorLinux:                r.MonitorLinux == 1,
+		MonitorWindows:              r.MonitorWindows == 1,
+		NotifyAvailable:             r.NotifyAvailable == 1,
+		NotifyUnavailable:           r.NotifyUnavailable == 1,
+		LastStatus:                  last,
+		PendingNotify:               pending,
+		PendingNotifyChannels:       pendingChannels,
+		History:                     hist,
+		CreatedAt:                   r.CreatedAt,
+		AutoOrder:                   r.AutoOrder == 1,
+		Quantity:                    r.Quantity,
+		AutoPay:                     r.AutoPay == 1,
+		OS:                          r.OS,
+		AutoOrderAccountID:          r.AutoOrderAccountID,
+		ProxyGuardAutoOrderDisabled: r.ProxyGuardAutoOrderDisabled == 1,
 	}, nil
 }
 
@@ -123,21 +136,29 @@ func vpsSubToRow(s types.VPSSubscription) (vpsSubRow, error) {
 		}
 		return 0
 	}
+	if s.Quantity < 1 {
+		s.Quantity = 1
+	}
 	return vpsSubRow{
-		ID:                 s.ID,
-		PlanCode:           s.PlanCode,
-		OvhSubsidiary:      s.OvhSubsidiary,
-		DatacentersJSON:    sql.NullString{String: string(dcsJSON), Valid: true},
-		MonitorLinux:       bi(s.MonitorLinux),
-		MonitorWindows:     bi(s.MonitorWindows),
-		NotifyAvailable:    bi(s.NotifyAvailable),
-		NotifyUnavailable:  bi(s.NotifyUnavailable),
-		LastStatusJSON:     sql.NullString{String: string(lastJSON), Valid: true},
-		HistoryJSON:        sql.NullString{String: string(histJSON), Valid: true},
-		PendingNotifyJSON:  sql.NullString{String: string(pendingJSON), Valid: true},
-		PendingNotifyChannelsJSON: sql.NullString{String: string(pendingChannelsJSON), Valid: true},
-		CreatedAt:          s.CreatedAt,
-		AutoOrderAccountID: "",
+		ID:                          s.ID,
+		PlanCode:                    s.PlanCode,
+		OvhSubsidiary:               s.OvhSubsidiary,
+		DatacentersJSON:             sql.NullString{String: string(dcsJSON), Valid: true},
+		MonitorLinux:                bi(s.MonitorLinux),
+		MonitorWindows:              bi(s.MonitorWindows),
+		NotifyAvailable:             bi(s.NotifyAvailable),
+		NotifyUnavailable:           bi(s.NotifyUnavailable),
+		LastStatusJSON:              sql.NullString{String: string(lastJSON), Valid: true},
+		HistoryJSON:                 sql.NullString{String: string(histJSON), Valid: true},
+		PendingNotifyJSON:           sql.NullString{String: string(pendingJSON), Valid: true},
+		PendingNotifyChannelsJSON:   sql.NullString{String: string(pendingChannelsJSON), Valid: true},
+		CreatedAt:                   s.CreatedAt,
+		AutoOrder:                   bi(s.AutoOrder),
+		Quantity:                    s.Quantity,
+		AutoPay:                     bi(s.AutoPay),
+		OS:                          s.OS,
+		AutoOrderAccountID:          s.AutoOrderAccountID,
+		ProxyGuardAutoOrderDisabled: bi(s.ProxyGuardAutoOrderDisabled),
 	}, nil
 }
 
@@ -147,7 +168,8 @@ func (db *DB) ListVPSSubscriptions() ([]types.VPSSubscription, error) {
 	if err := db.Select(&rows, `
 		SELECT id, plan_code, ovh_subsidiary, datacenters, monitor_linux, monitor_windows,
 		       notify_available, notify_unavailable, last_status, history, created_at,
-		       pending_notify, pending_notify_channels, auto_order_account_id
+		       pending_notify, pending_notify_channels, auto_order, quantity, auto_pay, os, auto_order_account_id,
+		       proxy_guard_auto_order_disabled
 		FROM vps_subscriptions
 		ORDER BY created_at
 	`); err != nil {
@@ -173,10 +195,12 @@ func (db *DB) UpsertVPSSubscription(s types.VPSSubscription) error {
 	_, err = db.NamedExec(`
 		INSERT INTO vps_subscriptions
 		(id, plan_code, ovh_subsidiary, datacenters, monitor_linux, monitor_windows,
-		 notify_available, notify_unavailable, last_status, pending_notify, pending_notify_channels, history, created_at, auto_order_account_id)
+		 notify_available, notify_unavailable, last_status, pending_notify, pending_notify_channels, history, created_at,
+		 auto_order, quantity, auto_pay, os, auto_order_account_id, proxy_guard_auto_order_disabled)
 		VALUES
 		(:id, :plan_code, :ovh_subsidiary, :datacenters, :monitor_linux, :monitor_windows,
-		 :notify_available, :notify_unavailable, :last_status, :pending_notify, :pending_notify_channels, :history, :created_at, :auto_order_account_id)
+		 :notify_available, :notify_unavailable, :last_status, :pending_notify, :pending_notify_channels, :history, :created_at,
+		 :auto_order, :quantity, :auto_pay, :os, :auto_order_account_id, :proxy_guard_auto_order_disabled)
 		ON CONFLICT(id) DO UPDATE SET
 		  plan_code          = excluded.plan_code,
 		  ovh_subsidiary     = excluded.ovh_subsidiary,
@@ -189,7 +213,12 @@ func (db *DB) UpsertVPSSubscription(s types.VPSSubscription) error {
 		  pending_notify         = excluded.pending_notify,
 		  pending_notify_channels = excluded.pending_notify_channels,
 		  history                = excluded.history,
-		  auto_order_account_id  = excluded.auto_order_account_id
+		  auto_order              = excluded.auto_order,
+		  quantity                = excluded.quantity,
+		  auto_pay                = excluded.auto_pay,
+		  os                      = excluded.os,
+		  auto_order_account_id   = excluded.auto_order_account_id,
+		  proxy_guard_auto_order_disabled = excluded.proxy_guard_auto_order_disabled
 	`, r)
 	if err != nil {
 		return fmt.Errorf("upsert vps sub %s: %w", s.ID, err)
@@ -215,10 +244,12 @@ func (db *DB) ReplaceVPSSubscriptions(subs []types.VPSSubscription) error {
 		_, err = tx.NamedExec(`
 			INSERT INTO vps_subscriptions
 			(id, plan_code, ovh_subsidiary, datacenters, monitor_linux, monitor_windows,
-			 notify_available, notify_unavailable, last_status, pending_notify, pending_notify_channels, history, created_at, auto_order_account_id)
+			 notify_available, notify_unavailable, last_status, pending_notify, pending_notify_channels, history, created_at,
+		 auto_order, quantity, auto_pay, os, auto_order_account_id, proxy_guard_auto_order_disabled)
 			VALUES
 			(:id, :plan_code, :ovh_subsidiary, :datacenters, :monitor_linux, :monitor_windows,
-			 :notify_available, :notify_unavailable, :last_status, :pending_notify, :pending_notify_channels, :history, :created_at, :auto_order_account_id)
+			 :notify_available, :notify_unavailable, :last_status, :pending_notify, :pending_notify_channels, :history, :created_at,
+		 :auto_order, :quantity, :auto_pay, :os, :auto_order_account_id, :proxy_guard_auto_order_disabled)
 		`, r)
 		if err != nil {
 			return fmt.Errorf("insert vps sub %s: %w", s.ID, err)

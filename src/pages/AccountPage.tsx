@@ -16,6 +16,7 @@ import {
   useOrders,
   type EmailHistoryEntry,
 } from "@/hooks/use-account";
+import { currencyLabel } from "@/lib/currency";
 
 /** 账户管理：顶部 3 张 KPI + Tabs (邮件 / 订单 / 退款) */
 function AccountPage() {
@@ -210,7 +211,7 @@ function OrdersTab() {
               const priceText =
                 o.priceWithTax?.text ||
                 (o.priceWithTax?.value != null
-                  ? `${o.priceWithTax.value} ${o.priceWithTax.currencyCode || ""}`
+                  ? `${o.priceWithTax.value} ${currencyLabel(o.priceWithTax.currencyCode)}`
                   : "—");
               const dateStr = o.date ? new Date(String(o.date)).toLocaleString("zh-CN") : "—";
               return (

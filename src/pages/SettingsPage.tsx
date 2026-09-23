@@ -1,6 +1,6 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Unplug } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Unplug, Radar, Network, AlertCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -43,6 +43,15 @@ import {
   useSetDefaultAccount,
   useVerifyAccount,
   useAccountStatuses,
+  useProxyStatus,
+  useProxyTest,
+  useLastProxyTest,
+  useProxyCheck,
+  useLastProxyCheck,
+  type ProxyTestRecord,
+  type ProxyCheckRecord,
+  type ProxyProbeTarget,
+  type AccountProxyStatus,
   accountChipColor,
   type OVHAccount,
 } from "@/hooks/use-accounts";
@@ -848,9 +857,13 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 
 function AccountsSection() {
   const accounts = useAccounts();
+  const proxyStatus = useProxyStatus();
   const [showAdd, setShowAdd] = useState(false);
   const [editAcc, setEditAcc] = useState<OVHAccount | null>(null);
   const list = accounts.data || [];
+  const profiles = proxyStatus.data?.profiles?.length
+    ? proxyStatus.data.profiles
+    : ["default", "chrome-like", "firefox-like", "legacy-http1"];
 
   return (
     <Section title="OVH 账户管理">
@@ -879,22 +892,36 @@ function AccountsSection() {
       ) : (
         <div className="space-y-3">
           {list.map((a) => (
-            <AccountCard key={a.id} acc={a} onEdit={() => setEditAcc(a)} />
+            <AccountCard
+              key={a.id}
+              acc={a}
+              proxyState={proxyStatus.data?.accounts.find((item) => item.id === a.id)}
+              onEdit={() => setEditAcc(a)}
+            />
           ))}
         </div>
       )}
 
-      {showAdd && <AccountDialog onClose={() => setShowAdd(false)} />}
-      {editAcc && <AccountDialog acc={editAcc} onClose={() => setEditAcc(null)} />}
+      {showAdd && <AccountDialog profiles={profiles} onClose={() => setShowAdd(false)} />}
+      {editAcc && <AccountDialog acc={editAcc} profiles={profiles} onClose={() => setEditAcc(null)} />}
     </Section>
   );
 }
 
-function AccountCard({ acc, onEdit }: { acc: OVHAccount; onEdit: () => void }) {
+function AccountCard({
+  acc,
+  proxyState,
+  onEdit,
+}: {
+  acc: OVHAccount;
+  proxyState?: AccountProxyStatus;
+  onEdit: () => void;
+}) {
   const setDefault = useSetDefaultAccount();
   const del = useDeleteAccount();
   const verify = useVerifyAccount();
   const [confirming, setConfirming] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   return (
     <div className="border border-border rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center gap-3">
@@ -917,6 +944,8 @@ function AccountCard({ acc, onEdit }: { acc: OVHAccount; onEdit: () => void }) {
           <span>{acc.iam}</span>
           <span>·</span>
           <span>建于 {new Date(acc.createdAt).toLocaleDateString("zh-CN")}</span>
+           {acc.proxyUrl ? <Chip tone={proxyState?.tripped ? "danger" : "info"}>{proxyState?.tripped ? "代理已熔断" : "已配置代理"}</Chip> : <Chip tone="default">直连</Chip>}
+           {acc.fingerprint && <Chip tone="default">{acc.fingerprint}</Chip>}
         </div>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
@@ -928,7 +957,13 @@ function AccountCard({ acc, onEdit }: { acc: OVHAccount; onEdit: () => void }) {
             <Star className="w-4 h-4" />
           </Button>
         )}
-        <Button variant="ghost" size="icon" onClick={onEdit} title="编辑">
+        <Button variant="ghost" size="icon" onClick={() => setShowDiagnostics(true)} title="代理诊断">
+           <Radar className="w-4 h-4" />
+         </Button>
+         <Button variant="ghost" size="icon" onClick={() => setShowDiagnostics(true)} title="链路检测">
+           <Network className="w-4 h-4" />
+         </Button>
+         <Button variant="ghost" size="icon" onClick={onEdit} title="编辑">
           <Pencil className="w-4 h-4" />
         </Button>
         <Button variant="ghost" size="icon" onClick={() => setConfirming(true)} title="删除" className="text-destructive hover:text-destructive">
@@ -960,11 +995,96 @@ function AccountCard({ acc, onEdit }: { acc: OVHAccount; onEdit: () => void }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {showDiagnostics && (
+        <ProxyDiagnosticsDialog
+          account={acc}
+          onClose={() => setShowDiagnostics(false)}
+        />
+      )}
     </div>
   );
 }
 
-function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void }) {
+function ProxyDiagnosticsDialog({ account, onClose }: { account: OVHAccount; onClose: () => void }) {
+  const test = useProxyTest();
+  const check = useProxyCheck();
+  const lastTest = useLastProxyTest(account.id);
+  const lastCheck = useLastProxyCheck(account.id);
+  const testing = test.isPending || check.isPending;
+  const testRecord = lastTest.data;
+  const checkRecord = lastCheck.data;
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="w-[95vw] sm:w-full sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Radar className="w-4 h-4" />{account.name} 出站诊断</DialogTitle>
+          <DialogDescription>诊断使用账户当前保存的代理和 fingerprint，不会触发下单或 proxyguard。</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={() => test.mutate(account.id)} disabled={testing}>
+              <Radar className={cn("w-4 h-4", test.isPending && "animate-pulse")} />
+              测试出口 IP
+            </Button>
+            <Button variant="outline" onClick={() => check.mutate(account.id)} disabled={testing}>
+              <Network className={cn("w-4 h-4", check.isPending && "animate-pulse")} />
+              检测 OVH 链路
+            </Button>
+            {account.proxyUrl ? <Chip tone="info">代理已配置</Chip> : <Chip tone="default">直连</Chip>}
+            <Chip tone="default">{account.fingerprint || "default"}</Chip>
+          </div>
+
+          {testRecord && (
+            <div className="border border-border rounded-lg p-3 text-sm space-y-1">
+              <div className="flex items-center gap-2 font-medium">
+                {testRecord.success === true ? <CheckCircle2 className="w-4 h-4 text-success" /> : <AlertCircle className="w-4 h-4 text-destructive" />}
+                出口 IP
+              </div>
+              {testRecord.success === true ? (
+                <p className="font-mono">{testRecord.egressIP} · {testRecord.usingProxy ? "经代理" : "直连"}</p>
+              ) : (
+                <p className="text-destructive break-words">{testRecord.error}</p>
+              )}
+              {testRecord.success === true && testRecord.warning && <p className="text-warning text-xs">{testRecord.warning}</p>}
+            </div>
+          )}
+
+          {checkRecord && (
+            <div className="border border-border rounded-lg p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">OVH 链路</span>
+                {checkRecord.success && <span className="text-xs text-muted-foreground">{checkRecord.region} · {new Date(checkRecord.checkedAt).toLocaleString("zh-CN")}</span>}
+              </div>
+              {checkRecord.success === false ? (
+                <p className="text-sm text-destructive">{checkRecord.error}</p>
+              ) : (
+                <div className="space-y-2">
+                  {checkRecord.egressError && <p className="text-xs text-warning">出口 IP：{checkRecord.egressError}</p>}
+                  {checkRecord.egressIP && <p className="text-xs font-mono">出口 IP：{checkRecord.egressIP}</p>}
+                  {checkRecord.targets.map((target: ProxyProbeTarget) => (
+                    <div key={target.name} className="flex items-center justify-between gap-3 text-xs">
+                      <span className="truncate">{target.name}</span>
+                      <span className="flex items-center gap-2 whitespace-nowrap">
+                        <Chip tone={target.ok ? "success" : "danger"}>{target.ok ? `${target.minMs ?? 0} / ${target.avgMs ?? 0}ms` : "失败"}</Chip>
+                        {target.status ? <span className="text-muted-foreground">HTTP {target.status}</span> : null}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AccountDialog({ acc, profiles, onClose }: { acc?: OVHAccount; profiles: string[]; onClose: () => void }) {
   const create = useCreateAccount();
   const update = useUpdateAccount();
   const isEdit = !!acc;
@@ -1033,8 +1153,26 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
               </label>
             )}
           </Field>
-          <Field label="请求指纹" hint="可选: 目前仅支持 ua: 前缀，不伪造 TLS 指纹">
-            <Input value={form.fingerprint} onChange={(e) => set("fingerprint", e.target.value)} placeholder="ua:my-client" autoComplete="off" />
+          <Field label="请求指纹" hint="新增配置仅支持后端返回的白名单 profile；旧 ua: 值会保留并提示迁移">
+            <Select
+              value={profiles.includes(form.fingerprint) ? form.fingerprint : form.fingerprint.startsWith("ua:") ? "__legacy" : "default"}
+              onValueChange={(value) => set("fingerprint", value === "default" ? "" : value === "__legacy" ? form.fingerprint : value)}
+            >
+              <SelectTrigger className="h-11">
+                <SelectValue placeholder="选择 fingerprint profile" />
+              </SelectTrigger>
+              <SelectContent className="z-[300]">
+                {profiles.map((profile) => (
+                  <SelectItem key={profile} value={profile}>{profile}</SelectItem>
+                ))}
+                {form.fingerprint.startsWith("ua:") && (
+                  <SelectItem value="__legacy">旧版兼容：{form.fingerprint}</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            {form.fingerprint.startsWith("ua:") && (
+              <p className="mt-1 text-[11px] text-warning">当前账户仍使用旧版 ua: 指纹；选择新 profile 后才会迁移。</p>
+            )}
             {isEdit && (
               <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
                 <Checkbox checked={form.clearFingerprint} onCheckedChange={(checked) => set("clearFingerprint", checked === true)} />

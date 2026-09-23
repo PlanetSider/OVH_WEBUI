@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/numconv"
 	"github.com/ovh-webui/server/internal/ovh"
 )
@@ -127,9 +128,9 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 	state.Logger.Debug(fmt.Sprintf("基础商品添加成功，项目 ID: %d", itemID), "price")
 
 	// 3. 设置必需配置
-	// 1:1 对应 Python app.py:3756-3761：dict 在 Py3.7+ 保持插入序：datacenter → os → region。
-	// Go map 遍历顺序随机，若 region 先于 dedicated_datacenter 设置，OVH 可能返回 400
-	region := ovh.RegionForDC(apiDC)
+	// 优先使用当前子公司目录中的合法 region；目录瞬断时才使用静态安全兜底。
+	region, regionSource := catalog.ResolveRegion(state, accountID, planCode, apiDC)
+	state.Logger.Debug(fmt.Sprintf("价格配置 region=%s (%s)", region, regionSource), "price")
 	type kv struct{ label, value string }
 	configurations := []kv{
 		{"dedicated_datacenter", apiDC},
@@ -158,36 +159,27 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 		state.Logger.Debug(fmt.Sprintf("找到 %d 个可用选项", len(availableOpts)), "price")
 		added := []string{}
 		for _, wanted := range options {
-			matched := false
-			for _, avail := range availableOpts {
-				if availPlanCode, _ := avail["planCode"].(string); strings.TrimSpace(availPlanCode) == wanted {
-					duration := "P1M"
-					if d, ok := avail["duration"].(string); ok && d != "" {
-						duration = d
-					}
-					pricingMode := "default"
-					if pm, ok := avail["pricingMode"].(string); ok && pm != "" {
-						pricingMode = pm
-					}
-					optPayload := map[string]interface{}{
-						"itemId":      itemID,
-						"planCode":    wanted,
-						"duration":    duration,
-						"pricingMode": pricingMode,
-						"quantity":    1,
-					}
-					if err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/eco/options", cartID), optPayload, nil); err != nil {
-						return Result{Success: false, Error: fmt.Sprintf("添加选项 %s 失败: %s", wanted, err.Error())}
-					}
-					added = append(added, wanted)
-					matched = true
-					state.Logger.Debug("成功添加选项: "+wanted, "price")
-					break
-				}
-			}
-			if !matched {
+			matched, matchedCode, tier := catalog.MatchEcoOption(availableOpts, wanted)
+			if matched == nil || matchedCode == "" {
 				return Result{Success: false, Error: fmt.Sprintf("请求的选项 %s 不在 OVH 可用选项中", wanted)}
 			}
+			duration := "P1M"
+			if d, ok := matched["duration"].(string); ok && d != "" {
+				duration = d
+			}
+			pricingMode := "default"
+			if pm, ok := matched["pricingMode"].(string); ok && pm != "" {
+				pricingMode = pm
+			}
+			optPayload := map[string]interface{}{
+				"itemId": itemID, "planCode": matchedCode, "duration": duration,
+				"pricingMode": pricingMode, "quantity": 1,
+			}
+			if err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/eco/options", cartID), optPayload, nil); err != nil {
+				return Result{Success: false, Error: fmt.Sprintf("添加选项 %s 失败: %s", matchedCode, err.Error())}
+			}
+			added = append(added, matchedCode)
+			state.Logger.Debug(fmt.Sprintf("成功添加选项: %s (匹配档次: %s)", matchedCode, tier), "price")
 		}
 		state.Logger.Info(fmt.Sprintf("共添加 %d 个选项: %v", len(added), added), "price")
 	}
@@ -233,8 +225,8 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 					currency = c
 				}
 			}
-			if currency == "" {
-				currency = "EUR"
+			if currency != "" {
+				currency = strings.ToUpper(strings.TrimSpace(currency))
 			}
 
 			priceInfo.Prices["withTax"] = withTaxVal
@@ -267,8 +259,8 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 						currency = c
 					}
 				}
-				if currency == "" {
-					currency = "EUR"
+				if currency != "" {
+					currency = strings.ToUpper(strings.TrimSpace(currency))
 				}
 				priceInfo.Items = append(priceInfo.Items, map[string]interface{}{
 					"itemId":      it["itemId"],

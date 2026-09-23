@@ -3,12 +3,49 @@ package monitor
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ovh-webui/server/internal/db"
 )
 
-// AddSubscription 对应 Python: add_subscription
+// SetProxyGuardAutoOrder 按账户暂停/恢复由代理熔断影响的独服自动下单。
+// 标记只在本次由 proxyguard 改动的订阅上设置，恢复不会覆盖用户原本关闭的订阅。
+func (m *Monitor) SetProxyGuardAutoOrder(accountID string, enabled bool) (int, error) {
+	accountID = strings.TrimSpace(accountID)
+	if m == nil || accountID == "" {
+		return 0, nil
+	}
+	changed := 0
+	err := m.MutateSubscriptions(func(subscriptions []*Subscription) ([]*Subscription, error) {
+		for _, sub := range subscriptions {
+			if sub == nil || sub.AutoOrderAccountID != accountID {
+				continue
+			}
+			if enabled {
+				if !sub.ProxyGuardAutoOrderDisabled || sub.AutoOrder {
+					continue
+				}
+				sub.AutoOrder = true
+				sub.ProxyGuardAutoOrderDisabled = false
+				if sub.Quantity < 1 {
+					sub.Quantity = 1
+				}
+				changed++
+				continue
+			}
+			if !sub.AutoOrder {
+				continue
+			}
+			sub.AutoOrder = false
+			sub.ProxyGuardAutoOrderDisabled = true
+			changed++
+		}
+		return subscriptions, nil
+	})
+	return changed, err
+}
+
 // autoOrderAccountID:auto_order 触发时用哪个账户下单;空 = 只通知不下单
 func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyAvailable, notifyUnavailable bool,
 	serverName string, lastStatus map[string]string, history []HistoryEntry, autoOrder bool, quantity int,
@@ -35,6 +72,7 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 				s.NotifyAvailable = notifyAvailable
 				s.NotifyUnavailable = notifyUnavailable
 				s.AutoOrder = autoOrder
+				s.ProxyGuardAutoOrderDisabled = false
 				if autoOrder {
 					if quantity < 1 {
 						quantity = 1
@@ -64,21 +102,21 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 			history = []HistoryEntry{}
 		}
 		sub := &Subscription{
-			PlanCode:           planCode,
-			Datacenters:        datacenters,
-			Memories:           cloneStrings(memories),
-			Storages:           cloneStrings(storages),
-			Networks:           cloneStrings(networks),
-			NotifyAvailable:    notifyAvailable,
-			NotifyUnavailable:  notifyUnavailable,
-			LastStatus:         lastStatus,
-			ConfirmedStatus:    map[string]string{},
-			PendingOrder:       map[string]int{},
-			PendingNotify:      map[string]string{},
+			PlanCode:              planCode,
+			Datacenters:           datacenters,
+			Memories:              cloneStrings(memories),
+			Storages:              cloneStrings(storages),
+			Networks:              cloneStrings(networks),
+			NotifyAvailable:       notifyAvailable,
+			NotifyUnavailable:     notifyUnavailable,
+			LastStatus:            lastStatus,
+			ConfirmedStatus:       map[string]string{},
+			PendingOrder:          map[string]int{},
+			PendingNotify:         map[string]string{},
 			PendingNotifyChannels: map[string][]string{},
-			CreatedAt:          time.Now().Format(time.RFC3339Nano),
-			History:            history,
-			AutoOrderAccountID: autoOrderAccountID,
+			CreatedAt:             time.Now().Format(time.RFC3339Nano),
+			History:               history,
+			AutoOrderAccountID:    autoOrderAccountID,
 		}
 		if autoOrder {
 			if quantity < 1 {

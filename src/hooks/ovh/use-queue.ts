@@ -26,6 +26,23 @@ export interface QueueItem {
   discontinued?: boolean;
 }
 
+export interface PurchaseTiming {
+  at: string;
+  totalMs: number;
+  phases: { name: string; ms: number }[];
+  outcome: "ordered" | "unavailable" | "failed" | "cancelled" | string;
+}
+
+/** 每条机型/机房链路最近一轮的阶段耗时。 */
+export function usePurchaseTimings() {
+  return useQuery({
+    queryKey: ["queue", "timings"],
+    queryFn: async () =>
+      (await api.get<{ timings: Record<string, PurchaseTiming> }>("/queue/timings")).data.timings,
+    refetchInterval: 5000,
+  });
+}
+
 /** 抢购队列列表 */
 export function useQueueList() {
   return useQuery({

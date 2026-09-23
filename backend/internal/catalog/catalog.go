@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -10,9 +11,8 @@ import (
 
 	ovhsdk "github.com/ovh/go-ovh/ovh"
 
-	"github.com/ovh-webui/server/internal/availability"
 	"github.com/ovh-webui/server/internal/app"
-	"github.com/ovh-webui/server/internal/ovh"
+	"github.com/ovh-webui/server/internal/availability"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -66,19 +66,15 @@ func CheckServerAvailabilityWithConfigsStrict(state *app.State, planCode string,
 
 	state.Logger.Info(fmt.Sprintf("[配置监控] OVH API 返回 %d 个配置组合", len(availabilities)), "monitor")
 
-	// 取目录用于匹配 API2 选项:用指定账户的 subsidiary
-	acc, _ := state.FindAccount(accountID)
-	subsidiary := acc.Zone
-	if subsidiary == "" {
-		subsidiary = "IE"
-	}
-	var catalogResp map[string]interface{}
-	if err := client.Get("/order/catalog/public/eco?ovhSubsidiary="+url.QueryEscape(subsidiary), &catalogResp); err != nil {
-		return empty, fmt.Errorf("获取 %s 公开 catalog 失败: %w", subsidiary, err)
-	}
-	plan, err := findCatalogPlan(catalogResp, planCode)
+	// 目录数据由 catalog 包统一缓存；不要在每次监控轮次中重复拉整份公开目录。
+	addonFamilies, err := AddonFamiliesForPlan(state, accountID, planCode)
 	if err != nil {
-		return empty, err
+		if errors.Is(err, ErrPlanNotInCatalog) {
+			if verdict, reason := ClassifyPlan(state, accountID, planCode, "monitor"); verdict != PlanVerdictUnknown && reason != "" {
+				return empty, errors.New(reason)
+			}
+		}
+		return empty, fmt.Errorf("获取 %s 公开 catalog 失败: %w", planCode, err)
 	}
 
 	result := map[string]*ConfigAvailability{}
@@ -114,7 +110,6 @@ func CheckServerAvailabilityWithConfigsStrict(state *app.State, planCode string,
 			}
 		}
 
-		// 匹配 API2 options
 		api2Options := []string{}
 		memoryStd := ""
 		storageStd := ""
@@ -124,53 +119,39 @@ func CheckServerAvailabilityWithConfigsStrict(state *app.State, planCode string,
 		if storage != "N/A" {
 			storageStd = StandardizeConfig(storage)
 		}
+		state.Logger.Debug(fmt.Sprintf("[配置监控] 提取选项: memory=%s (标准化: %s), storage=%s (标准化: %s)", memory, memoryStd, storage, storageStd), "monitor")
 
-		state.Logger.Debug(fmt.Sprintf("[配置监控] 提取选项: memory=%s (标准化: %s), storage=%s (标准化: %s)",
-			memory, memoryStd, storage, storageStd), "monitor")
-
+		// 使用统一的四档 Eco 匹配：原样相等、原始码前缀、标准化相等、标准化前缀。
+		// 同一 family 只选一个最安全候选，避免前缀相似 addon 随返回顺序漂移。
 		if memoryStd != "" || storageStd != "" {
-			addonFamilies, ok := plan["addonFamilies"].([]interface{})
-			if !ok {
-				return empty, fmt.Errorf("catalog 中 %s 缺少 addonFamilies", planCode)
+			matchFamily := func(familyName, wanted string) (string, bool) {
+				codes := addonFamilies[strings.ToLower(strings.TrimSpace(familyName))]
+				if len(codes) == 0 || strings.TrimSpace(wanted) == "" {
+					return "", false
+				}
+				candidates := make([]map[string]interface{}, 0, len(codes))
+				for _, code := range codes {
+					candidates = append(candidates, map[string]interface{}{"planCode": code})
+				}
+				_, matchedCode, _ := MatchEcoOption(candidates, wanted)
+				return matchedCode, matchedCode != ""
 			}
 			memoryMatched := memoryStd == ""
 			storageMatched := storageStd == ""
-			for _, familyRaw := range addonFamilies {
-				family, ok := familyRaw.(map[string]interface{})
-				if !ok {
-					continue
+			if !memoryMatched {
+				if matchedCode, ok := matchFamily("memory", memory); ok {
+					if !contains(api2Options, matchedCode) {
+						api2Options = append(api2Options, matchedCode)
+					}
+					memoryMatched = true
 				}
-				familyName := strings.ToLower(getString(family, "name", ""))
-				addons, _ := family["addons"].([]interface{})
-
-				if familyName == "memory" && memoryStd != "" {
-					for _, addonRaw := range addons {
-						addon, ok := addonRaw.(string)
-						if !ok {
-							continue
-						}
-						addonStd := StandardizeConfig(addon)
-						if addonStd == memoryStd || strings.Contains(addonStd, memoryStd) {
-							if !contains(api2Options, addon) {
-								api2Options = append(api2Options, addon)
-							}
-							memoryMatched = true
-						}
+			}
+			if !storageMatched {
+				if matchedCode, ok := matchFamily("storage", storage); ok {
+					if !contains(api2Options, matchedCode) {
+						api2Options = append(api2Options, matchedCode)
 					}
-				} else if familyName == "storage" && storageStd != "" {
-					for _, addonRaw := range addons {
-						addon, ok := addonRaw.(string)
-						if !ok {
-							continue
-						}
-						addonStd := StandardizeConfig(addon)
-						if addonStd == storageStd || strings.Contains(addonStd, storageStd) {
-							if !contains(api2Options, addon) {
-								api2Options = append(api2Options, addon)
-							}
-							storageMatched = true
-						}
-					}
+					storageMatched = true
 				}
 			}
 			if !memoryMatched || !storageMatched {
@@ -205,20 +186,6 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accou
 		return map[string]*ConfigAvailability{}
 	}
 	return result.Configs
-}
-
-func findCatalogPlan(catalogResp map[string]interface{}, planCode string) (map[string]interface{}, error) {
-	plans, ok := catalogResp["plans"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("公开 catalog 缺少 plans")
-	}
-	for _, raw := range plans {
-		plan, ok := raw.(map[string]interface{})
-		if ok && getString(plan, "planCode", "") == planCode {
-			return plan, nil
-		}
-	}
-	return nil, fmt.Errorf("公开 catalog 中未找到 planCode: %s", planCode)
 }
 
 func normalizeAvailability(value string) string {
@@ -933,6 +900,3 @@ func PassthroughAvailability(client *ovhsdk.Client, planCode string) ([]map[stri
 	err := client.Get("/dedicated/server/datacenter/availabilities?"+q.Encode(), &out)
 	return out, err
 }
-
-// 兼容 OVH 调用辅助：使 *ovhsdk.Client 通过返回值导出
-var _ = ovh.RegionForDC

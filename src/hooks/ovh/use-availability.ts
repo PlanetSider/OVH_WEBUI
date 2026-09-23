@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import axios from "axios";
 import { api } from "@/lib/http";
 import { qk } from "@/lib/query";
+import { formatCurrencyAmount, normalizeCurrencyCode } from "@/lib/currency";
 
 export interface DatacenterInfo {
   datacenter: string;
@@ -263,13 +264,13 @@ export interface CatalogPlan {
 
 export interface CatalogData {
   catalogId: number;
-  locale: { currencyCode: string; subsidiary: string; taxRate: number };
+  locale?: { currencyCode?: string; subsidiary?: string; taxRate?: number };
   plans: CatalogPlan[];
   addons: CatalogPlan[];
 }
 
 export interface PriceInfo {
-  /** 月费不含税（欧元 / 当地货币） */
+  /** 月费不含税（API 返回的当地货币） */
   price: number;
   /** 月费税费 */
   tax: number;
@@ -313,12 +314,12 @@ export interface CatalogIndex {
   currency: string;
 }
 export function buildCatalogIndex(catalog: CatalogData | undefined): CatalogIndex {
-  if (!catalog) return { planByCode: {}, addonByCode: {}, currency: "EUR" };
+  if (!catalog) return { planByCode: {}, addonByCode: {}, currency: "" };
   const planByCode: Record<string, CatalogPlan> = {};
   for (const p of catalog.plans || []) planByCode[p.planCode] = p;
   const addonByCode: Record<string, CatalogPlan> = {};
   for (const a of catalog.addons || []) addonByCode[a.planCode] = a;
-  return { planByCode, addonByCode, currency: catalog.locale?.currencyCode || "EUR" };
+  return { planByCode, addonByCode, currency: normalizeCurrencyCode(catalog.locale?.currencyCode) };
 }
 
 /** 月费:取 intervalUnit=month, interval=1, mode=default 且不是安装费的那条。
@@ -475,6 +476,5 @@ export function computePriceFromOptions(
 /** 友好显示：€42.99/月 含税 €51.59/月 */
 export function formatPrice(p: PriceInfo | undefined | null): string {
   if (!p) return "—";
-  const sym = p.currency === "EUR" ? "€" : p.currency === "USD" ? "$" : p.currency === "CAD" ? "CA$" : p.currency + " ";
-  return `${sym}${p.price.toFixed(2)} / 月`;
+  return `${formatCurrencyAmount(p.price, p.currency)} / 月`;
 }

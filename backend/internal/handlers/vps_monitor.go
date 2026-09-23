@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -13,6 +15,8 @@ import (
 	"github.com/ovh-webui/server/internal/types"
 	"github.com/ovh-webui/server/internal/vps"
 )
+
+var errInvalidVPSAutoOrder = errors.New("invalid VPS auto-order configuration")
 
 // GetVPSSubscriptions GET /api/vps-monitor/subscriptions
 func GetVPSSubscriptions(state *app.State) gin.HandlerFunc {
@@ -30,13 +34,18 @@ func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 			return
 		}
 		var body struct {
-			PlanCode          string   `json:"planCode"`
-			OvhSubsidiary     string   `json:"ovhSubsidiary"`
-			Datacenters       []string `json:"datacenters"`
-			MonitorLinux      *bool    `json:"monitorLinux"`
-			MonitorWindows    *bool    `json:"monitorWindows"`
-			NotifyAvailable   *bool    `json:"notifyAvailable"`
-			NotifyUnavailable *bool    `json:"notifyUnavailable"`
+			PlanCode           string   `json:"planCode"`
+			OvhSubsidiary      string   `json:"ovhSubsidiary"`
+			Datacenters        []string `json:"datacenters"`
+			MonitorLinux       *bool    `json:"monitorLinux"`
+			MonitorWindows     *bool    `json:"monitorWindows"`
+			NotifyAvailable    *bool    `json:"notifyAvailable"`
+			NotifyUnavailable  *bool    `json:"notifyUnavailable"`
+			AutoOrder          *bool    `json:"autoOrder"`
+			Quantity           int      `json:"quantity"`
+			AutoPay            *bool    `json:"autoPay"`
+			OS                 string   `json:"os"`
+			AutoOrderAccountID string   `json:"autoOrderAccountId"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
@@ -46,12 +55,34 @@ func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "缺少planCode参数"})
 			return
 		}
+		body.OvhSubsidiary = vps.NormalizeSubsidiary(body.OvhSubsidiary)
 		if body.OvhSubsidiary == "" {
-			body.OvhSubsidiary = "IE"
-			if account, ok := state.FindAccount(""); ok && account.Zone != "" {
-				body.OvhSubsidiary = account.Zone
+			body.OvhSubsidiary = vps.DefaultSubsidiary(state, "")
+		}
+		if !vps.KnownSubsidiaryForOrder(body.OvhSubsidiary) {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "未知的 OVH 子公司"})
+			return
+		}
+		if body.Quantity < 1 {
+			body.Quantity = 1
+		}
+		if body.Quantity > 20 {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "VPS 数量不能超过 20"})
+			return
+		}
+		autoOrder := body.AutoOrder != nil && *body.AutoOrder
+		if body.AutoPay != nil && *body.AutoPay {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "自动付款已禁用，请在 OVH 控制台完成支付"})
+			return
+		}
+		accountID := strings.TrimSpace(body.AutoOrderAccountID)
+		if autoOrder {
+			if err := vps.ValidateAutoOrderAccount(state, body.OvhSubsidiary, accountID); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+				return
 			}
 		}
+
 		monitorLinux := true
 		if body.MonitorLinux != nil {
 			monitorLinux = *body.MonitorLinux
@@ -70,9 +101,10 @@ func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 		}
 
 		sub := types.VPSSubscription{
-			ID: uuid.NewString(), PlanCode: body.PlanCode, OvhSubsidiary: body.OvhSubsidiary,
+			ID: uuid.NewString(), PlanCode: strings.TrimSpace(body.PlanCode), OvhSubsidiary: body.OvhSubsidiary,
 			Datacenters: body.Datacenters, MonitorLinux: monitorLinux, MonitorWindows: monitorWindows,
 			NotifyAvailable: notifyAvailable, NotifyUnavailable: notifyUnavailable,
+			AutoOrder: autoOrder, Quantity: body.Quantity, AutoPay: false, OS: strings.TrimSpace(body.OS), AutoOrderAccountID: accountID,
 			LastStatus: map[string]string{}, PendingNotify: map[string]string{}, PendingNotifyChannels: map[string][]string{},
 			History: []map[string]interface{}{}, CreatedAt: types.NowISO(),
 		}
@@ -108,14 +140,27 @@ func UpdateVPSSubscription(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("subscription_id")
 		var body struct {
-			Datacenters       *[]string `json:"datacenters"`
-			MonitorLinux      *bool     `json:"monitorLinux"`
-			MonitorWindows    *bool     `json:"monitorWindows"`
-			NotifyAvailable   *bool     `json:"notifyAvailable"`
-			NotifyUnavailable *bool     `json:"notifyUnavailable"`
+			Datacenters        *[]string `json:"datacenters"`
+			MonitorLinux       *bool     `json:"monitorLinux"`
+			MonitorWindows     *bool     `json:"monitorWindows"`
+			NotifyAvailable    *bool     `json:"notifyAvailable"`
+			NotifyUnavailable  *bool     `json:"notifyUnavailable"`
+			AutoOrder          *bool     `json:"autoOrder"`
+			Quantity           *int      `json:"quantity"`
+			AutoPay            *bool     `json:"autoPay"`
+			OS                 *string   `json:"os"`
+			AutoOrderAccountID *string   `json:"autoOrderAccountId"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			return
+		}
+		if body.AutoPay != nil && *body.AutoPay {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "自动付款已禁用，请在 OVH 控制台完成支付"})
+			return
+		}
+		if body.Quantity != nil && (*body.Quantity < 1 || *body.Quantity > 20) {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "VPS 数量必须在 1 到 20 之间"})
 			return
 		}
 		notFound := errors.New("订阅不存在")
@@ -170,6 +215,25 @@ func UpdateVPSSubscription(state *app.State) gin.HandlerFunc {
 						}
 					}
 				}
+				if body.AutoOrder != nil {
+					found.AutoOrder = *body.AutoOrder
+					found.ProxyGuardAutoOrderDisabled = false
+				}
+				if body.Quantity != nil {
+					found.Quantity = *body.Quantity
+				}
+				if body.OS != nil {
+					found.OS = strings.TrimSpace(*body.OS)
+				}
+				if body.AutoOrderAccountID != nil {
+					found.AutoOrderAccountID = strings.TrimSpace(*body.AutoOrderAccountID)
+					found.ProxyGuardAutoOrderDisabled = false
+				}
+				if !found.AutoOrder {
+					found.AutoOrderAccountID = ""
+				} else if err := vps.ValidateAutoOrderAccount(state, found.OvhSubsidiary, found.AutoOrderAccountID); err != nil {
+					return nil, fmt.Errorf("%w: %v", errInvalidVPSAutoOrder, err)
+				}
 				updated = *found
 				return subscriptions, nil
 			}
@@ -177,6 +241,8 @@ func UpdateVPSSubscription(state *app.State) gin.HandlerFunc {
 		}); err != nil {
 			if errors.Is(err, notFound) {
 				c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": err.Error()})
+			} else if errors.Is(err, errInvalidVPSAutoOrder) {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
 			} else {
 				state.Logger.Error("保存VPS订阅更新失败: "+err.Error(), "vps_monitor")
 				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "保存订阅失败"})
@@ -308,9 +374,9 @@ func GetVPSMonitorStatus(state *app.State) gin.HandlerFunc {
 		interval := state.VPSCheckInterval
 		state.VPSSubsMu.Unlock()
 		c.JSON(http.StatusOK, gin.H{
-			"running":              vps.Running(),
-			"subscriptions_count":  count,
-			"check_interval":       interval,
+			"running":             vps.Running(),
+			"subscriptions_count": count,
+			"check_interval":      interval,
 		})
 	}
 }

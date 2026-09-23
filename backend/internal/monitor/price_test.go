@@ -32,6 +32,19 @@ func TestFormatNotificationPriceFallsBackToCartTotal(t *testing.T) {
 	}
 }
 
+func TestFormatNotificationPriceMarksUnknownCurrency(t *testing.T) {
+	got := formatNotificationPrice(price.DisplayPrice{
+		MonthlyWithTax: 12.4,
+		TotalWithTax:   12.4,
+		Currency:       "",
+		TotalKnown:     true,
+		BreakdownKnown: true,
+	})
+	want := "月费: 币种未知 12.40/月\n安装费: 无\n首月总价: 币种未知 12.40"
+	if got != want {
+		t.Fatalf("formatNotificationPrice() = %q, want %q", got, want)
+	}
+}
 func TestUnavailablePriceTextKeepsThreeFields(t *testing.T) {
 	if got := unavailablePriceText(); got != "月费: 暂不可用\n安装费: 暂不可用\n首月总价: 暂不可用" {
 		t.Fatalf("unavailablePriceText() = %q", got)

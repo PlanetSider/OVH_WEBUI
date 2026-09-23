@@ -482,6 +482,7 @@ func sameSubscriptionSettings(left, right *Subscription) bool {
 		left.AutoOrder == right.AutoOrder &&
 		left.Quantity == right.Quantity &&
 		left.AutoOrderAccountID == right.AutoOrderAccountID &&
+		left.ProxyGuardAutoOrderDisabled == right.ProxyGuardAutoOrderDisabled &&
 		left.Discontinued == right.Discontinued &&
 		left.DiscontinuedNextCheckAt == right.DiscontinuedNextCheckAt
 }

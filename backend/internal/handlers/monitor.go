@@ -114,13 +114,13 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		}
 
 		var body struct {
-			NotifyAvailable    *bool  `json:"notifyAvailable"`
-			NotifyUnavailable  *bool  `json:"notifyUnavailable"`
+			NotifyAvailable    *bool    `json:"notifyAvailable"`
+			NotifyUnavailable  *bool    `json:"notifyUnavailable"`
 			Memories           []string `json:"memories"`
 			Storages           []string `json:"storages"`
 			Networks           []string `json:"networks"`
-			AutoOrder          bool   `json:"autoOrder"`
-			AutoOrderAccountID string `json:"autoOrderAccountId"`
+			AutoOrder          bool     `json:"autoOrder"`
+			AutoOrderAccountID string   `json:"autoOrderAccountId"`
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.AutoOrderAccountID != "" {
@@ -275,18 +275,45 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 					(body.Storages != nil && !sameStringSlice(sub.Storages, *body.Storages)) ||
 					(body.Networks != nil && !sameStringSlice(sub.Networks, *body.Networks))
 				accountChanged := body.AutoOrderAccountID != nil && sub.AutoOrderAccountID != *body.AutoOrderAccountID
-				if body.Datacenters != nil { sub.Datacenters = append([]string{}, (*body.Datacenters)...) }
-				if body.Memories != nil { sub.Memories = append([]string{}, (*body.Memories)...) }
-				if body.Storages != nil { sub.Storages = append([]string{}, (*body.Storages)...) }
-				if body.Networks != nil { sub.Networks = append([]string{}, (*body.Networks)...) }
-				if filtersChanged || accountChanged { monitor.ResetSubscriptionTracking(sub) }
-				if body.NotifyAvailable != nil { sub.NotifyAvailable = *body.NotifyAvailable }
-				if body.NotifyUnavailable != nil { sub.NotifyUnavailable = *body.NotifyUnavailable }
-				if body.AutoOrder != nil { sub.AutoOrder = *body.AutoOrder }
-				if body.Quantity != nil { sub.Quantity = *body.Quantity }
-				if body.AutoOrderAccountID != nil { sub.AutoOrderAccountID = *body.AutoOrderAccountID }
-				if sub.AutoOrder && sub.Quantity < 1 { sub.Quantity = 1 }
-				if !sub.AutoOrder { sub.Quantity = 0; sub.PendingOrder = map[string]int{} }
+				if body.Datacenters != nil {
+					sub.Datacenters = append([]string{}, (*body.Datacenters)...)
+				}
+				if body.Memories != nil {
+					sub.Memories = append([]string{}, (*body.Memories)...)
+				}
+				if body.Storages != nil {
+					sub.Storages = append([]string{}, (*body.Storages)...)
+				}
+				if body.Networks != nil {
+					sub.Networks = append([]string{}, (*body.Networks)...)
+				}
+				if filtersChanged || accountChanged {
+					monitor.ResetSubscriptionTracking(sub)
+				}
+				if body.NotifyAvailable != nil {
+					sub.NotifyAvailable = *body.NotifyAvailable
+				}
+				if body.NotifyUnavailable != nil {
+					sub.NotifyUnavailable = *body.NotifyUnavailable
+				}
+				if body.AutoOrder != nil {
+					sub.AutoOrder = *body.AutoOrder
+					sub.ProxyGuardAutoOrderDisabled = false
+				}
+				if body.Quantity != nil {
+					sub.Quantity = *body.Quantity
+				}
+				if body.AutoOrderAccountID != nil {
+					sub.AutoOrderAccountID = *body.AutoOrderAccountID
+					sub.ProxyGuardAutoOrderDisabled = false
+				}
+				if sub.AutoOrder && sub.Quantity < 1 {
+					sub.Quantity = 1
+				}
+				if !sub.AutoOrder {
+					sub.Quantity = 0
+					sub.PendingOrder = map[string]int{}
+				}
 				monitor.ClearDisabledPendingNotifications(sub, sub.NotifyAvailable, sub.NotifyUnavailable)
 				return subscriptions, nil
 			}

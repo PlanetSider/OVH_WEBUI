@@ -28,6 +28,9 @@ export interface PurchaseHistory {
   /** OVH /me/order/{id}/status 的最近状态快照 */
   orderStatus?: string;
   orderStatusAt?: string;
+  /** 本轮抢购已经完成的阶段墙钟耗时 */
+  timing?: { name: string; ms: number }[];
+  totalMs?: number;
 }
 
 /** 抢购历史 */
@@ -38,6 +41,35 @@ export function useHistory() {
   });
 }
 
+export interface OrderStatusRefreshResult {
+  success: boolean;
+  status: "success" | "partial";
+  message: string;
+  candidates: number;
+  selected: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  errors?: string[];
+}
+
+/** 手动刷新已有成功订单的 OVH 状态。 */
+export function useRefreshOrderStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () =>
+      (await api.post<OrderStatusRefreshResult>("/purchase-history/refresh-status")).data,
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: qk.history() });
+      if (result.failed > 0) {
+        toast.warning(result.message, { description: result.errors?.[0] });
+      } else {
+        toast.success(result.message);
+      }
+    },
+    onError: (error: unknown) => toast.error(apiErrorText(error, "刷新订单状态失败")),
+  });
+}
 /** 清空抢购历史 */
 export function useClearHistory() {
   const qc = useQueryClient();

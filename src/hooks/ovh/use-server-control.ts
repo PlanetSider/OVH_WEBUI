@@ -34,6 +34,14 @@ export interface ServiceInfo {
   renewalPeriod: number;
   /** 到期是否自动删除服务 —— true 等于"到期断网回收" */
   renewalDeleteAtExpiration: boolean;
+  /** OVH 生命周期中是否存在待处理终止动作 */
+  terminationScheduled?: boolean;
+  /** 待处理终止动作名称 */
+  terminationAction?: string;
+  /** 计划终止日期 */
+  terminationDate?: string;
+  /** 生命周期读取失败时为 true，不能把它当成未计划 */
+  terminationStateUnknown?: boolean;
   /** OVH 是否强制自动续费(部分付费服务) */
   renewalForced: boolean;
   /** 是否要求手动支付(true 时余额扣款会跳过,需用户手动付) */
@@ -100,6 +108,20 @@ export function useUpdateRenewal(serviceName: string) {
     mutationFn: async (vars: { mode: "auto" | "manual" | "delete"; period?: number }) => {
       const res = await api.put(`/server-control/${serviceName}/serviceinfo/renewal`, vars);
       return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.serverControl.serviceInfo(serviceName) });
+    },
+  });
+}
+
+/** 设置服务终止策略。不要调用 /terminate：那是立即终止。 */
+export function useUpdateTerminationPolicy(serviceName: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { policy: "empty" | "terminateAtExpirationDate" | "terminateAtEngagementDate" }) => {
+      const res = await api.put(`/server-control/${serviceName}/termination-policy`, vars);
+      return res.data as { success: boolean; message: string; policy: string };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.serverControl.serviceInfo(serviceName) });

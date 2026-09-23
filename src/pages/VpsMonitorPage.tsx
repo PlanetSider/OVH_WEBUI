@@ -13,7 +13,7 @@ import {
   Plus,
   AlertTriangle,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/select";
 import { Chip } from "@/components/common/Chip";
 import { StatusDot } from "@/components/common/StatusDot";
+import { AccountSelect } from "@/components/common/AccountSelect";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Skeleton } from "@/components/common/Skeleton";
 import {
@@ -46,20 +47,13 @@ import {
   useClearVPSMonitor,
   useCreateVPSMonitorSubscription,
   useVPSMonitorHistory,
+  useVPSModels,
   type VPSSubscription,
+  type VPSModel,
 } from "@/hooks/use-vps-monitor";
 import { useTelegramVerify } from "@/hooks/use-telegram";
 
 /** VPS 补货通知 */
-const VPS_MODELS = [
-  { value: "vps-2025-model1", label: "VPS-1" },
-  { value: "vps-2025-model2", label: "VPS-2" },
-  { value: "vps-2025-model3", label: "VPS-3" },
-  { value: "vps-2025-model4", label: "VPS-4" },
-  { value: "vps-2025-model5", label: "VPS-5" },
-  { value: "vps-2025-model6", label: "VPS-6" },
-];
-
 const SUBSIDIARIES = [
   { value: "IE", label: "IE 爱尔兰" },
   { value: "FR", label: "FR 法国" },
@@ -72,8 +66,8 @@ const SUBSIDIARIES = [
   { value: "US", label: "US 美国" },
 ];
 
-function modelLabel(code: string): string {
-  return VPS_MODELS.find((m) => m.value === code)?.label || code;
+function modelLabel(code: string, models: VPSModel[] = []): string {
+  return models.find((m) => m.planCode === code)?.name || code;
 }
 
 function VPSMonitorPage() {
@@ -250,13 +244,14 @@ function VPSRow({
   onToggleExpand: () => void;
   onDelete: () => void;
 }) {
+  const models = useVPSModels(sub.ovhSubsidiary).data?.models || [];
   return (
     <Card>
       <CardContent className="p-5">
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className="font-semibold text-sm">{modelLabel(sub.planCode)}</span>
+              <span className="font-semibold text-sm">{modelLabel(sub.planCode, models)}</span>
               <span className="font-mono text-[11px] text-muted-foreground">{sub.planCode}</span>
               <Chip tone="default">{sub.ovhSubsidiary}</Chip>
             </div>
@@ -374,18 +369,38 @@ function AddVPSDialog({
   const create = useCreateVPSMonitorSubscription();
   const tgVerify = useTelegramVerify();
   const tgBlocked = tgVerify.data ? !tgVerify.data.ok : false;
-  const [vpsModel, setVpsModel] = useState(VPS_MODELS[0].value);
+  const [vpsModel, setVpsModel] = useState("");
   const [ovhSubsidiary, setOvhSubsidiary] = useState("IE");
   const [datacenters, setDatacenters] = useState("");
+  const [os, setOS] = useState("");
+  const [autoOrder, setAutoOrder] = useState(false);
+  const [quantity, setQuantity] = useState(1);
+  const [autoOrderAccountId, setAutoOrderAccountId] = useState("");
   const [monitorLinux, setMonitorLinux] = useState(true);
   const [monitorWindows, setMonitorWindows] = useState(true);
   const [notifyAvailable, setNotifyAvailable] = useState(true);
   const [notifyUnavailable, setNotifyUnavailable] = useState(false);
+  const modelsQuery = useVPSModels(ovhSubsidiary);
+  const models = modelsQuery.data?.models ?? [];
+  const selectedModel = models.find((model) => model.planCode === vpsModel) || models[0];
+
+  useEffect(() => {
+    if (!models.some((model) => model.planCode === vpsModel)) {
+      setVpsModel(models[0]?.planCode || "");
+    }
+    if (os && selectedModel?.osChoices?.length && !selectedModel.osChoices.includes(os)) {
+      setOS("");
+    }
+  }, [models, os, selectedModel, vpsModel]);
 
   const reset = () => {
-    setVpsModel(VPS_MODELS[0].value);
+    setVpsModel("");
     setOvhSubsidiary("IE");
     setDatacenters("");
+    setOS("");
+    setAutoOrder(false);
+    setQuantity(1);
+    setAutoOrderAccountId("");
     setMonitorLinux(true);
     setMonitorWindows(true);
     setNotifyAvailable(true);
@@ -401,9 +416,13 @@ function AddVPSDialog({
 
     create.mutate(
       {
-        planCode: vpsModel,
+        planCode: selectedModel?.planCode || vpsModel,
         ovhSubsidiary,
         datacenters: dcs,
+        os,
+        autoOrder,
+        quantity,
+        autoOrderAccountId: autoOrder ? autoOrderAccountId : "",
         monitorLinux,
         monitorWindows,
         notifyAvailable,
@@ -461,18 +480,26 @@ function AddVPSDialog({
               <label className="block text-xs font-medium text-muted-foreground mb-1.5">
                 VPS 型号 <span className="text-destructive">*</span>
               </label>
-              <Select value={vpsModel} onValueChange={setVpsModel}>
+              <Select
+                value={selectedModel?.planCode || "__none__"}
+                onValueChange={(value) => value !== "__none__" && setVpsModel(value)}
+                disabled={modelsQuery.isPending || models.length === 0}
+              >
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder={modelsQuery.isPending ? "读取目录中…" : "暂无在售型号"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {VPS_MODELS.map((m) => (
-                    <SelectItem key={m.value} value={m.value}>
-                      {m.label} ({m.value})
+                  {models.map((model) => (
+                    <SelectItem key={model.planCode} value={model.planCode}>
+                      {model.name || model.planCode}
+                      {model.price ? ` · ${model.price}` : ""} ({model.planCode})
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {modelsQuery.isError && (
+                <p className="mt-1 text-xs text-destructive">VPS 目录暂时不可用，请稍后重试。</p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1.5">
@@ -504,6 +531,54 @@ function AddVPSDialog({
             />
           </div>
 
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+              系统镜像（可选）
+            </label>
+            {selectedModel?.osChoices?.length ? (
+              <Select value={os || "__none__"} onValueChange={(value) => setOS(value === "__none__" ? "" : value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="不指定系统" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">不指定系统</SelectItem>
+                  {selectedModel.osChoices.map((choice) => (
+                    <SelectItem key={choice} value={choice}>{choice}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input value={os} onChange={(e) => setOS(e.target.value)} placeholder="由 OVH 默认选择" />
+            )}
+          </div>
+
+          <div className="flex items-start gap-2.5 rounded-lg border border-border px-3.5 py-2.5">
+            <Checkbox checked={autoOrder} onCheckedChange={(v) => setAutoOrder(!!v)} />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">有货时自动创建订单</div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                只创建 OVH 订单，不自动付款；成功后请到 OVH 控制台完成支付。
+              </p>
+            </div>
+          </div>
+          {autoOrder && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">数量</label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={quantity}
+                  onChange={(e) => setQuantity(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">自动下单账户</label>
+                <AccountSelect value={autoOrderAccountId} onChange={setAutoOrderAccountId} allowEmpty={false} />
+              </div>
+            </div>
+          )}
           <div>
             <p className="text-xs font-medium text-muted-foreground mb-2">监控系统</p>
             <div className="grid grid-cols-2 gap-3">
@@ -557,7 +632,7 @@ function AddVPSDialog({
             </Button>
             <Button
               type="submit"
-              disabled={create.isPending}
+              disabled={create.isPending || !selectedModel}
             >
               {create.isPending ? "提交中…" : "确认添加"}
             </Button>

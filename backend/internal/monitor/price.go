@@ -190,10 +190,11 @@ func currencySymbol(currency string) string {
 	case "HKD":
 		return "HK$"
 	default:
-		if currency == "" {
-			return "EUR "
+		code := strings.ToUpper(strings.TrimSpace(currency))
+		if code == "" {
+			return "币种未知 "
 		}
-		return strings.TrimSpace(currency) + " "
+		return code + " "
 	}
 }
 

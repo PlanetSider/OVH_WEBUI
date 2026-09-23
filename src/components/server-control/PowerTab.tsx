@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Power, RotateCw, HardDrive, Monitor, Zap, Server, Cog, Activity } from "lucide-react";
 import type { OwnedServer } from "@/hooks/use-server-control";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/http";
+import { api, apiErrorText } from "@/lib/http";
 import { toast } from "sonner";
 import { BootModeDialog } from "./BootModeDialog";
 import { TasksDialog } from "./TasksDialog";
@@ -10,6 +10,7 @@ import { ReinstallDialog } from "./ReinstallDialog";
 import { BiosDialog } from "./BiosDialog";
 import { InstallProgressDialog } from "./InstallProgressDialog";
 import { IpmiDialog } from "./IpmiDialog";
+import { SplaDialog } from "./SplaDialog";
 
 /** 电源与系统 Tab：重启 / 重装 / IPMI / 启动模式 / 解锁 Windows / 任务 / BIOS / 安装进度 */
 export function PowerTab({ server }: { server: OwnedServer }) {
@@ -19,13 +20,14 @@ export function PowerTab({ server }: { server: OwnedServer }) {
   const [biosOpen, setBiosOpen] = useState(false);
   const [progressOpen, setProgressOpen] = useState(false);
   const [ipmiOpen, setIpmiOpen] = useState(false);
+  const [splaOpen, setSplaOpen] = useState(false);
 
   const action = async (label: string, fn: () => Promise<unknown>) => {
     try {
       await fn();
       toast.success(`${label} 已发起`);
-    } catch (e: any) {
-      toast.error(e.response?.data?.error || `${label} 失败`);
+    } catch (error: unknown) {
+      toast.error(apiErrorText(error, `${label} 失败`));
     }
   };
 
@@ -60,16 +62,9 @@ export function PowerTab({ server }: { server: OwnedServer }) {
         />
         <ActionCard
           icon={Zap}
-          title="解锁 Windows"
-          description="申请 SPLA OS 许可证"
-          onClick={() =>
-            action("解锁 Windows", () =>
-              api.post(`/server-control/${server.serviceName}/spla`, {
-                type: "os",
-                serialNumber: "W269N-WFGWX-YVC9B-4J6C9-T83GX",
-              })
-            )
-          }
+          title="登记 SPLA 许可证"
+          description="登记你购买的 Windows 或 SQL Server 授权"
+          onClick={() => setSplaOpen(true)}
         />
         <ActionCard
           icon={RotateCw}
@@ -98,6 +93,7 @@ export function PowerTab({ server }: { server: OwnedServer }) {
       <BiosDialog serviceName={server.serviceName} open={biosOpen} onOpenChange={setBiosOpen} />
       <InstallProgressDialog serviceName={server.serviceName} open={progressOpen} onOpenChange={setProgressOpen} />
       <IpmiDialog serviceName={server.serviceName} open={ipmiOpen} onOpenChange={setIpmiOpen} />
+      <SplaDialog serviceName={server.serviceName} open={splaOpen} onOpenChange={setSplaOpen} />
     </>
   );
 }

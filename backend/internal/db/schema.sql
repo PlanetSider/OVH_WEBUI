@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS queue (
   priority               INTEGER NOT NULL DEFAULT 0,
   from_telegram          INTEGER NOT NULL DEFAULT 0,
   config_sniper_task_id  TEXT    NOT NULL DEFAULT '',
-  discontinued           INTEGER NOT NULL DEFAULT 0
+  discontinued           INTEGER NOT NULL DEFAULT 0,
+  proxy_guard_paused     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_queue_status     ON queue(status);
 CREATE INDEX IF NOT EXISTS idx_queue_plan_code  ON queue(plan_code);
@@ -78,7 +79,9 @@ CREATE TABLE IF NOT EXISTS history (
   expiration_time TEXT NOT NULL DEFAULT '',
   price           TEXT,                       -- JSON nullable (PriceInfo)
   order_status    TEXT NOT NULL DEFAULT '',
-  order_status_at TEXT NOT NULL DEFAULT ''
+  order_status_at TEXT NOT NULL DEFAULT '',
+  timing          TEXT NOT NULL DEFAULT '', -- JSON []PhaseTiming
+  total_ms        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_history_status        ON history(status);
 CREATE INDEX IF NOT EXISTS idx_history_purchase_time ON history(purchase_time DESC);
@@ -164,7 +167,8 @@ CREATE TABLE IF NOT EXISTS monitor_subscriptions (
   quantity            INTEGER NOT NULL DEFAULT 1,
   auto_order_account_id TEXT NOT NULL DEFAULT '',
   discontinued        INTEGER NOT NULL DEFAULT 0,
-  discontinued_next_check_at REAL NOT NULL DEFAULT 0
+  discontinued_next_check_at REAL NOT NULL DEFAULT 0,
+  proxy_guard_auto_order_disabled INTEGER NOT NULL DEFAULT 0
 );
 
 -- ===========================================
@@ -184,7 +188,12 @@ CREATE TABLE IF NOT EXISTS vps_subscriptions (
   pending_notify_channels TEXT NOT NULL DEFAULT '{}', -- JSON map[string][]string
   history             TEXT NOT NULL DEFAULT '[]',  -- JSON []
   created_at          TEXT NOT NULL,
-  auto_order_account_id TEXT NOT NULL DEFAULT ''   -- 旧版本兼容，不再对外使用
+  auto_order          INTEGER NOT NULL DEFAULT 0,
+  quantity            INTEGER NOT NULL DEFAULT 1,
+  auto_pay            INTEGER NOT NULL DEFAULT 0,
+  os                  TEXT NOT NULL DEFAULT '',
+  auto_order_account_id TEXT NOT NULL DEFAULT '',   -- 自动下单账户
+  proxy_guard_auto_order_disabled INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_vps_plan_code ON vps_subscriptions(plan_code);
 

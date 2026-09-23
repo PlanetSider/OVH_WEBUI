@@ -30,9 +30,9 @@ func ListVps(state *app.State) gin.HandlerFunc {
 		state.Logger.Info("获取 VPS 列表成功", "vps_control")
 
 		type vpsResult struct {
-			info  map[string]interface{}
-			svc   map[string]interface{}
-			err   error
+			info map[string]interface{}
+			svc  map[string]interface{}
+			err  error
 		}
 		results := make([]vpsResult, len(names))
 		sem := make(chan struct{}, 10)
@@ -208,20 +208,19 @@ func GetVpsServiceInfo(state *app.State) gin.HandlerFunc {
 				}
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"serviceInfo": gin.H{
-				"status":                    valueOr(info, "status", "unknown"),
-				"expiration":                valueOr(info, "expiration", ""),
-				"creation":                  valueOr(info, "creation", ""),
-				"renewalType":               automatic,
-				"renewalPeriod":             period,
-				"renewalDeleteAtExpiration": delAtExp,
-				"renewalForced":             forced,
-				"renewalManualPayment":      manualPay,
-				"possibleRenewPeriod":       possiblePeriods,
-			},
-		})
+		serviceInfo := map[string]interface{}{
+			"status":                    valueOr(info, "status", "unknown"),
+			"expiration":                valueOr(info, "expiration", ""),
+			"creation":                  valueOr(info, "creation", ""),
+			"renewalType":               automatic,
+			"renewalPeriod":             period,
+			"renewalDeleteAtExpiration": delAtExp,
+			"renewalForced":             forced,
+			"renewalManualPayment":      manualPay,
+			"possibleRenewPeriod":       possiblePeriods,
+		}
+		attachTerminationState(state, client, serviceIDForVps, svc, "vps_control", serviceInfo)
+		c.JSON(http.StatusOK, gin.H{"success": true, "serviceInfo": serviceInfo})
 	}
 }
 

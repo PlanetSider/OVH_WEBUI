@@ -152,6 +152,24 @@ func TestDisplayPriceFromSummaryRejectsMissingTotal(t *testing.T) {
 		t.Fatalf("displayPriceFromSummary() marked invalid total as known: %+v", display)
 	}
 }
+func TestDisplayPriceFromSummaryPreservesUnknownCurrency(t *testing.T) {
+	display := displayPriceFromSummary(&PriceInfo{Prices: map[string]interface{}{
+		"withTax": 12.5,
+	}})
+	if !display.TotalKnown || display.Currency != "" {
+		t.Fatalf("displayPriceFromSummary() = %+v, want known amount with empty currency", display)
+	}
+}
+
+func TestDisplayPriceFromSummaryNormalizesCurrencyCode(t *testing.T) {
+	display := displayPriceFromSummary(&PriceInfo{Prices: map[string]interface{}{
+		"withTax":      12.5,
+		"currencyCode": " usd ",
+	}})
+	if display.Currency != "USD" {
+		t.Fatalf("displayPriceFromSummary() currency = %q, want USD", display.Currency)
+	}
+}
 
 func TestExtractPriceFieldSupportsOVHAmountObject(t *testing.T) {
 	value, currency := extractPriceField(map[string]interface{}{
