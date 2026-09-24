@@ -312,6 +312,7 @@ function FeishuSection({
         if (result.status === "complete" && result.appId) {
           setFieldRef.current("feishuAppId", result.appId);
           setFieldRef.current("feishuDomain", result.domain || "feishu");
+          setFieldRef.current("feishuAppSecretConfigured", result.appSecretConfigured === true);
           setFieldRef.current("feishuEnabled", true);
           setRegistrationStatus("complete");
           void bindingRefetch.current();
@@ -376,11 +377,22 @@ function FeishuSection({
               <div className="flex items-center justify-center gap-2 text-xs text-primary"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在等待飞书返回机器人凭据…</div>
             </div>
           )}
-          {registrationStatus === "complete" && <div className="text-xs text-primary flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />创建成功，凭据已自动保存并回填。</div>}
+          {registrationStatus === "complete" && <div className="text-xs text-primary flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />创建成功，App ID 已回填，App Secret 已安全保存；界面不会回显密钥。</div>}
           {registrationStatus === "error" && <div className="text-xs text-destructive">{registrationError}</div>}
         </div>
         <Field label="App ID"><Input value={form.feishuAppId || ""} onChange={(e) => set("feishuAppId", e.target.value)} placeholder="cli_xxx" /></Field>
-        <Field label="App Secret"><Input type="password" value={form.feishuAppSecret || ""} onChange={(e) => set("feishuAppSecret", e.target.value)} /></Field>
+        <Field
+          label="App Secret"
+          hint={form.feishuAppSecretConfigured && !form.feishuAppSecret ? "已安全保存（不会回显密钥）；输入新值可替换现有 Secret。" : "仅在替换 Secret 时填写，保存后不会回显。"}
+        >
+          <Input
+            type="password"
+            value={form.feishuAppSecret || ""}
+            onChange={(e) => set("feishuAppSecret", e.target.value)}
+            placeholder={form.feishuAppSecretConfigured && !form.feishuAppSecret ? "已配置，输入新值可替换" : "输入 App Secret"}
+            autoComplete="new-password"
+          />
+        </Field>
         <Field label="开放平台域名" hint="扫码创建时会自动识别；手动填写海外 Lark 凭据时请选择 Lark。">
           <Select value={form.feishuDomain || "feishu"} onValueChange={(value: "feishu" | "lark") => set("feishuDomain", value)}>
             <SelectTrigger><SelectValue /></SelectTrigger>
@@ -948,7 +960,11 @@ function AccountCard({
            {acc.fingerprint && <Chip tone="default">{acc.fingerprint}</Chip>}
         </div>
       </div>
-      <div className="flex items-center gap-2 flex-shrink-0">
+      <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
+        <Button variant="outline" size="sm" onClick={onEdit} title="配置此账户的出站代理">
+          <Network className="w-4 h-4" />
+          代理设置
+        </Button>
         <Button variant="ghost" size="icon" onClick={() => verify.mutate(acc.id)} disabled={verify.isPending} title="重新验证凭据">
           <RotateCw className={cn("w-4 h-4", verify.isPending && "animate-spin")} />
         </Button>
@@ -1129,9 +1145,13 @@ function AccountDialog({ acc, profiles, onClose }: { acc?: OVHAccount; profiles:
       <DialogContent className="w-[95vw] sm:w-full sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{isEdit ? `编辑账户 ${acc!.name}` : "添加 OVH 账户"}</DialogTitle>
-          <DialogDescription>填三个 OVH 密钥 + 选子公司,保存时会自动调 /me 验证凭据。</DialogDescription>
+          <DialogDescription>
+            {isEdit
+              ? "编辑账户：凭据留空保持原值；代理留空保持当前设置，填写新地址可替换，勾选清除可改为直连。"
+              : "添加账户：填写 OVH 凭据；代理可选，留空使用直连。保存时会自动调用 /me 验证凭据。"}
+          </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-2">
+        <div className="space-y-4 py-2 max-h-[65vh] overflow-y-auto pr-2">
           <Field label="账户名称 *">
             <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="主号 / 小号 A" autoFocus />
           </Field>
@@ -1144,13 +1164,48 @@ function AccountDialog({ acc, profiles, onClose }: { acc?: OVHAccount; profiles:
           <Field label="CONSUMER KEY *">
             <Input type="password" value={form.consumerKey} onChange={(e) => set("consumerKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
           </Field>
-          <Field label="代理 URL" hint="可选: http://、https://、socks5:// 或 socks5h://；留空表示直连">
-            <Input value={form.proxyUrl} onChange={(e) => set("proxyUrl", e.target.value)} placeholder="http://user:password@127.0.0.1:8080" autoComplete="off" />
+          <Field
+            label="出站代理 URL"
+            hint={isEdit
+              ? "支持 http://、https://、socks5:// 或 socks5h://；填写新地址可替换当前代理，留空保持当前设置。"
+              : "可选：http://、https://、socks5:// 或 socks5h://；留空表示直连。"}
+          >
+            {isEdit && (
+              <div className="mb-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
+                <p>
+                  当前状态：{acc?.proxyUrl ? (
+                    <><span className="text-primary">已配置</span> · <code className="font-mono break-all">{acc.proxyUrl}</code></>
+                  ) : (
+                    <span className="text-muted-foreground">直连（未配置代理）</span>
+                  )}
+                </p>
+                {acc?.proxyUrl && <p className="mt-1 text-muted-foreground">代理认证信息不会回传；替换时请填写完整的新地址。</p>}
+              </div>
+            )}
+            <Input
+              value={form.proxyUrl}
+              onChange={(e) => set("proxyUrl", e.target.value)}
+              placeholder={form.clearProxy
+                ? "保存后此账户将改用直连"
+                : isEdit
+                  ? acc?.proxyUrl ? "填写完整新地址以替换当前代理" : "输入代理地址以启用代理"
+                  : "http://user:password@127.0.0.1:8080"}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={form.clearProxy}
+            />
             {isEdit && (
               <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-                <Checkbox checked={form.clearProxy} onCheckedChange={(checked) => set("clearProxy", checked === true)} />
-                清除已保存代理
+                <Checkbox
+                  checked={form.clearProxy}
+                  disabled={!acc?.proxyUrl}
+                  onCheckedChange={(checked) => set("clearProxy", checked === true)}
+                />
+                清除已保存代理并改为直连
               </label>
+            )}
+            {form.clearProxy && (
+              <p className="mt-1 text-[11px] text-warning">保存后此账户会改为直连出口，代理设置将被清除。</p>
             )}
           </Field>
           <Field label="请求指纹" hint="新增配置仅支持后端返回的白名单 profile；旧 ua: 值会保留并提示迁移">
