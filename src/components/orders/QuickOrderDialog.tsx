@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Loader2, Settings2, Zap } from "lucide-react";
 
 import api from "@/lib/api";
+import { formatCurrencyAmount } from "@/lib/currency";
 import { useBackendConnection, useServers } from "@/hooks/useApi";
 import { cn } from "@/lib/utils";
 import { AccountSelect } from "@/components/common/AccountSelect";
@@ -40,19 +41,20 @@ type QuickOrderDialogProps = {
   onOpenChange: (open: boolean) => void;
 };
 
-function formatWithTax(priceInfo: any): string {
-  const raw = priceInfo?.prices?.withTax;
-  if (raw == null) return "N/A";
-  if (typeof raw === "number" && Number.isFinite(raw)) return raw.toFixed(2);
-  if (typeof raw === "string" && raw.trim() !== "") {
-    const n = Number(raw);
-    return Number.isFinite(n) ? n.toFixed(2) : raw;
-  }
-  if (typeof raw === "object" && raw !== null && "value" in raw) {
-    const n = Number((raw as { value: unknown }).value);
-    return Number.isFinite(n) ? n.toFixed(2) : "N/A";
-  }
-  return "N/A";
+type PriceQuote = {
+  duration?: string;
+  prices?: { withTax?: unknown; currencyCode?: unknown };
+};
+
+function formatWithTax(priceInfo: PriceQuote): string {
+  const raw = priceInfo.prices?.withTax;
+  const value = raw && typeof raw === "object" && "value" in raw ? raw.value : raw;
+  const amount = typeof value === "number" || (typeof value === "string" && value.trim() !== "")
+    ? Number(value)
+    : NaN;
+  const currency = priceInfo.prices?.currencyCode ||
+    (raw && typeof raw === "object" && "currencyCode" in raw ? raw.currencyCode : undefined);
+  return formatCurrencyAmount(amount, currency);
 }
 
 export function QuickOrderDialog({ open, onOpenChange }: QuickOrderDialogProps) {
@@ -65,7 +67,9 @@ export function QuickOrderDialog({ open, onOpenChange }: QuickOrderDialogProps) 
   const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingPrice, setIsLoadingPrice] = useState(false);
-  const [priceInfo, setPriceInfo] = useState<any>(null);
+  const [quotedPrice, setQuotedPrice] = useState<{ key: string; price: PriceQuote } | null>(null);
+  const quoteKey = JSON.stringify([accountId, planCode, datacenter, selectedOptions]);
+  const priceInfo = quotedPrice?.key === quoteKey ? quotedPrice.price : null;
 
   const selectedServer = useMemo(() => {
     return (servers || []).find((s) => s.planCode === planCode) || null;
@@ -102,20 +106,24 @@ export function QuickOrderDialog({ open, onOpenChange }: QuickOrderDialogProps) 
   useEffect(() => {
     setDatacenter("");
     setSelectedOptions([]);
-    setPriceInfo(null);
+    setQuotedPrice(null);
   }, [planCode]);
 
   useEffect(() => {
     let aborted = false;
 
     const loadPrice = async () => {
-      if (!planCode || !datacenter) return;
+      if (!accountId || !planCode || !datacenter) {
+        setIsLoadingPrice(false);
+        setQuotedPrice(null);
+        return;
+      }
       setIsLoadingPrice(true);
-      setPriceInfo(null);
+      setQuotedPrice(null);
       try {
-        const result = await api.getServerPrice(planCode, datacenter, selectedOptions);
+        const result = await api.getServerPrice(planCode, datacenter, selectedOptions, accountId);
         if (!aborted && result?.success && result?.price) {
-          setPriceInfo(result.price);
+          setQuotedPrice({ key: quoteKey, price: result.price });
         }
       } catch {
         // 静默失败：价格展示非阻塞
@@ -128,7 +136,7 @@ export function QuickOrderDialog({ open, onOpenChange }: QuickOrderDialogProps) 
     return () => {
       aborted = true;
     };
-  }, [planCode, datacenter, selectedOptions]);
+  }, [accountId, planCode, datacenter, selectedOptions, quoteKey]);
 
   const toggleOption = (value: string) => {
     setSelectedOptions((prev) =>
@@ -295,10 +303,10 @@ export function QuickOrderDialog({ open, onOpenChange }: QuickOrderDialogProps) 
                   </>
                 ) : priceInfo ? (
                   <span className="truncate">
-                    预估价：€{formatWithTax(priceInfo)}
+                    预估含税{priceInfo.duration && priceInfo.duration !== "P1M" ? `（${priceInfo.duration}）` : ""}：{formatWithTax(priceInfo)}
                   </span>
                 ) : (
-                  <span className="truncate">选择机房后显示价格</span>
+                  <span className="truncate">选择账户和机房后显示价格</span>
                 )}
               </div>
             </div>

@@ -32,6 +32,18 @@ func TestFormatNotificationPriceFallsBackToCartTotal(t *testing.T) {
 	}
 }
 
+func TestFormatNotificationPriceShowsNonMonthlyDuration(t *testing.T) {
+	got := formatNotificationPrice(price.DisplayPrice{
+		TotalWithTax: 240,
+		Currency:     "USD",
+		Duration:     "P12M",
+		TotalKnown:   true,
+	})
+	if got != "购物车含税总价（P12M）: $240.00" {
+		t.Fatalf("formatNotificationPrice() = %q", got)
+	}
+}
+
 func TestFormatNotificationPriceMarksUnknownCurrency(t *testing.T) {
 	got := formatNotificationPrice(price.DisplayPrice{
 		MonthlyWithTax: 12.4,

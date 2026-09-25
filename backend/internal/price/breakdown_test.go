@@ -33,6 +33,20 @@ func TestGetDisplayWithContextHonorsCancellationBeforeCatalog(t *testing.T) {
 	}
 }
 
+func TestGetDisplayFromResultKeepsNonMonthlyCartTotal(t *testing.T) {
+	result := Result{Success: true, Price: &PriceInfo{
+		Duration: "P12M",
+		Prices: map[string]interface{}{
+			"withTax":      240.00,
+			"currencyCode": "USD",
+		},
+	}}
+	display, err := GetDisplayFromResultWithContext(context.Background(), nil, "account", "plan", nil, result)
+	if err != nil || !display.TotalKnown || display.BreakdownKnown || display.TotalWithTax != 240 || display.Duration != "P12M" || display.Currency != "USD" {
+		t.Fatalf("non-monthly display = %+v, err %v", display, err)
+	}
+}
+
 func TestCalculateFromCatalogSeparatesMonthlyAndInstallation(t *testing.T) {
 	catalog := &publicCatalog{
 		Plans: []catalogPlan{{

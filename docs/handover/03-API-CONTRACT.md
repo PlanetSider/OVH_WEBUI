@@ -31,6 +31,11 @@
 - `GET /api/ovh/account/info|bills|refunds|credit-balance|email-history|sub-accounts`
 - `GET /api/ovh/contact-change-requests` + accept/refuse/resend-email
 
+### 服务器询价
+
+- `POST /api/servers/:planCode/price`：请求体可传 `accountId`、`datacenter`、`options`；未传 `accountId` 时使用默认账户。仅创建临时购物车询价，不下单。
+- 成功响应的 `price.prices.withTax` 为购物车含税总价，`price.prices.currencyCode` 为 OVH 返回的币种，`price.duration` 为基础商品实际计价周期（如 `P1M`/`P12M`）。默认 `P1M/default` 被 OVH 拒绝时才查询该购物车的 Eco 计价并最多重试一次；非月付周期不可按月费展示。
+
 ### 抢购
 
 - `GET/POST /api/queue` · `DELETE /api/queue/:id` · `DELETE /api/queue/clear`

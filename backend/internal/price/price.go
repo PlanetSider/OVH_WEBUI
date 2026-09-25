@@ -27,6 +27,7 @@ type Result struct {
 
 type PriceInfo struct {
 	PricingMode string                   `json:"pricingMode"`
+	Duration    string                   `json:"duration,omitempty"`
 	Prices      map[string]interface{}   `json:"prices"`
 	Items       []map[string]interface{} `json:"items"`
 }
@@ -68,10 +69,7 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 		return Result{Success: false, Error: "未配置OVH API密钥: " + err.Error()}
 	}
 	acc, _ := state.FindAccount(accountID)
-	subsidiary := acc.Zone
-	if subsidiary == "" {
-		subsidiary = "IE"
-	}
+	subsidiary := catalog.SubsidiaryOfAccount(acc)
 
 	state.Logger.Info(fmt.Sprintf("查询 %s 的配置价格，数据中心: %s (原始: %s), 选项: %v",
 		planCode, apiDC, datacenter, options), "price")
@@ -104,22 +102,22 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 		return Result{Success: false, Error: fmt.Sprintf("创建购物车成功但响应缺少 cartId（响应: %v）", cartResult)}
 	}
 	state.Logger.Debug("购物车创建成功，ID: "+cartID, "price")
-
-	// 2. 添加基础商品
-	itemPayload := map[string]interface{}{
-		"planCode":    planCode,
-		"pricingMode": "default",
-		"duration":    "P1M",
-		"quantity":    1,
+	if err := client.PostWithContext(ctx, "/order/cart/"+cartID+"/assign", map[string]interface{}{}, nil); err != nil {
+		return Result{Success: false, Error: "绑定购物车失败: " + err.Error()}
 	}
-	var itemResult map[string]interface{}
-	if err := client.PostWithContext(ctx, "/order/cart/"+cartID+"/eco", itemPayload, &itemResult); err != nil {
+
+	// 2. 添加基础商品；只有 P1M/default 被 OVH 拒绝时才查询真实计价并重试一次。
+	itemResult, baseDuration, basePricingMode, err := AddBaseEcoItem(ctx, client, cartID, planCode)
+	if err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "is not available in") {
 			state.Logger.Warn("配置在指定数据中心不可用: "+msg, "price")
 			return Result{Success: false, Error: "该配置在指定数据中心不可用"}
 		}
 		return Result{Success: false, Error: msg}
+	}
+	if baseDuration != "P1M" || basePricingMode != "default" {
+		state.Logger.Warn(fmt.Sprintf("基础商品 %s 使用目录计价 %s/%s 加购成功", planCode, baseDuration, basePricingMode), "price")
 	}
 	itemID, _ := numconv.ToInt64(itemResult["itemId"])
 	if itemID == 0 {
@@ -163,13 +161,18 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 			if matched == nil || matchedCode == "" {
 				return Result{Success: false, Error: fmt.Sprintf("请求的选项 %s 不在 OVH 可用选项中", wanted)}
 			}
-			duration := "P1M"
-			if d, ok := matched["duration"].(string); ok && d != "" {
-				duration = d
-			}
-			pricingMode := "default"
-			if pm, ok := matched["pricingMode"].(string); ok && pm != "" {
-				pricingMode = pm
+			duration, pricingMode, validPricing := PickEcoCartPricing(matched["prices"], baseDuration)
+			if !validPricing {
+				if baseDuration != "P1M" || basePricingMode != "default" {
+					return Result{Success: false, Error: fmt.Sprintf("选项 %s 缺少与基础商品匹配的有效计价", matchedCode)}
+				}
+				duration, pricingMode = "P1M", "default"
+				if d, ok := matched["duration"].(string); ok && d != "" {
+					duration = d
+				}
+				if pm, ok := matched["pricingMode"].(string); ok && pm != "" {
+					pricingMode = pm
+				}
 			}
 			optPayload := map[string]interface{}{
 				"itemId": itemID, "planCode": matchedCode, "duration": duration,
@@ -184,12 +187,7 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 		state.Logger.Info(fmt.Sprintf("共添加 %d 个选项: %v", len(added), added), "price")
 	}
 
-	// 5. 绑定购物车
-	if err := client.PostWithContext(ctx, "/order/cart/"+cartID+"/assign", map[string]interface{}{}, nil); err != nil {
-		return Result{Success: false, Error: "绑定购物车失败: " + err.Error()}
-	}
-
-	// 6. 获取详情 + summary
+	// 5. 获取详情 + summary
 	// 1:1 对应 Python app.py:3812-3813：OVH 错误直接抛进外层 except 返回 success:false。
 	// 之前 Go 静默忽略会导致瞬断时 success:true 但价格全 nil，前端误以为有效价格 0
 	var cartInfo map[string]interface{}
@@ -202,7 +200,8 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 	}
 
 	priceInfo := &PriceInfo{
-		PricingMode: "default",
+		PricingMode: basePricingMode,
+		Duration:    baseDuration,
 		Prices: map[string]interface{}{
 			"withTax":      nil,
 			"withoutTax":   nil,

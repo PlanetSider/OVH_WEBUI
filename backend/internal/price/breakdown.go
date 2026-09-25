@@ -10,6 +10,7 @@ import (
 	ovhsdk "github.com/ovh/go-ovh/ovh"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/numconv"
 )
 
@@ -22,6 +23,7 @@ type DisplayPrice struct {
 	InstallWithTax float64
 	TotalWithTax   float64
 	Currency       string
+	Duration       string
 	TotalKnown     bool
 	BreakdownKnown bool
 }
@@ -90,6 +92,9 @@ func GetDisplayFromResultWithContext(ctx context.Context, state *app.State, acco
 	}
 
 	display := displayPriceFromSummary(result.Price)
+	if display.Duration != "" && display.Duration != "P1M" {
+		return display, nil
+	}
 	return getDisplayFromCatalog(ctx, state, accountID, planCode, options, display)
 }
 
@@ -109,10 +114,8 @@ func getDisplayFromCatalog(ctx context.Context, state *app.State, accountID, pla
 		return display, fmt.Errorf("获取 OVH 客户端失败: %w", err)
 	}
 
-	subsidiary := "IE"
-	if acc, ok := state.FindAccount(accountID); ok && acc.Zone != "" {
-		subsidiary = acc.Zone
-	}
+	acc, _ := state.FindAccount(accountID)
+	subsidiary := catalog.SubsidiaryOfAccount(acc)
 	catalog, err := loadPublicCatalog(ctx, state, client, subsidiary)
 	if err != nil {
 		return display, err
@@ -146,6 +149,7 @@ func displayPriceFromSummary(info *PriceInfo) DisplayPrice {
 	if info == nil || info.Prices == nil {
 		return display
 	}
+	display.Duration = info.Duration
 	if currency, ok := info.Prices["currencyCode"].(string); ok && strings.TrimSpace(currency) != "" {
 		display.Currency = strings.ToUpper(strings.TrimSpace(currency))
 	}

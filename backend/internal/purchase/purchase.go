@@ -17,6 +17,7 @@ import (
 	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/numconv"
 	"github.com/ovh-webui/server/internal/ovh"
+	"github.com/ovh-webui/server/internal/price"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -257,10 +258,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 
 	// 多账户:购物车 subsidiary 跟着账户走,不再读全局 cfg
 	acc, _ := state.FindAccount(resolvedAccountID)
-	subsidiary := acc.Zone
-	if subsidiary == "" {
-		subsidiary = "IE"
-	}
+	subsidiary := catalog.SubsidiaryOfAccount(acc)
 
 	// 创建购物车
 	state.Logger.Info(fmt.Sprintf("为区域 %s 创建购物车 (账户 %s)", subsidiary, acc.Name), "purchase")
@@ -317,20 +315,18 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	tl.mark("绑定购物车")
 	state.Logger.Info("购物车绑定成功", "purchase")
 
-	// 添加基础商品 /eco
+	// 添加基础商品 /eco。正常计价保持一次 POST，拒绝时才按当前购物车目录重试。
 	state.Logger.Info(fmt.Sprintf("添加基础商品 %s 到购物车 (使用 /eco)", item.PlanCode), "purchase")
-	var itemResult map[string]interface{}
-	if err := post("/order/cart/"+cartID+"/eco", map[string]interface{}{
-		"planCode":    item.PlanCode,
-		"pricingMode": "default",
-		"duration":    "P1M",
-		"quantity":    1,
-	}, &itemResult); err != nil {
+	itemResult, baseDuration, basePricingMode, err := price.AddBaseEcoItem(ctx, client, cartID, item.PlanCode)
+	if err != nil {
 		tl.mark("添加基础商品")
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
 		state.Logger.Error(fmt.Sprintf("错误发生时的购物车ID: %s", cartID), "purchase")
 		recordStageFailure(state, item, err.Error(), err, tl)
 		return false
+	}
+	if baseDuration != "P1M" || basePricingMode != "default" {
+		state.Logger.Warn(fmt.Sprintf("基础商品 %s 使用目录计价 %s/%s 加购成功", item.PlanCode, baseDuration, basePricingMode), "purchase")
 	}
 	tl.mark("添加基础商品")
 	if n, ok := numconv.ToInt64(itemResult["itemId"]); ok {
@@ -458,13 +454,22 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 					missing = append(missing, wanted)
 					continue
 				}
-				duration := "P1M"
-				if d, ok := avail["duration"].(string); ok && d != "" {
-					duration = d
-				}
-				pricingMode := "default"
-				if pm, ok := avail["pricingMode"].(string); ok && pm != "" {
-					pricingMode = pm
+				duration, pricingMode, validPricing := price.PickEcoCartPricing(avail["prices"], baseDuration)
+				if !validPricing {
+					if baseDuration != "P1M" || basePricingMode != "default" {
+						errMsg := fmt.Sprintf("硬件选项 %s 缺少与基础商品匹配的有效计价", matchedCode)
+						state.Logger.Error(errMsg, "purchase")
+						tl.mark("硬件选项")
+						recordStageFailure(state, item, errMsg, nil, tl)
+						return false
+					}
+					duration, pricingMode = "P1M", "default"
+					if d, ok := avail["duration"].(string); ok && d != "" {
+						duration = d
+					}
+					if pm, ok := avail["pricingMode"].(string); ok && pm != "" {
+						pricingMode = pm
+					}
 				}
 				todo = append(todo, addonPayload{
 					planCode: matchedCode,

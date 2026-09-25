@@ -128,6 +128,9 @@ func (m *Monitor) getPriceInfoTextWithContext(ctx context.Context, accountID, pl
 // formatNotificationPrice 统一生成监控通知中的价格块。
 // 月费与安装费来自 catalog 的含税价格；首月总价优先使用购物车 summary 的含税总价。
 func formatNotificationPrice(display price.DisplayPrice) string {
+	if display.Duration != "" && display.Duration != "P1M" {
+		return formatPriceWithTotalLabel(display, "购物车含税总价（"+display.Duration+"）")
+	}
 	return formatPriceWithTotalLabel(display, "首月总价")
 }
 
@@ -157,6 +160,9 @@ func formatPriceWithTotalLabel(display price.DisplayPrice, totalLabel string) st
 // FormatDisplayPrice 保持服务器型号卡片的既有“总价”字段格式。
 // 监控通知请使用内部 formatNotificationPrice，避免改变卡片兼容性。
 func FormatDisplayPrice(display price.DisplayPrice) string {
+	if display.Duration != "" && display.Duration != "P1M" {
+		return formatPriceWithTotalLabel(display, "购物车含税总价（"+display.Duration+"）")
+	}
 	return formatPriceWithTotalLabel(display, "总价")
 }
 
