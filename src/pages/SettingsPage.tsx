@@ -961,10 +961,6 @@ function AccountCard({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
-        <Button variant="outline" size="sm" onClick={onEdit} title="配置此账户的出站代理">
-          <Network className="w-4 h-4" />
-          代理设置
-        </Button>
         <Button variant="ghost" size="icon" onClick={() => verify.mutate(acc.id)} disabled={verify.isPending} title="重新验证凭据">
           <RotateCw className={cn("w-4 h-4", verify.isPending && "animate-spin")} />
         </Button>
