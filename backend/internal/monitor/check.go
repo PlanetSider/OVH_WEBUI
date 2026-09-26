@@ -190,22 +190,34 @@ type availabilityNotificationGroup struct {
 	notifications []notification
 }
 
+// queueAutoOrderIfNeeded 为已经确认过库存边沿的订阅创建自动下单待办。
+// 调用方负责确认当前状态来自明确有货或价格校验失败（其底层可用性仍明确有货）。
+func queueAutoOrderIfNeeded(sub *Subscription, statusKey string) {
+	if sub == nil || !sub.AutoOrder || sub.AutoOrderAccountID == "" {
+		return
+	}
+	if sub.PendingOrder == nil {
+		sub.PendingOrder = map[string]int{}
+	}
+	quantity := sub.Quantity
+	if quantity < 1 {
+		quantity = 1
+	}
+	if sub.PendingOrder[statusKey] < 1 {
+		sub.PendingOrder[statusKey] = quantity
+	}
+}
+
 // applyMonitorStatus 只处理单个配置/机房的状态迁移，不执行网络或数据库操作。
-// ConfirmedStatus 只记录明确有货/无货；price_check_failed 不覆盖确认状态，
-// 从而保留 unavailable → 校价失败 → available 的补货边沿。
+// ConfirmedStatus 只记录明确的库存有货/无货，购物车校价失败不否定已确认的库存。
+// price_check_failed 的通知状态仍由 LastStatus 单独记录。
 func applyMonitorStatus(sub *Subscription, statusKey, actualStatus, oldStatus string, hasOld bool,
 	confirmedOld string, hasConfirmed bool, channels ...[]string) string {
 	changeType := ""
 	switch actualStatus {
 	case "available":
-		if sub.AutoOrder && sub.AutoOrderAccountID != "" && hasConfirmed && confirmedOld == "unavailable" {
-			quantity := sub.Quantity
-			if quantity < 1 {
-				quantity = 1
-			}
-			if sub.PendingOrder[statusKey] < 1 {
-				sub.PendingOrder[statusKey] = quantity
-			}
+		if hasConfirmed && confirmedOld == "unavailable" {
+			queueAutoOrderIfNeeded(sub, statusKey)
 		}
 		if sub.NotifyAvailable && (!hasConfirmed || confirmedOld != "available") {
 			changeType = "available"
@@ -218,6 +230,14 @@ func applyMonitorStatus(sub *Subscription, statusKey, actualStatus, oldStatus st
 		}
 		sub.ConfirmedStatus[statusKey] = "unavailable"
 	case "price_check_failed":
+		// 调用方仅在严格库存接口明确有货时设置此状态。只在本轮从明确
+		// 无货变为有货时入队；旧库遗留的 price_check_failed 不追溯下单。
+		if hasConfirmed && confirmedOld == "unavailable" && hasOld && oldStatus == "unavailable" {
+			queueAutoOrderIfNeeded(sub, statusKey)
+		}
+		// 记录库存已明确有货，防止校价持续失败时每轮重新入队，
+		// 或校价恢复后把同一轮补货再次当作新边沿下单。
+		sub.ConfirmedStatus[statusKey] = "available"
 		if sub.NotifyAvailable && (!hasOld || oldStatus != "price_check_failed") {
 			changeType = "price_check_failed"
 		}
@@ -292,9 +312,9 @@ func groupNotificationsByChannels(notifications []notification) [][]notification
 	return groups
 }
 
-// pendingOrderTargets 返回当前配置仍然明确有货的自动下单待办，并限制
-// 本批任务数不超过队列剩余容量。容量不足时未纳入本批的数量继续留在
-// PendingOrder，下一轮再入队，避免一次异常大的 quantity 永久饿死。
+// pendingOrderTargets 返回本轮库存接口仍明确有货的自动下单待办（即使
+// 购物车价格校验失败也不阻断），并限制本批任务数不超过队列剩余容量。
+// 容量不足时未纳入本批的数量继续留在 PendingOrder，下一轮再入队。
 func pendingOrderTargets(sub *Subscription, statuses map[string]dcStatusSnapshot, maxOrders int) []notification {
 	if sub == nil || maxOrders <= 0 {
 		return nil
@@ -308,7 +328,8 @@ func pendingOrderTargets(sub *Subscription, statuses map[string]dcStatusSnapshot
 	for _, dc := range dcs {
 		status := statuses[dc]
 		remaining := sub.PendingOrder[status.statusKey]
-		if remaining <= 0 || status.actualStatus != "available" {
+		if remaining <= 0 || !status.inventoryAvailable ||
+			(status.actualStatus != "available" && status.actualStatus != "price_check_failed") {
 			continue
 		}
 		if remaining > maxOrders {
@@ -324,8 +345,9 @@ func pendingOrderTargets(sub *Subscription, statuses map[string]dcStatusSnapshot
 }
 
 type dcStatusSnapshot struct {
-	statusKey    string
-	actualStatus string
+	statusKey          string
+	actualStatus       string
+	inventoryAvailable bool
 }
 
 func (n notification) oldStatusJSON() interface{} {
@@ -608,11 +630,15 @@ func (m *Monitor) checkAvailabilityChange(ctx context.Context, target, sub *Subs
 			}
 		}
 
-		// 自动下单待办只在确认的 unavailable -> available 边沿创建。
+		// 自动下单只在明确的无货→有货库存边沿创建待办。
+		// 价格校验失败会单独提醒，但不再阻断这个库存边沿的下单尝试。
 		// 入队失败会保留剩余数量，下一轮继续补齐。
 		orderStatuses := make(map[string]dcStatusSnapshot, len(dcStatusMap))
 		for dc, ds := range dcStatusMap {
-			orderStatuses[dc] = dcStatusSnapshot{statusKey: ds.statusKey, actualStatus: actualStatuses[ds.statusKey]}
+			orderStatuses[dc] = dcStatusSnapshot{
+				statusKey: ds.statusKey, actualStatus: actualStatuses[ds.statusKey],
+				inventoryAvailable: catalog.AvailabilityExplicitlyAvailable(ds.status),
+			}
 		}
 		orderTargets := pendingOrderTargets(sub, orderStatuses, m.state.AvailableQueueSlots())
 		// 触发条件:订阅勾了 AutoOrder + 指定了某个账户。
@@ -621,6 +647,12 @@ func (m *Monitor) checkAvailabilityChange(ctx context.Context, target, sub *Subs
 			if sub.AutoOrderAccountID == "" {
 				m.state.Logger.Info(fmt.Sprintf("[monitor] %s 触发 auto_order 但未指定账户,只通知不下单", planCode), "monitor")
 			} else {
+				for _, orderTarget := range orderTargets {
+					if actualStatuses[orderTarget.statusKey] == "price_check_failed" {
+						m.state.Logger.Warn(fmt.Sprintf("%s@%s [%s] 库存明确有货但购物车价格校验失败；按自动下单设置尝试入队，最终金额未经预校验",
+							planCode, orderTarget.dc, configDisplay), "monitor")
+					}
+				}
 				m.batchOrder(target, sub, configInfo, orderTargets, sub.AutoOrderAccountID)
 			}
 		}

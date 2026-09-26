@@ -73,6 +73,14 @@ func appendPriceBlock(msg *strings.Builder, priceText string) {
 	msg.WriteString("\n")
 }
 
+func priceCheckFailureExplanation(reason string) string {
+	message := "价格校验未通过"
+	if reason != "" {
+		message += ": " + reason
+	}
+	return message + "。首月总价尚未确认；若库存发生明确的无货→有货，且已启用自动下单并指定可用账户，仍会尝试下单；队列容量与购买校验仍适用。是否成单以及实际金额请以购买记录为准。"
+}
+
 // SendAvailabilityAlertGrouped 对应 Python: send_availability_alert_grouped
 func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
 	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string, expectedChannels ...[]string) NotificationDeliveryResult {
@@ -443,11 +451,7 @@ func (m *Monitor) SendAvailabilityAlertWithContext(ctx context.Context, planCode
 		}
 		msg.WriteString("\n")
 		msg.WriteString("⚠️ 特别说明：\n")
-		if priceCheckError != "" {
-			msg.WriteString(fmt.Sprintf("（价格校验未通过: %s，已跳过自动下单）", priceCheckError))
-		} else {
-			msg.WriteString("（价格校验未通过，已跳过自动下单）")
-		}
+		msg.WriteString(priceCheckFailureExplanation(priceCheckError))
 	default:
 		msg.WriteString("📦 服务器下架通知\n\n")
 		if serverName != "" {
