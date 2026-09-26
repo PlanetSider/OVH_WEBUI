@@ -1,5 +1,5 @@
 import { useQueries } from "@tanstack/react-query";
-import { api } from "@/lib/http";
+import { useScopedAccountApi } from "@/hooks/ovh/use-account-scope";
 import { qk } from "@/lib/query";
 
 export type MrtgPeriod = "hourly" | "daily" | "weekly" | "monthly" | "yearly";
@@ -25,28 +25,29 @@ export interface MrtgResponse {
  * 返回 { success, interfaces: [{ mac, data: [{ timestamp, value: {value, unit} }] }] }
  */
 export function useMrtgTraffic(serviceName: string | null, period: MrtgPeriod) {
+  const api = useScopedAccountApi();
   const results = useQueries({
     queries: [
       {
-        queryKey: qk.serverControl.mrtg(serviceName || "", period, "download"),
-        queryFn: async () => {
+        queryKey: [...qk.serverControl.mrtg(serviceName || "", period, "download"), api.accountId],
+        queryFn: async ({ signal }) => {
           const res = await api.get<MrtgResponse>(
-            `/server-control/${serviceName}/mrtg?period=${period}&type=traffic:download`
+            `/server-control/${serviceName}/mrtg?period=${period}&type=traffic:download`, { signal }
           );
           return res.data;
         },
-        enabled: !!serviceName,
+        enabled: !!serviceName && !!api.accountId,
         staleTime: 60_000,
       },
       {
-        queryKey: qk.serverControl.mrtg(serviceName || "", period, "upload"),
-        queryFn: async () => {
+        queryKey: [...qk.serverControl.mrtg(serviceName || "", period, "upload"), api.accountId],
+        queryFn: async ({ signal }) => {
           const res = await api.get<MrtgResponse>(
-            `/server-control/${serviceName}/mrtg?period=${period}&type=traffic:upload`
+            `/server-control/${serviceName}/mrtg?period=${period}&type=traffic:upload`, { signal }
           );
           return res.data;
         },
-        enabled: !!serviceName,
+        enabled: !!serviceName && !!api.accountId,
         staleTime: 60_000,
       },
     ],

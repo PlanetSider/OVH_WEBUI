@@ -39,7 +39,9 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			Quantity           int      `json:"quantity"`
 			AutoOrderAccountID string   `json:"autoOrderAccountId"` // 空 = 触发时只通知不下单
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.PlanCode == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "缺少planCode参数"})
 			return
@@ -80,7 +82,7 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		if err := mon.AddSubscription(body.PlanCode, body.Datacenters, notifyAvailable, notifyUnavailable,
 			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID,
 			body.Memories, body.Storages, body.Networks); err != nil {
-			state.Logger.Error("保存服务器订阅失败: "+err.Error(), "monitor")
+			state.Logger.Error("保存服务器订阅失败", "monitor")
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "保存订阅失败"})
 			return
 		}
@@ -122,7 +124,9 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			AutoOrder          bool     `json:"autoOrder"`
 			AutoOrderAccountID string   `json:"autoOrderAccountId"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.AutoOrderAccountID != "" {
 			if _, ok := state.FindAccount(body.AutoOrderAccountID); !ok {
 				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "autoOrderAccountId 不存在"})
@@ -177,7 +181,7 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			}
 			return subscriptions, nil
 		}); err != nil {
-			state.Logger.Error("批量保存服务器订阅失败: "+err.Error(), "monitor")
+			state.Logger.Error("批量保存服务器订阅失败", "monitor")
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "批量保存订阅失败"})
 			return
 		}
@@ -210,7 +214,7 @@ func RemoveSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已取消订阅 " + planCode})
 			return
 		} else if err.Error() != "订阅不存在" {
-			state.Logger.Error("删除服务器订阅失败: "+err.Error(), "monitor")
+			state.Logger.Error("删除服务器订阅失败", "monitor")
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "删除订阅失败"})
 			return
 		}
@@ -223,7 +227,7 @@ func ClearSubscriptions(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 	return func(c *gin.Context) {
 		count, err := mon.ClearSubscriptions()
 		if err != nil {
-			state.Logger.Error("清空服务器订阅失败: "+err.Error(), "monitor")
+			state.Logger.Error("清空服务器订阅失败", "monitor")
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "清空订阅失败"})
 			return
 		}
@@ -253,7 +257,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			AutoOrderAccountID *string   `json:"autoOrderAccountId"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求格式无效"})
 			return
 		}
 		if body.AutoOrderAccountID != nil && *body.AutoOrderAccountID != "" {
@@ -319,7 +323,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			}
 			return subscriptions, nil
 		}); err != nil {
-			state.Logger.Error("更新服务器订阅失败: "+err.Error(), "monitor")
+			state.Logger.Error("更新服务器订阅失败", "monitor")
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "更新订阅失败"})
 			return
 		}

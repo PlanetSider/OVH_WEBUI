@@ -32,7 +32,10 @@ var (
 	lastTGCheck time.Time
 )
 
-const tgRecheckInterval = 5 * time.Minute
+const (
+	tgRecheckInterval               = 5 * time.Minute
+	maxVPSAvailabilityResponseBytes = 4 << 20
+)
 
 // checkNotifications 节流后验证 Telegram / 全局飞书 / 微信。渠道临时失效时
 // 监控保持运行，待通知事件会在渠道恢复后继续重试。
@@ -79,33 +82,38 @@ func checkVPSDCAvailability(ctx context.Context, state *app.State, planCode, ovh
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
-		state.Logger.Error("创建VPS可用性请求时出错: "+err.Error(), "vps_monitor")
+		state.Logger.Error("创建VPS可用性请求时出错: "+ovh.ErrorSummary(err), "vps_monitor")
 		return nil
 	}
 	req.Header.Set("accept", "application/json")
 	client, err := state.OVH.SharedHTTPClient(10 * time.Second)
 	if err != nil {
-		state.Logger.Error("VPS 公共代理不可用: "+err.Error(), "vps_monitor")
+		state.Logger.Error("VPS 公共代理不可用: "+ovh.ErrorSummary(err), "vps_monitor")
 		return nil
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		state.Logger.Error("检查VPS可用性时出错: "+err.Error(), "vps_monitor")
+		state.Logger.Error("检查VPS可用性时出错: "+ovh.ErrorSummary(err), "vps_monitor")
 		return nil
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		state.Logger.Error("读取VPS数据中心信息时出错: "+err.Error(), "vps_monitor")
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxVPSAvailabilityResponseBytes))
+		state.Logger.Error(fmt.Sprintf("获取VPS数据中心信息失败: HTTP %d", resp.StatusCode), "vps_monitor")
 		return nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		state.Logger.Error(fmt.Sprintf("获取VPS数据中心信息失败: HTTP %d", resp.StatusCode), "vps_monitor")
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxVPSAvailabilityResponseBytes+1))
+	if err != nil {
+		state.Logger.Error("读取VPS数据中心信息时出错", "vps_monitor")
+		return nil
+	}
+	if len(body) > maxVPSAvailabilityResponseBytes {
+		state.Logger.Error("VPS 数据中心响应超过大小限制", "vps_monitor")
 		return nil
 	}
 	var data map[string]interface{}
 	if err := json.Unmarshal(body, &data); err != nil {
-		state.Logger.Error("解析VPS数据中心信息时出错: "+err.Error(), "vps_monitor")
+		state.Logger.Error("解析VPS数据中心信息时出错", "vps_monitor")
 		return nil
 	}
 	state.Logger.Info("VPS "+planCode+" 数据中心信息获取成功", "vps_monitor")
@@ -603,7 +611,7 @@ func processSubscriptionWithAvailability(ctx context.Context, state *app.State, 
 	// 可以识别当前事件；若进程此时退出，重启后仍会从 pending 状态重试。
 	committed, err := mergeSubscriptionState(state, *sub)
 	if err != nil {
-		state.Logger.Warn("保存VPS订阅状态失败，本轮跳过通知发送: "+err.Error(), "vps_monitor")
+		state.Logger.Warn("保存VPS订阅状态失败，本轮跳过通知发送", "vps_monitor")
 		return false
 	}
 	if !committed {
@@ -646,7 +654,7 @@ func processSubscriptionWithAvailability(ctx context.Context, state *app.State, 
 			if channelsChanged {
 				committed, err = mergeSubscriptionStateIfCurrent(state, *sub, &persistedState)
 				if err != nil {
-					state.Logger.Warn("保存VPS待通知渠道清理结果失败: "+err.Error(), "vps_monitor")
+					state.Logger.Warn("保存VPS待通知渠道清理结果失败", "vps_monitor")
 					return false
 				}
 				if !committed {
@@ -688,7 +696,7 @@ func processSubscriptionWithAvailability(ctx context.Context, state *app.State, 
 			// 校验会拒绝旧工作副本覆盖新状态。
 			committed, err = mergeSubscriptionStateIfCurrent(state, *sub, &persistedState)
 			if err != nil {
-				state.Logger.Warn("保存VPS通知结果失败，下轮将继续重试: "+err.Error(), "vps_monitor")
+				state.Logger.Warn("保存VPS通知结果失败，下轮将继续重试", "vps_monitor")
 				return false
 			}
 			if !committed {
@@ -856,7 +864,7 @@ func monitorLoop(ctx context.Context, state *app.State, done chan struct{}) {
 	defer close(done)
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			state.Logger.Error(fmt.Sprintf("VPS监控循环异常退出: %v", recovered), "vps_monitor")
+			state.Logger.Error("VPS监控循环异常退出", "vps_monitor")
 		}
 		runningMu.Lock()
 		running = false

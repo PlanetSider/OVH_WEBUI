@@ -10,7 +10,6 @@ import (
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/monitor"
-	"github.com/ovh-webui/server/internal/ovh"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -133,7 +132,7 @@ func (l *OrderStatusLoop) refresh(ctx context.Context, force bool) (OrderStatusR
 		result.Failed = 1
 		result.Errors = append(result.Errors, scrubRefreshError("读取订单状态候选失败", err))
 		if l.state.Logger != nil {
-			l.state.Logger.Warn("读取订单状态候选失败: "+err.Error(), "order-status")
+			l.state.Logger.Warn("读取订单状态候选失败", "order-status")
 		}
 		return result, true
 	}
@@ -174,11 +173,8 @@ func orderStatusRefreshEligible(entry types.PurchaseHistoryEntry, now time.Time,
 	return force || orderStatusDue(entry, now)
 }
 
-func scrubRefreshError(prefix string, err error) string {
-	if err == nil {
-		return prefix
-	}
-	return prefix + ": " + ovh.ScrubProxyText(err.Error())
+func scrubRefreshError(prefix string, _ error) string {
+	return prefix
 }
 
 func orderStatusDue(entry types.PurchaseHistoryEntry, now time.Time) bool {
@@ -208,14 +204,14 @@ func (l *OrderStatusLoop) refreshOne(ctx context.Context, entry types.PurchaseHi
 	client, err := l.state.OVH.ClientFor(entry.AccountID)
 	if err != nil {
 		if l.state.Logger != nil {
-			l.state.Logger.Warn(fmt.Sprintf("订单 %s 获取账户 client 失败: %s", entry.OrderID, err), "order-status")
+			l.state.Logger.Warn(fmt.Sprintf("订单 %s 获取账户 client 失败", entry.OrderID), "order-status")
 		}
 		return false, err
 	}
 	status, err := FetchOrderStatus(ctx, client, entry.OrderID)
 	if err != nil {
 		if l.state.Logger != nil {
-			l.state.Logger.Warn(fmt.Sprintf("查询订单 %s 状态失败: %s", entry.OrderID, err), "order-status")
+			l.state.Logger.Warn(fmt.Sprintf("订单 %s 状态查询失败", entry.OrderID), "order-status")
 		}
 		return false, err
 	}
@@ -233,7 +229,7 @@ func (l *OrderStatusLoop) refreshOne(ctx context.Context, entry types.PurchaseHi
 	})
 	if err != nil {
 		if l.state.Logger != nil {
-			l.state.Logger.Warn(fmt.Sprintf("保存订单 %s 状态失败: %s", entry.OrderID, err), "order-status")
+			l.state.Logger.Warn(fmt.Sprintf("订单 %s 状态保存失败", entry.OrderID), "order-status")
 		}
 		return false, err
 	}

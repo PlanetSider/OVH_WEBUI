@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -10,6 +11,57 @@ import (
 	"github.com/ovh-webui/server/internal/db"
 	"github.com/ovh-webui/server/internal/types"
 )
+
+func TestPruneDeletedTaskIDsKeepsCheckoutRecoveryMarkers(t *testing.T) {
+	database, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	state := &State{
+		DB:             database,
+		Queue:          []types.QueueItem{{ID: "queued"}},
+		DeletedTaskIDs: map[string]struct{}{"free": {}, "queued": {}, "attempt": {}, "active": {}},
+		checkoutTasks:  map[string]string{"active": "account"},
+		purchaseTasks:  map[string]string{},
+	}
+	item := types.QueueItem{ID: "attempt", AccountID: "account", PlanCode: "plan", Datacenter: "gra"}
+	if err := database.RecordCheckoutAttempt(item, "cart"); err != nil {
+		t.Fatal(err)
+	}
+	state.PruneDeletedTaskIDs()
+	state.DeletedTaskIDsMu.Lock()
+	defer state.DeletedTaskIDsMu.Unlock()
+	for _, id := range []string{"queued", "attempt", "active"} {
+		if _, ok := state.DeletedTaskIDs[id]; !ok {
+			t.Fatalf("marker %q was pruned", id)
+		}
+	}
+	if _, ok := state.DeletedTaskIDs["free"]; ok {
+		t.Fatal("free marker was not pruned")
+	}
+}
+
+func TestStopBackgroundCancelsAndWaits(t *testing.T) {
+	state := &State{}
+	finished := make(chan struct{})
+	if !state.GoBackground(func(ctx context.Context) {
+		<-ctx.Done()
+		close(finished)
+	}) {
+		t.Fatal("GoBackground() rejected task")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := state.StopBackground(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+	default:
+		t.Fatal("background task was not canceled before StopBackground returned")
+	}
+}
 
 func TestNotificationOutboxRetryMethodsAreSafeForConcurrentCallers(t *testing.T) {
 	state := &State{}
@@ -37,6 +89,28 @@ func TestNotificationOutboxRetryMethodsAreSafeForConcurrentCallers(t *testing.T)
 	state.ClearNotificationOutboxRetry("final")
 	if !state.NotificationOutboxRetryDue("final", now) {
 		t.Fatal("cleared retry should be due immediately")
+	}
+}
+
+func TestNotificationOutboxLockHonorsContextCancellation(t *testing.T) {
+	state := &State{}
+	state.LockNotificationOutbox()
+	defer state.UnlockNotificationOutbox()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := make(chan error, 1)
+	go func() {
+		started <- state.LockNotificationOutboxContext(ctx)
+	}()
+
+	select {
+	case err := <-started:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("LockNotificationOutboxContext() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("LockNotificationOutboxContext() did not honor cancellation")
 	}
 }
 
@@ -260,9 +334,9 @@ func TestEnqueueMonitorOrdersPublishesMemoryOnlyAfterTransaction(t *testing.T) {
 	original := types.Subscription{
 		PlanCode: "24sk10", Datacenters: []string{"gra"}, Memories: []string{},
 		Storages: []string{}, Networks: []string{}, NotifyAvailable: true,
-		LastStatus: map[string]string{"gra|cfg": "available"},
+		LastStatus:      map[string]string{"gra|cfg": "available"},
 		ConfirmedStatus: map[string]string{"gra|cfg": "available"},
-		PendingOrder: map[string]int{"gra|cfg": 1}, PendingNotify: map[string]string{},
+		PendingOrder:    map[string]int{"gra|cfg": 1}, PendingNotify: map[string]string{},
 		PendingNotifyChannels: map[string][]string{}, CreatedAt: types.NowISO(),
 		History: []types.SubscriptionHistoryEntry{},
 	}
@@ -460,9 +534,9 @@ func TestEnqueueMonitorOrdersRejectsDeletedAccountWithoutPublishingState(t *test
 	original := types.Subscription{
 		PlanCode: "24sk10", Datacenters: []string{"gra"}, Memories: []string{},
 		Storages: []string{}, Networks: []string{}, NotifyAvailable: true,
-		LastStatus: map[string]string{"gra|cfg": "available"},
+		LastStatus:      map[string]string{"gra|cfg": "available"},
 		ConfirmedStatus: map[string]string{"gra|cfg": "available"},
-		PendingOrder: map[string]int{"gra|cfg": 1}, PendingNotify: map[string]string{},
+		PendingOrder:    map[string]int{"gra|cfg": 1}, PendingNotify: map[string]string{},
 		PendingNotifyChannels: map[string][]string{}, CreatedAt: types.NowISO(),
 		History: []types.SubscriptionHistoryEntry{},
 	}

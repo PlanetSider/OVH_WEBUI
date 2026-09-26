@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -338,6 +339,13 @@ func (n notification) oldStatusJSON() interface{} {
 // 只在复制订阅状态时短暂持有 sub.mu；库存、价格和通知请求均在锁外执行，
 // 避免通知接口阻塞时卡住订阅编辑、账户删除和全量持久化。
 func (m *Monitor) CheckAvailabilityChange(target *Subscription, traceID string) {
+	m.CheckAvailabilityChangeWithContext(context.Background(), target, traceID)
+}
+
+func (m *Monitor) CheckAvailabilityChangeWithContext(ctx context.Context, target *Subscription, traceID string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if target == nil {
 		return
 	}
@@ -348,13 +356,19 @@ func (m *Monitor) CheckAvailabilityChange(target *Subscription, traceID string) 
 	target.mu.Lock()
 	working := cloneSubscriptionUnlocked(target)
 	target.mu.Unlock()
-	m.checkAvailabilityChange(target, working, traceID)
+	m.checkAvailabilityChange(ctx, target, working, traceID)
 }
 
 // checkAvailabilityChange 在 working 副本上执行一次完整检查。target 只用于
 // 提交状态前确认该订阅仍属于当前快照；如果用户在网络请求期间修改/删除了
 // 订阅，旧结果会被丢弃，不会覆盖新配置或继续自动下单。
-func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID string) {
+func (m *Monitor) checkAvailabilityChange(ctx context.Context, target, sub *Subscription, traceID string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
 
 	// 更新入口会清理已关闭渠道的待通知，但旧数据库记录或其它调用入口
 	// 仍可能留下事件。检查开始时再次清理，防止开关关闭后继续发送旧通知。
@@ -373,10 +387,10 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 		m.state.Logger.Warn(fmt.Sprintf("跳过订阅 %s: 账户 %s 的代理已熔断，等待健康检查恢复", planCode, notificationAccountID), "monitor")
 		return
 	}
-	availabilityResult, err := catalog.CheckServerAvailabilityWithConfigsStrict(m.state, planCode, notificationAccountID)
+	availabilityResult, err := catalog.CheckServerAvailabilityWithConfigsStrictContext(ctx, m.state, planCode, notificationAccountID)
 	if err != nil || len(availabilityResult.Configs) == 0 {
 		if err != nil {
-			m.state.Logger.Warn(fmt.Sprintf("无法安全获取 %s 的可用性信息: %s", planCode, err.Error()), "monitor")
+			m.state.Logger.Warn(fmt.Sprintf("无法安全获取 %s 的可用性信息", planCode), "monitor")
 		} else {
 			m.state.Logger.Warn(fmt.Sprintf("无法获取 %s 的可用性信息", planCode), "monitor")
 		}
@@ -434,6 +448,9 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 	m.state.Logger.Info(fmt.Sprintf("订阅 %s - 当前发现 %d 个配置组合", planCode, len(currentAvailability)), "monitor")
 
 	for configKey, configData := range currentAvailability {
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		memory := configData.Memory
 		storage := configData.Storage
 		if !matchesMonitorFilters(sub, memory, storage, serverNetwork, configData.Options) {
@@ -453,10 +470,10 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 		}
 
 		type dcStatus struct {
-			status        string
-			statusKey     string
-			oldStatus     string
-			hasOld        bool
+			status       string
+			statusKey    string
+			oldStatus    string
+			hasOld       bool
 			confirmedOld string
 			hasConfirmed bool
 		}
@@ -487,13 +504,18 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 				workers = 10
 			}
 			sem := make(chan struct{}, workers)
+		priceCheckLoop:
 			for _, dc := range priceCheckTasks {
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					break priceCheckLoop
+				}
 				wg.Add(1)
-				sem <- struct{}{}
 				go func(dc string) {
 					defer wg.Done()
 					defer func() { <-sem }()
-					priceText, ok, errMsg := m.verifyPriceAvailable(notificationAccountID, planCode, dc, configInfo)
+					priceText, ok, errMsg := m.verifyPriceAvailable(ctx, notificationAccountID, planCode, dc, configInfo)
 					pcMu.Lock()
 					priceCheckResults[dc] = monitorPriceCheck{text: priceText, ok: ok, err: errMsg}
 					pcMu.Unlock()
@@ -507,8 +529,14 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 				}(dc)
 			}
 			wg.Wait()
+			if err := ctx.Err(); err != nil {
+				return
+			}
 		}
 
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		notifications := []notification{}
 		actualStatuses := map[string]string{}
 
@@ -631,7 +659,9 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 				}
 				configTraceForNotif := group.notifications[0].configTraceID
 				groupKeys := make([]string, 0, len(group.notifications))
-				for _, n := range group.notifications { groupKeys = append(groupKeys, n.statusKey) }
+				for _, n := range group.notifications {
+					groupKeys = append(groupKeys, n.statusKey)
+				}
 				expectedChannels := pendingChannelsForKeys(sub, groupKeys, notificationChannels)
 				var prepared bool
 				expectedChannels, prepared = m.prepareNotificationChannelsForSend(target, sub, groupKeys, expectedChannels)
@@ -647,7 +677,7 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 					m.state.Logger.Info(fmt.Sprintf("订阅 %s 有货通知在发送前已失效，跳过旧通知", planCode), "monitor")
 					return
 				}
-				delivered := m.SendAvailabilityAlertGrouped(planCode, availDCs, configInfoWithPrice, sub.ServerName,
+				delivered := m.SendAvailabilityAlertGroupedWithContext(ctx, planCode, availDCs, configInfoWithPrice, sub.ServerName,
 					group.priceError, traceID, configTraceForNotif, expectedChannels)
 				applyNotificationDelivery(sub, groupKeys, expectedChannels, delivered)
 				for _, n := range group.notifications {
@@ -699,7 +729,7 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 				m.state.Logger.Info(fmt.Sprintf("订阅 %s 价格失败通知在发送前已失效，跳过旧通知", planCode), "monitor")
 				return
 			}
-			delivered := m.SendAvailabilityAlert(planCode, n.dc, "unavailable", "price_check_failed",
+			delivered := m.SendAvailabilityAlertWithContext(ctx, planCode, n.dc, "unavailable", "price_check_failed",
 				configInfoFailed, sub.ServerName, "", n.priceCheckError, traceID, n.configTraceID, n.detectedTime, expectedChannels)
 			applyNotificationDelivery(sub, []string{n.statusKey}, expectedChannels, delivered)
 			if _, pending := sub.PendingNotify[n.statusKey]; pending {
@@ -763,7 +793,7 @@ func (m *Monitor) checkAvailabilityChange(target, sub *Subscription, traceID str
 					m.state.Logger.Info(fmt.Sprintf("订阅 %s 下架通知在发送前已失效，跳过旧通知", planCode), "monitor")
 					return
 				}
-				delivered := m.SendUnavailableAlertGrouped(planCode, unavailDCs, configInfo, sub.ServerName,
+				delivered := m.SendUnavailableAlertGroupedWithContext(ctx, planCode, unavailDCs, configInfo, sub.ServerName,
 					traceID, configTraceForNotif, expectedChannels)
 				applyNotificationDelivery(sub, groupKeys, expectedChannels, delivered)
 				for _, n := range unavailableGroup {

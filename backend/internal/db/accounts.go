@@ -302,8 +302,8 @@ func (db *DB) DeleteAccount(id string) error {
 	}
 
 	var unresolvedAttempts int
-	if err := tx.Get(&unresolvedAttempts, `SELECT COUNT(*) FROM checkout_attempts WHERE account_id = ? AND order_id = ''`, id); err != nil {
-		return fmt.Errorf("count unresolved checkout attempts: %w", err)
+	if err := tx.Get(&unresolvedAttempts, `SELECT COUNT(*) FROM checkout_attempts WHERE account_id = ?`, id); err != nil {
+		return fmt.Errorf("count checkout attempts: %w", err)
 	}
 	if unresolvedAttempts > 0 {
 		return fmt.Errorf("%w（%d 条）；请先在 OVH 后台核对订单和购物车", ErrUnresolvedCheckoutAttempts, unresolvedAttempts)

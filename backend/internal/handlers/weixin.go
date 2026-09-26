@@ -12,7 +12,7 @@ func StartWeixinLogin(manager *weixin.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		result, err := manager.StartLogin(c.Request.Context())
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "微信登录请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, result)
@@ -23,7 +23,7 @@ func PollWeixinLogin(manager *weixin.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		result, err := manager.PollLogin(c.Request.Context(), c.Param("sessionId"))
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "微信登录请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, result)
@@ -39,7 +39,7 @@ func GetWeixinStatus(manager *weixin.Manager) gin.HandlerFunc {
 func TestWeixin(manager *weixin.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := manager.SendTest(c.Request.Context()); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "微信登录请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "微信测试通知已发送"})
@@ -49,7 +49,7 @@ func TestWeixin(manager *weixin.Manager) gin.HandlerFunc {
 func DisconnectWeixin(manager *weixin.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := manager.Disconnect(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "微信解绑失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "微信 iLink Bot 已解除绑定"})

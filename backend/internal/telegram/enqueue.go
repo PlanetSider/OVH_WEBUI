@@ -29,7 +29,7 @@ func EnqueueSingle(state *app.State, accountID, planCode, datacenter string, opt
 	if len(options) == 0 {
 		availabilityResult, availabilityErr := catalog.CheckServerAvailabilityWithConfigsStrict(state, planCode, accountID)
 		if availabilityErr != nil {
-			return OrderResult{Success: false, Message: "无法安全获取指定配置库存：" + availabilityErr.Error()}
+			return OrderResult{Success: false, Message: "无法安全获取指定配置库存，请稍后重试"}
 		}
 		for _, cfg := range availabilityResult.Configs {
 			if st, ok := cfg.Datacenters[datacenter]; ok && catalog.AvailabilityExplicitlyAvailable(st) && len(cfg.Options) > 0 {
@@ -46,7 +46,7 @@ func EnqueueSingle(state *app.State, accountID, planCode, datacenter string, opt
 			if err == "" {
 				err = "价格校验失败"
 			}
-			return OrderResult{Success: false, Message: "价格校验失败：" + err}
+			return OrderResult{Success: false, Message: "价格校验失败，请稍后重试"}
 		}
 	}
 
@@ -68,8 +68,8 @@ func EnqueueSingle(state *app.State, accountID, planCode, datacenter string, opt
 		}
 		return append(queue, item), nil
 	}); err != nil {
-		state.Logger.Error("Telegram 入队落盘失败: "+err.Error(), "telegram")
-		return OrderResult{Success: false, Message: err.Error()}
+		state.Logger.Error("Telegram 入队落盘失败", "telegram")
+		return OrderResult{Success: false, Message: "入队失败，请稍后重试"}
 	}
 	state.Logger.Info(fmt.Sprintf("Telegram 受控入队: %s@%s account=%s opts=%v",
 		planCode, datacenter, accountID, options), "telegram")
@@ -108,7 +108,7 @@ func ProcessOrderForAccount(state *app.State, accountID, planCode, datacenter st
 	availabilityResult, availabilityErr := catalog.CheckServerAvailabilityWithConfigsStrict(state, planCode, accountID)
 	if availabilityErr != nil || len(availabilityResult.Configs) == 0 {
 		if availabilityErr != nil {
-			return OrderResult{Success: false, Message: "无法安全获取 " + planCode + " 的可用性信息：" + availabilityErr.Error()}
+			return OrderResult{Success: false, Message: "无法安全获取可用性信息，请稍后重试"}
 		}
 		return OrderResult{Success: false, Message: "无法获取 " + planCode + " 的可用性信息"}
 	}
@@ -220,8 +220,8 @@ func ProcessOrderForAccount(state *app.State, accountID, planCode, datacenter st
 		return append(queue, ordersToCreate...), nil
 	})
 	if err != nil {
-		state.Logger.Error("机器人批量入队落盘失败: "+err.Error(), "bot")
-		return OrderResult{Success: false, Message: err.Error()}
+		state.Logger.Error("机器人批量入队落盘失败", "bot")
+		return OrderResult{Success: false, Message: "入队失败，请稍后重试"}
 	}
 	created := len(ordersToCreate)
 	state.Logger.Info(fmt.Sprintf("机器人受控批量入队: %d 个 (skip_dup=%d) account=%s", created, skippedDup, accountID), "bot")

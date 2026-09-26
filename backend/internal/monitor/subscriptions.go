@@ -291,7 +291,7 @@ func (m *Monitor) MessageUUIDCacheLookup(id string) *CachedMessage {
 	}
 	row, ok, err := m.state.DB.GetTelegramButton(id)
 	if err != nil {
-		m.state.Logger.Warn("读取 UUID 持久化缓存失败: "+err.Error(), "telegram")
+		m.state.Logger.Warn("读取 UUID 持久化缓存失败", "telegram")
 		return nil
 	}
 	if !ok {
@@ -370,7 +370,7 @@ func (m *Monitor) cleanupExpiredCaches() {
 	// 同步清理 SQLite 过期按钮
 	if m.state.DB != nil {
 		if n, err := m.state.DB.DeleteExpiredTelegramButtons(float64(now - ttlUUID)); err != nil {
-			m.state.Logger.Warn("清理过期 TG 按钮失败: "+err.Error(), "monitor")
+			m.state.Logger.Warn("清理过期 TG 按钮失败", "monitor")
 		} else if n > 0 {
 			m.state.Logger.Debug(fmt.Sprintf("清理过期 TG 按钮: %d 条", n), "monitor")
 		}
@@ -445,7 +445,7 @@ func (m *Monitor) LoadMessageUUIDCacheFromDB() {
 	since := float64(time.Now().Add(-m.messageUUIDCacheTTL).Unix())
 	rows, err := m.state.DB.ListTelegramButtonsSince(since)
 	if err != nil {
-		m.state.Logger.Warn("加载 TG 一键下单按钮缓存失败: "+err.Error(), "monitor")
+		m.state.Logger.Warn("加载 TG 一键下单按钮缓存失败", "monitor")
 		return
 	}
 	m.cacheLock.Lock()

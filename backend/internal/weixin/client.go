@@ -105,18 +105,23 @@ func (c *Client) post(ctx context.Context, baseURL, endpoint, token string, payl
 	return c.do(req, target)
 }
 
+const maxILinkResponseBytes = 2 << 20
+
 func (c *Client) do(req *http.Request, target any) error {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxILinkResponseBytes+1))
 	if err != nil {
 		return err
 	}
+	if len(body) > maxILinkResponseBytes {
+		return fmt.Errorf("iLink response body exceeds limit")
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("iLink HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("iLink HTTP %d", resp.StatusCode)
 	}
 	if err := json.Unmarshal(body, target); err != nil {
 		return fmt.Errorf("decode iLink response: %w", err)

@@ -23,6 +23,9 @@ func AccountProxyStatus(state *app.State) gin.HandlerFunc {
 			return
 		}
 		status, hasStatus := state.ProxyGuardStatus(id)
+		if status.LastError != "" {
+			status.LastError = "代理连接失败"
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"accountId":       account.ID,
 			"proxyConfigured": account.ProxyURL != "",
@@ -106,7 +109,7 @@ func TestAccountProxy(state *app.State) gin.HandlerFunc {
 			}
 			c.JSON(http.StatusOK, gin.H{
 				"success":     false,
-				"error":       ovh.ScrubProxyText(err.Error()),
+				"error":       "代理连接失败",
 				"via":         via,
 				"usingProxy":  strings.TrimSpace(account.ProxyURL) != "",
 				"fingerprint": profile.Name,
@@ -144,6 +147,11 @@ func CheckAccountProxy(state *app.State) gin.HandlerFunc {
 			{Name: apiHostOf(base) + "（库存查询）", URL: base + "/1.0/dedicated/server/datacenter/availabilities?planCode=24sk602"},
 		}
 		probes := ovh.ProbeProxyTargets(account.ProxyURL, account.Fingerprint, 10*time.Second, targets)
+		for i := range probes {
+			if probes[i].Error != "" {
+				probes[i].Error = "代理探测失败"
+			}
+		}
 		egress, egressErr := ovh.EgressIP(account.ProxyURL, account.Fingerprint, 15*time.Second)
 		result := gin.H{
 			"success":     true,
@@ -157,7 +165,7 @@ func CheckAccountProxy(state *app.State) gin.HandlerFunc {
 			"checkedAt":   time.Now().UTC().Format(time.RFC3339),
 		}
 		if egressErr != nil {
-			result["egressError"] = ovh.ScrubProxyText(egressErr.Error())
+			result["egressError"] = "代理出口检测失败"
 		} else {
 			result["egressIP"] = egress
 		}

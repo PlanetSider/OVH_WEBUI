@@ -19,7 +19,7 @@ func hasUI() bool { return true }
 func webDistFS() fs.FS {
 	sub, err := fs.Sub(webEmbed, "web")
 	if err != nil {
-		panic("web embed: " + err.Error())
+		panic("web embed: failed to initialize embedded UI")
 	}
 	return sub
 }

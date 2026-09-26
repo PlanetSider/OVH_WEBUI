@@ -167,7 +167,7 @@ function LoginOverlay({
 async function verifyKey(key: string): Promise<boolean> {
   try {
     const res = await axios.get(resolveAbsoluteUrl("/api/stats"), {
-      headers: { "X-API-Key": key },
+      headers: { "X-API-Key": key, "X-Request-Time": Date.now().toString() },
       timeout: 10000,
       validateStatus: () => true,
     });

@@ -32,8 +32,10 @@ const templatesCacheTTL = 10 * time.Minute
 // GetVpsCurrentOS GET /api/vps-control/:service_name/current-os
 //
 // 当前安装的系统信息。两个端点:
-//   /vps/{name}/distribution     - EU PRODUCTION,返完整 vps.Template (id, name, distribution, bitFormat, locale)
-//   /vps/{name}/images/current   - EU/US BETA,返简化 vps.Image (id, name)
+//
+//	/vps/{name}/distribution     - EU PRODUCTION,返完整 vps.Template (id, name, distribution, bitFormat, locale)
+//	/vps/{name}/images/current   - EU/US BETA,返简化 vps.Image (id, name)
+//
 // EU 优先用前者(信息全),失败/US 退后者,前端按 name 推 distribution。
 func GetVpsCurrentOS(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -132,7 +134,7 @@ func GetVpsTemplates(state *app.State) gin.HandlerFunc {
 		// US 退路
 		var imageIDs []string
 		if err := client.Get("/vps/"+svc+"/images/available", &imageIDs); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 重装请求失败"})
 			return
 		}
 		list := buildUsImageList(client, svc, imageIDs)
@@ -282,7 +284,9 @@ func ReinstallVps(state *app.State) gin.HandlerFunc {
 			DoNotSendPassword bool        `json:"doNotSendPassword"`
 			SoftwareID        []int64     `json:"softwareId"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.TemplateID == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 templateId"})
 			return
@@ -301,8 +305,8 @@ func ReinstallVps(state *app.State) gin.HandlerFunc {
 			}
 			var task map[string]interface{}
 			if err := client.Post("/vps/"+svc+"/rebuild", params, &task); err != nil {
-				state.Logger.Error("VPS "+svc+" rebuild 失败: "+err.Error(), "vps_control")
-				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+				state.Logger.Error("VPS "+svc+" rebuild 失败", "vps_control")
+				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 重装请求失败"})
 				return
 			}
 			state.Logger.Info(fmt.Sprintf("VPS %s (US) rebuild 任务已创建: imageId=%s", svc, imageID), "vps_control")
@@ -331,8 +335,8 @@ func ReinstallVps(state *app.State) gin.HandlerFunc {
 		}
 		var task map[string]interface{}
 		if err := client.Post("/vps/"+svc+"/reinstall", params, &task); err != nil {
-			state.Logger.Error("VPS "+svc+" reinstall 失败: "+err.Error(), "vps_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("VPS "+svc+" reinstall 失败", "vps_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 重装请求失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("VPS %s reinstall 任务已创建: templateId=%d", svc, tid), "vps_control")
@@ -352,7 +356,7 @@ func GetVpsTasks(state *app.State) gin.HandlerFunc {
 		}
 		var ids []int64
 		if err := client.Get("/vps/"+svc+"/tasks", &ids); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 重装请求失败"})
 			return
 		}
 		// 只拉最近 10 个
@@ -403,7 +407,7 @@ func GetVpsTaskDetail(state *app.State) gin.HandlerFunc {
 		}
 		var d map[string]interface{}
 		if err := client.Get(fmt.Sprintf("/vps/%s/tasks/%s", svc, taskID), &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 重装请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "task": d})

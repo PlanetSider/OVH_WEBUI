@@ -56,7 +56,7 @@ func terminationPolicyHandler(
 			Policy string `json:"policy"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "请求体格式错误: " + err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "请求体格式无效"})
 			return
 		}
 		body.Policy = strings.TrimSpace(body.Policy)
@@ -70,12 +70,12 @@ func terminationPolicyHandler(
 
 		serviceID, err := resolveID(client, svc)
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "取 serviceId 失败: " + err.Error()})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取服务信息失败"})
 			return
 		}
 		if err := setTerminationPolicy(client, serviceID, body.Policy); err != nil {
-			state.Logger.Error(label+" "+svc+" 设置终止策略失败: "+err.Error(), logSource)
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error(label+" "+svc+" 设置终止策略失败", logSource)
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "终止策略更新失败"})
 			return
 		}
 
@@ -132,13 +132,13 @@ func attachTerminationState(
 ) {
 	serviceID, err := resolveID(client, svc)
 	if err != nil {
-		state.Logger.Warn(svc+" 取 serviceId 失败，终止状态未知: "+err.Error(), logSource)
+		state.Logger.Warn(svc+" 取 serviceId 失败，终止状态未知", logSource)
 		out["terminationStateUnknown"] = true
 		return
 	}
 	scheduled, action, date, err := lifecycleTermination(client, serviceID)
 	if err != nil {
-		state.Logger.Warn(svc+" 读取生命周期失败，终止状态未知: "+err.Error(), logSource)
+		state.Logger.Warn(svc+" 读取生命周期失败，终止状态未知", logSource)
 		out["terminationStateUnknown"] = true
 		return
 	}

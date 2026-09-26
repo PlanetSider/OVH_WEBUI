@@ -17,7 +17,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { api, apiErrorText } from "@/lib/http";
+import { apiErrorText } from "@/lib/http";
+import { useScopedAccountApi } from "@/hooks/ovh/use-account-scope";
 import { toast } from "sonner";
 
 const SPLA_TYPES = [
@@ -35,6 +36,7 @@ export function SplaDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const api = useScopedAccountApi();
   const [type, setType] = useState<(typeof SPLA_TYPES)[number]["value"]>("os");
   const [serialNumber, setSerialNumber] = useState("");
   const [pending, setPending] = useState(false);

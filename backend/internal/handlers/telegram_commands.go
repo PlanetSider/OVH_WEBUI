@@ -205,7 +205,7 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID
 	// 通知数据源始终是当前默认账户；autoOrder=false，不会自动购买。
 	if err := mon.AddSubscription(planCode, dcs, true, false, serverName, nil, nil, false, 0, accountID,
 		[]string{}, []string{}, []string{}); err != nil {
-		state.Logger.Error(channel+" /monitor 保存订阅失败: "+err.Error(), channel)
+		state.Logger.Error(channel+" /monitor 保存订阅失败", channel)
 		return "❌ 保存监控订阅失败，请稍后重试"
 	}
 	if !mon.Running() {
@@ -254,7 +254,7 @@ func cmdPrice(state *app.State, args []string, accountID string) string {
 	options := []string{}
 	availabilityResult, availabilityErr := catalog.CheckServerAvailabilityWithConfigsStrict(state, planCode, accountID)
 	if availabilityErr != nil {
-		return "❌ 无法安全获取库存配置\n\n" + availabilityErr.Error()
+		return "❌ 无法安全获取库存配置，请稍后重试"
 	}
 	avail := availabilityResult.Configs
 	for _, cfg := range avail {
@@ -281,7 +281,7 @@ func cmdPrice(state *app.State, args []string, accountID string) string {
 		if err == "" {
 			err = "询价失败"
 		}
-		return "❌ 价格查询失败\n\n" + err
+		return "❌ 价格查询失败，请稍后重试"
 	}
 
 	var withTax, withoutTax interface{}

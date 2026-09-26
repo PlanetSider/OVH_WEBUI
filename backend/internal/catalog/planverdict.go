@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -39,6 +40,16 @@ func (v PlanVerdict) String() string {
 // ClassifyPlan 统一判断本地 Eco 下单链路是否能处理某个 planCode。
 // 目录故障返回 Unknown，绝不把一次瞬断固化成永久失败。
 func ClassifyPlan(state *app.State, accountID, planCode, logSource string) (PlanVerdict, string) {
+	return ClassifyPlanWithContext(context.Background(), state, accountID, planCode, logSource)
+}
+
+func ClassifyPlanWithContext(ctx context.Context, state *app.State, accountID, planCode, logSource string) (PlanVerdict, string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return PlanVerdictUnknown, ""
+	}
 	if state == nil {
 		return PlanVerdictUnknown, ""
 	}
@@ -46,21 +57,21 @@ func ClassifyPlan(state *app.State, accountID, planCode, logSource string) (Plan
 	accountRegion := ovh.EndpointRegion(account.Endpoint)
 	subsidiary := SubsidiaryOfAccount(account)
 
-	_, catalogErr := AddonFamiliesForPlan(state, accountID, planCode)
+	_, catalogErr := AddonFamiliesForPlanWithContext(ctx, state, accountID, planCode)
 	if catalogErr == nil {
 		return PlanVerdictOK, ""
 	}
 	if !errors.Is(catalogErr, ErrPlanNotInCatalog) {
 		if state.Logger != nil {
-			state.Logger.Warn(fmt.Sprintf("判定 %s 归属时目录失败(%s): %s", planCode, subsidiary, catalogErr), logSource)
+			state.Logger.Warn(fmt.Sprintf("判定 %s 归属时目录失败(%s): %s", planCode, subsidiary, ovh.ErrorSummary(catalogErr)), logSource)
 		}
 		return PlanVerdictUnknown, ""
 	}
 
-	region, probeErr := RegionOfPlan(state, planCode, []string{accountRegion, "EU", "US", "CA"})
+	region, probeErr := RegionOfPlanWithContext(ctx, state, planCode, []string{accountRegion, "EU", "US", "CA"})
 	if probeErr != nil {
 		if state.Logger != nil {
-			state.Logger.Warn(fmt.Sprintf("探测 %s 归属失败: %s", planCode, probeErr), logSource)
+			state.Logger.Warn(fmt.Sprintf("探测 %s 归属失败: %s", planCode, ovh.ErrorSummary(probeErr)), logSource)
 		}
 		return PlanVerdictUnknown, ""
 	}

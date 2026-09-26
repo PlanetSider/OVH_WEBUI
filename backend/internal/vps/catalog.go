@@ -121,6 +121,8 @@ type catalogPlan struct {
 	} `json:"configurations"`
 }
 
+const maxVPSCatalogResponseBytes = 16 << 20
+
 func fetchModels(state *app.State, subsidiary string) ([]Model, error) {
 	if state == nil || state.OVH == nil {
 		return nil, fmt.Errorf("VPS 目录缺少应用状态")
@@ -140,13 +142,13 @@ func fetchModels(state *app.State, subsidiary string) ([]Model, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("拉取 %s 的 VPS 目录失败(%s 站点): HTTP %d %s", subsidiary, ovh.SubsidiaryRegion(subsidiary), resp.StatusCode, strings.TrimSpace(string(body)))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("拉取 %s 的 VPS 目录失败(%s 站点): HTTP %d", subsidiary, ovh.SubsidiaryRegion(subsidiary), resp.StatusCode)
 	}
 	var document struct {
 		Plans []catalogPlan `json:"plans"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&document); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxVPSCatalogResponseBytes)).Decode(&document); err != nil {
 		return nil, fmt.Errorf("解析 %s 的 VPS 目录失败: %w", subsidiary, err)
 	}
 

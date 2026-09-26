@@ -19,18 +19,18 @@ import (
 
 // accountInput POST/PUT body
 type accountInput struct {
-	Name        string `json:"name"`
-	Endpoint    string `json:"endpoint"` // 可空,会按 zone 推断
-	Zone        string `json:"zone"`
-	AppKey      string `json:"appKey"`
-	AppSecret   string `json:"appSecret"`
-	ConsumerKey string `json:"consumerKey"`
-	IAM         string `json:"iam"`      // 可空,会自动生成 go-ovh-<zone>
-	ProxyURL    string `json:"proxyUrl"`
-	Fingerprint string `json:"fingerprint"`
-	ClearProxy  bool   `json:"clearProxy"`
-	ClearFingerprint bool `json:"clearFingerprint"`
-	SetDefault  bool   `json:"setDefault"`
+	Name             string `json:"name"`
+	Endpoint         string `json:"endpoint"` // 可空,会按 zone 推断
+	Zone             string `json:"zone"`
+	AppKey           string `json:"appKey"`
+	AppSecret        string `json:"appSecret"`
+	ConsumerKey      string `json:"consumerKey"`
+	IAM              string `json:"iam"` // 可空,会自动生成 go-ovh-<zone>
+	ProxyURL         string `json:"proxyUrl"`
+	Fingerprint      string `json:"fingerprint"`
+	ClearProxy       bool   `json:"clearProxy"`
+	ClearFingerprint bool   `json:"clearFingerprint"`
+	SetDefault       bool   `json:"setDefault"`
 }
 
 // endpointForZone 根据 zone 推 endpoint
@@ -96,10 +96,10 @@ func (in *accountInput) validate() string {
 		return "缺少 OVH 凭据 (appKey / appSecret / consumerKey)"
 	}
 	if err := ovh.ValidateProxyURL(in.ProxyURL); err != nil {
-		return "proxyUrl 无效: " + err.Error()
+		return "proxyUrl 无效"
 	}
 	if err := ovh.ValidateFingerprint(in.Fingerprint); err != nil {
-		return "fingerprint 无效: " + err.Error()
+		return "fingerprint 无效"
 	}
 	return ""
 }
@@ -111,7 +111,7 @@ func ListAccounts(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		accs, err := state.DB.ListAccounts()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "账户操作失败"})
 			return
 		}
 		if accs == nil {
@@ -127,7 +127,7 @@ func GetAccountByID(state *app.State) gin.HandlerFunc {
 		id := c.Param("id")
 		acc, ok, err := state.DB.GetAccount(id)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "账户操作失败"})
 			return
 		}
 		if !ok {
@@ -144,7 +144,7 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var in accountInput
 		if err := c.ShouldBindJSON(&in); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式无效"})
 			return
 		}
 		in.normalize()
@@ -172,8 +172,8 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 		if !verifyOVHAccount(state, acc) {
 			state.Logger.Warn("创建账户校验失败，未写入账户: "+acc.Name+" ("+acc.Zone+")", "accounts")
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "OVH 凭据校验失败，账户未保存",
-				"valid": false,
+				"error":   "OVH 凭据校验失败，账户未保存",
+				"valid":   false,
 				"account": nil,
 			})
 			return
@@ -202,7 +202,7 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 			restoreErr := restoreDefaultAccount(state, previousDefault, hadPreviousDefault)
 			return errors.Join(deleteErr, restoreErr)
 		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "账户操作失败"})
 			return
 		}
 
@@ -218,7 +218,7 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 		id := c.Param("id")
 		var in accountInput
 		if err := c.ShouldBindJSON(&in); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式无效"})
 			return
 		}
 		in.normalizeUpdate()
@@ -231,7 +231,7 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 		// 被本请求覆盖。
 		existing, ok, err := state.DB.GetAccount(id)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "账户操作失败"})
 			return
 		}
 		if !ok {
@@ -298,11 +298,11 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if errors.Is(err, app.ErrQueueCheckoutInProgress) {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			c.JSON(http.StatusConflict, gin.H{"error": "账户当前正在处理中，请稍后重试"})
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "账户操作失败"})
 			return
 		}
 
@@ -337,7 +337,7 @@ func DeleteAccountByID(state *app.State, mon interface{}) gin.HandlerFunc {
 		// 当前检查结束，再按 persistMu → checkoutMu 的顺序删除数据库记录并
 		// 重载订阅，防止旧订阅在删除后继续入队。
 		var err error
-		if guarded, ok := mon.(interface { WithPersistenceGuard(func() error) error }); ok {
+		if guarded, ok := mon.(interface{ WithPersistenceGuard(func() error) error }); ok {
 			err = guarded.WithPersistenceGuard(func() error {
 				return state.WithAccountCheckoutGuard(id, deleteAccount)
 			})
@@ -346,7 +346,7 @@ func DeleteAccountByID(state *app.State, mon interface{}) gin.HandlerFunc {
 		}
 		if err != nil {
 			if errors.Is(err, app.ErrQueueCheckoutInProgress) || errors.Is(err, db.ErrUnresolvedCheckoutAttempts) {
-				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+				c.JSON(http.StatusConflict, gin.H{"error": "账户当前正在处理中，请稍后重试"})
 				return
 			}
 			if errors.Is(err, db.ErrAccountNotFound) {
@@ -361,24 +361,24 @@ func DeleteAccountByID(state *app.State, mon interface{}) gin.HandlerFunc {
 				if stopper, ok := mon.(interface{ Stop() bool }); ok {
 					stopper.Stop()
 				}
-				state.Logger.Error("账户已删除，但监控运行状态重载失败: "+err.Error(), "accounts")
+				state.Logger.Error("账户已删除，但监控运行状态重载失败", "accounts")
 				c.JSON(http.StatusOK, gin.H{
 					"status":  "success",
 					"warning": "账户已删除，但部分运行状态同步失败；抢购与监控已安全停用，请重启服务并检查数据库",
 				})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "账户操作失败"})
 			return
 		}
 		if loader, ok := mon.(interface{ LoadFromDB() }); ok {
-			if _, guarded := mon.(interface { WithPersistenceGuard(func() error) error }); !guarded {
+			if _, guarded := mon.(interface{ WithPersistenceGuard(func() error) error }); !guarded {
 				loader.LoadFromDB()
 			}
 		}
 		if reloadErr != nil {
 			state.SetQueueProcessorEnabled(false)
-			state.Logger.Error("账户已删除，但关联运行状态重载失败: "+reloadErr.Error(), "accounts")
+			state.Logger.Error("账户已删除，但关联运行状态重载失败", "accounts")
 			c.JSON(http.StatusOK, gin.H{
 				"status":  "success",
 				"warning": "账户已删除，但部分运行状态同步失败；抢购已安全停用，请重启服务并检查数据库",
@@ -424,7 +424,7 @@ func SetDefaultAccountByID(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusNotFound, gin.H{"error": "账户不存在"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "账户操作失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
@@ -519,12 +519,12 @@ func verifyOVHAccount(state *app.State, account types.OVHAccount) bool {
 	}
 	client, err := state.OVH.NewClientForAccount(account)
 	if err != nil {
-		state.Logger.Warn("verify account "+account.ID+": "+err.Error(), "accounts")
+		state.Logger.Warn("verify account 失败", "accounts")
 		return false
 	}
 	var me map[string]interface{}
 	if err := client.Get("/me", &me); err != nil {
-		state.Logger.Warn("verify account "+account.ID+": "+err.Error(), "accounts")
+		state.Logger.Warn("verify account 失败", "accounts")
 		return false
 	}
 	return true

@@ -18,6 +18,7 @@ import (
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/numconv"
+	"github.com/ovh-webui/server/internal/ovh"
 )
 
 // noOVHResp 未找到可用 OVH 账户 / 凭据（常见：前端 localStorage 残留已删账户 ID）
@@ -43,8 +44,8 @@ func ListMyServers(state *app.State) gin.HandlerFunc {
 		}
 		var names []string
 		if err := client.Get("/dedicated/server", &names); err != nil {
-			state.Logger.Error("获取服务器列表失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("获取服务器列表失败", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取服务器列表失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("获取服务器列表成功，共 %d 台", len(names)), "server_control")
@@ -81,8 +82,8 @@ func ListMyServers(state *app.State) gin.HandlerFunc {
 		for i, name := range names {
 			r := results[i]
 			if r.detailError != nil {
-				state.Logger.Error("获取服务器 "+name+" 详情失败: "+r.detailError.Error(), "server_control")
-				servers = append(servers, gin.H{"serviceName": name, "name": name, "error": r.detailError.Error()})
+				state.Logger.Error("获取服务器 "+name+" 详情失败", "server_control")
+				servers = append(servers, gin.H{"serviceName": name, "name": name, "error": "服务器详情暂不可用"})
 				continue
 			}
 			info, svcInfo := r.info, r.svcInfo
@@ -141,8 +142,8 @@ func Reboot(state *app.State) gin.HandlerFunc {
 		}
 		var result map[string]interface{}
 		if err := client.Post("/dedicated/server/"+svc+"/reboot", map[string]interface{}{}, &result); err != nil {
-			state.Logger.Error("重启服务器 "+svc+" 失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("重启服务器 "+svc+" 失败", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "重启服务器失败"})
 			return
 		}
 		state.Logger.Info("服务器 "+svc+" 重启请求已发送", "server_control")
@@ -165,8 +166,8 @@ func GetOSTemplates(state *app.State) gin.HandlerFunc {
 		}
 		var templates map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/install/compatibleTemplates", &templates); err != nil {
-			state.Logger.Error("获取服务器 "+svc+" 系统模板失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("获取服务器 "+svc+" 系统模板失败", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取系统模板失败"})
 			return
 		}
 		var allNames []string
@@ -246,12 +247,57 @@ func GetOSTemplates(state *app.State) gin.HandlerFunc {
 
 // installOSLocks 按 service_name 分别加锁，防同一台机器并发重装。
 // 不同机器互不阻塞。TryLock 失败立即返回 409，不让前端干等。
-var installOSLocks sync.Map // service_name → *sync.Mutex
+type installOSLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
 
-func acquireInstallLock(svc string) (*sync.Mutex, bool) {
-	v, _ := installOSLocks.LoadOrStore(svc, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	return mu, mu.TryLock()
+type installOSLockLease struct {
+	key string
+	ent *installOSLockEntry
+}
+
+var (
+	installOSLocksMu sync.Mutex
+	installOSLocks   = map[string]*installOSLockEntry{}
+)
+
+func acquireInstallLock(svc string) (*installOSLockLease, bool) {
+	installOSLocksMu.Lock()
+	ent := installOSLocks[svc]
+	if ent == nil {
+		ent = &installOSLockEntry{}
+		installOSLocks[svc] = ent
+	}
+	ent.refs++
+	installOSLocksMu.Unlock()
+
+	lease := &installOSLockLease{key: svc, ent: ent}
+	if ent.mu.TryLock() {
+		return lease, true
+	}
+	lease.releaseRef()
+	return nil, false
+}
+
+func (l *installOSLockLease) releaseRef() {
+	if l == nil || l.ent == nil {
+		return
+	}
+	installOSLocksMu.Lock()
+	l.ent.refs--
+	if l.ent.refs == 0 {
+		delete(installOSLocks, l.key)
+	}
+	installOSLocksMu.Unlock()
+}
+
+func (l *installOSLockLease) Unlock() {
+	if l == nil || l.ent == nil {
+		return
+	}
+	l.ent.mu.Unlock()
+	l.releaseRef()
 }
 
 // InstallOS POST /api/server-control/:service_name/install
@@ -275,7 +321,9 @@ func InstallOS(state *app.State) gin.HandlerFunc {
 			return
 		}
 		var body map[string]interface{}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		templateName, _ := body["templateName"].(string)
 		if templateName == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "未指定系统模板"})
@@ -330,7 +378,7 @@ func InstallOS(state *app.State) gin.HandlerFunc {
 					}
 				}
 			} else {
-				state.Logger.Warn(fmt.Sprintf("获取硬件信息失败，使用默认容量: %dGB - %s", totalCapacityGB, err.Error()), "server_control")
+				state.Logger.Warn(fmt.Sprintf("获取硬件信息失败，使用默认容量: %dGB", totalCapacityGB), "server_control")
 			}
 
 			usableCapacityMB := int(float64(totalCapacityGB) * 1024 * 0.92)
@@ -417,15 +465,25 @@ func InstallOS(state *app.State) gin.HandlerFunc {
 		httpClient := &http.Client{Timeout: 30 * time.Second}
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			state.Logger.Error("重装服务器 "+svc+" 系统失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("重装服务器 "+svc+" 系统失败", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "OVH API 请求失败"})
 			return
 		}
 		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
+		if readErr != nil {
+			state.Logger.Error("重装服务器 "+svc+" 读取 OVH 响应失败", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "OVH API 响应不可用"})
+			return
+		}
+		if len(respBody) > 1<<20 {
+			state.Logger.Error("重装服务器 "+svc+" 的 OVH 响应过大", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "OVH API 响应过大"})
+			return
+		}
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-			state.Logger.Error(fmt.Sprintf("API返回错误: %d - %s", resp.StatusCode, string(respBody)), "server_control")
-			c.JSON(resp.StatusCode, gin.H{"success": false, "error": "OVH API错误: " + string(respBody)})
+			state.Logger.Error(fmt.Sprintf("API返回错误: %d", resp.StatusCode), "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "OVH API 请求失败"})
 			return
 		}
 		var result map[string]interface{}
@@ -442,80 +500,80 @@ func InstallOS(state *app.State) gin.HandlerFunc {
 
 // translateInstallStep 对应 Python: translate_install_step
 var translationMap = map[string]string{
-	"Pre-configuring Post-installation":               "预配置安装后脚本",
-	"Downloading OS image":                            "下载系统镜像",
-	"Deploying OS on disks":                           "部署系统到磁盘",
-	"Configuring Boot":                                "配置启动项",
-	"Checking Partitioning":                           "检查分区",
-	"Switching boot":                                  "切换启动模式",
-	"Running Last Reboot":                             "执行最后重启",
-	"Waiting for services to be up":                   "等待服务启动",
-	"Publishing Admin password on API":                "发布管理员密码到API",
-	"Checking BIOS version":                           "检查BIOS版本",
-	"Running Hardware Reboot":                         "执行硬件重启",
-	"Setting up hardware raid":                        "配置硬件RAID",
-	"Preparing disks for new Partitioning":            "准备磁盘分区",
-	"Checking hardware":                               "检查硬件",
-	"Initializing hardware":                           "初始化硬件",
-	"Preparing installation":                          "准备安装",
-	"Partitioning disk":                               "分区磁盘",
-	"Partitioning disks":                              "分区磁盘",
-	"Cleaning Partitioning":                           "清理分区",
-	"Processing Partitioning":                         "处理分区",
-	"Applying Partitioning":                           "应用分区配置",
-	"Formatting partitions":                           "格式化分区",
-	"Installing system":                               "安装系统",
-	"Installing system files":                         "安装系统文件",
-	"Installing packages":                             "安装软件包",
-	"Installing bootloader":                           "安装引导程序",
-	"Installing grub":                                 "安装GRUB引导",
-	"Configuring system":                              "配置系统",
-	"Configuring network":                             "配置网络",
-	"Setting up network":                              "设置网络",
-	"Setting up system":                               "设置系统",
-	"Applying configuration":                          "应用配置",
-	"Processing Post-installation configuration":      "处理安装后配置",
-	"Finalizing installation":                         "完成安装",
-	"Rebooting":                                       "重启中",
-	"Rebooting server":                                "重启服务器",
-	"Reboot":                                          "重启",
-	"First boot":                                      "首次启动",
-	"Booting":                                         "启动中",
-	"Starting services":                               "启动服务",
-	"Starting system services":                       "启动系统服务",
-	"Enabling services":                               "启用服务",
-	"Installation completed":                          "安装完成",
-	"Installation finished":                           "安装完成",
-	"Done":                                            "完成",
-	"Completed":                                       "已完成",
-	"Wiping disks":                                    "擦除磁盘",
-	"Cleaning disks":                                  "清理磁盘",
-	"Creating partitions":                             "创建分区",
-	"Creating filesystems":                            "创建文件系统",
-	"Mounting filesystems":                            "挂载文件系统",
-	"Fetching image":                                  "获取镜像",
-	"Extracting image":                                "解压镜像",
-	"Copying files":                                   "复制文件",
-	"Generating configuration":                        "生成配置",
-	"Writing configuration":                           "写入配置",
-	"Setting hostname":                                "设置主机名",
-	"Configuring timezone":                            "配置时区",
-	"Configuring locale":                              "配置语言",
-	"Generating SSH keys":                             "生成SSH密钥",
-	"Setting root password":                           "设置root密码",
-	"Managing Admin password":                         "管理管理员密码",
-	"Publishing password":                             "发布密码",
-	"Sending end of installation mail":                "发送安装完成邮件",
-	"Sending notification":                            "发送通知",
-	"Notifying completion":                            "通知完成",
-	"Failed":                                          "失败",
-	"Failed to download":                              "下载失败",
-	"Failed to install":                               "安装失败",
-	"Error":                                           "错误",
-	"Partition error":                                 "分区错误",
-	"Boot configuration failed":                       "启动配置失败",
-	"Network configuration failed":                    "网络配置失败",
-	"Timeout":                                         "超时",
+	"Pre-configuring Post-installation":          "预配置安装后脚本",
+	"Downloading OS image":                       "下载系统镜像",
+	"Deploying OS on disks":                      "部署系统到磁盘",
+	"Configuring Boot":                           "配置启动项",
+	"Checking Partitioning":                      "检查分区",
+	"Switching boot":                             "切换启动模式",
+	"Running Last Reboot":                        "执行最后重启",
+	"Waiting for services to be up":              "等待服务启动",
+	"Publishing Admin password on API":           "发布管理员密码到API",
+	"Checking BIOS version":                      "检查BIOS版本",
+	"Running Hardware Reboot":                    "执行硬件重启",
+	"Setting up hardware raid":                   "配置硬件RAID",
+	"Preparing disks for new Partitioning":       "准备磁盘分区",
+	"Checking hardware":                          "检查硬件",
+	"Initializing hardware":                      "初始化硬件",
+	"Preparing installation":                     "准备安装",
+	"Partitioning disk":                          "分区磁盘",
+	"Partitioning disks":                         "分区磁盘",
+	"Cleaning Partitioning":                      "清理分区",
+	"Processing Partitioning":                    "处理分区",
+	"Applying Partitioning":                      "应用分区配置",
+	"Formatting partitions":                      "格式化分区",
+	"Installing system":                          "安装系统",
+	"Installing system files":                    "安装系统文件",
+	"Installing packages":                        "安装软件包",
+	"Installing bootloader":                      "安装引导程序",
+	"Installing grub":                            "安装GRUB引导",
+	"Configuring system":                         "配置系统",
+	"Configuring network":                        "配置网络",
+	"Setting up network":                         "设置网络",
+	"Setting up system":                          "设置系统",
+	"Applying configuration":                     "应用配置",
+	"Processing Post-installation configuration": "处理安装后配置",
+	"Finalizing installation":                    "完成安装",
+	"Rebooting":                                  "重启中",
+	"Rebooting server":                           "重启服务器",
+	"Reboot":                                     "重启",
+	"First boot":                                 "首次启动",
+	"Booting":                                    "启动中",
+	"Starting services":                          "启动服务",
+	"Starting system services":                   "启动系统服务",
+	"Enabling services":                          "启用服务",
+	"Installation completed":                     "安装完成",
+	"Installation finished":                      "安装完成",
+	"Done":                                       "完成",
+	"Completed":                                  "已完成",
+	"Wiping disks":                               "擦除磁盘",
+	"Cleaning disks":                             "清理磁盘",
+	"Creating partitions":                        "创建分区",
+	"Creating filesystems":                       "创建文件系统",
+	"Mounting filesystems":                       "挂载文件系统",
+	"Fetching image":                             "获取镜像",
+	"Extracting image":                           "解压镜像",
+	"Copying files":                              "复制文件",
+	"Generating configuration":                   "生成配置",
+	"Writing configuration":                      "写入配置",
+	"Setting hostname":                           "设置主机名",
+	"Configuring timezone":                       "配置时区",
+	"Configuring locale":                         "配置语言",
+	"Generating SSH keys":                        "生成SSH密钥",
+	"Setting root password":                      "设置root密码",
+	"Managing Admin password":                    "管理管理员密码",
+	"Publishing password":                        "发布密码",
+	"Sending end of installation mail":           "发送安装完成邮件",
+	"Sending notification":                       "发送通知",
+	"Notifying completion":                       "通知完成",
+	"Failed":                                     "失败",
+	"Failed to download":                         "下载失败",
+	"Failed to install":                          "安装失败",
+	"Error":                                      "错误",
+	"Partition error":                            "分区错误",
+	"Boot configuration failed":                  "启动配置失败",
+	"Network configuration failed":               "网络配置失败",
+	"Timeout":                                    "超时",
 }
 
 func translateInstallStep(comment string) string {
@@ -547,7 +605,8 @@ func GetInstallStatus(state *app.State) gin.HandlerFunc {
 		}
 		var status map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/install/status", &status); err != nil {
-			lower := strings.ToLower(err.Error())
+			msg := ovh.ScrubProxyText(err.Error())
+			lower := strings.ToLower(msg)
 			noInstall := []string{"404", "not found", "no installation", "no task", "does not exist",
 				"resource not found", "this service is not", "no os installation", "not installing",
 				"installation not found", "not being installed", "not being reinstalled",
@@ -563,7 +622,8 @@ func GetInstallStatus(state *app.State) gin.HandlerFunc {
 					return
 				}
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("获取服务器 "+svc+" 安装状态失败", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取安装状态失败"})
 			return
 		}
 		elapsedTime := 0
@@ -580,6 +640,9 @@ func GetInstallStatus(state *app.State) gin.HandlerFunc {
 			st, _ := step["status"].(string)
 			comment, _ := step["comment"].(string)
 			errMsg, _ := step["error"].(string)
+			if strings.TrimSpace(errMsg) != "" {
+				errMsg = "安装步骤失败"
+			}
 			if st == "done" {
 				completed++
 			}
@@ -625,8 +688,8 @@ func GetServerTasks(state *app.State) gin.HandlerFunc {
 		}
 		var taskIDs []interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/task", &taskIDs); err != nil {
-			state.Logger.Error("获取服务器 "+svc+" 任务列表失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("获取服务器 "+svc+" 任务列表失败", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取任务列表失败"})
 			return
 		}
 		// 只取最近 10 个，并发拉详情
@@ -680,10 +743,10 @@ func GetTaskAvailableTimeslots(state *app.State) gin.HandlerFunc {
 		q.Set("periodEnd", periodEnd)
 		path := fmt.Sprintf("/dedicated/server/%s/task/%s/availableTimeslots?%s", svc, taskID, q.Encode())
 		if err := client.Get(path, &slots); err != nil {
-			msg := err.Error()
+			msg := ovh.ScrubProxyText(err.Error())
 			lower := strings.ToLower(msg)
 			if strings.Contains(lower, "no schedule needed") {
-				state.Logger.Info("[Task] 任务无需预约: "+msg, "server_control")
+				state.Logger.Info("[Task] 任务无需预约", "server_control")
 				c.JSON(http.StatusOK, gin.H{
 					"success":             true,
 					"timeslots":           []interface{}{},
@@ -696,8 +759,8 @@ func GetTaskAvailableTimeslots(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "任务或服务器不存在"})
 				return
 			}
-			state.Logger.Error("[Task] 可用时间段API错误: "+msg, "server_control")
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": msg})
+			state.Logger.Error("[Task] 可用时间段API错误", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取可用时间段失败"})
 			return
 		}
 		if slots == nil {
@@ -721,7 +784,9 @@ func ScheduleTaskTimeslot(state *app.State) gin.HandlerFunc {
 			StartDate string `json:"startDate"`
 			EndDate   string `json:"endDate"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.StartDate == "" || body.EndDate == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 startDate 或 endDate (ISO8601)"})
 			return
@@ -733,7 +798,8 @@ func ScheduleTaskTimeslot(state *app.State) gin.HandlerFunc {
 			"startDate": body.StartDate,
 			"endDate":   body.EndDate,
 		}, &result); err != nil {
-			lower := strings.ToLower(err.Error())
+			msg := ovh.ScrubProxyText(err.Error())
+			lower := strings.ToLower(msg)
 			if strings.Contains(lower, "no schedule needed") {
 				c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "该任务无需或不支持预约"})
 				return
@@ -742,8 +808,8 @@ func ScheduleTaskTimeslot(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "任务或服务器不存在"})
 				return
 			}
-			state.Logger.Error("[Task] 预约任务API错误: "+err.Error(), "server_control")
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("[Task] 预约任务API错误", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "预约任务失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "result": result})

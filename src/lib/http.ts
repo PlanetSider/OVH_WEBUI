@@ -240,6 +240,7 @@ export async function apiRequest<T = unknown>(
     url,
     method,
     data,
+    signal: options.signal ?? undefined,
     headers,
     silent401: opts?.silent401,
     injectAccount: opts?.account !== false,
@@ -251,6 +252,7 @@ export async function apiRequest<T = unknown>(
     if (res.status === 204) return undefined as T;
     return res.data;
   } catch (err) {
+    if (axios.isCancel(err)) throw err;
     const ax = err as AxiosError<{ message?: string; error?: string }>;
     const status = ax.response?.status ?? 0;
     const errorData = ax.response?.data ?? {};

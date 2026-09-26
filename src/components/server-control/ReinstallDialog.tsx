@@ -161,6 +161,10 @@ export function ReinstallDialog({
       toast.error("请选择系统模板");
       return;
     }
+    if (useCustomStorage && (!disk.isSuccess || !raid.isSuccess || disk.isFetching || raid.isFetching)) {
+      toast.error("请先确认磁盘组和 RAID 支持情况已读取成功");
+      return;
+    }
     if (!confirming) {
       setConfirming(true);
       return;
@@ -538,7 +542,14 @@ export function ReinstallDialog({
                           </div>
                           <div>
                             <label className="block text-[11px] text-muted-foreground mb-1">硬件 RAID 模式</label>
-                            {!raid.data?.supported ? (
+                            {raid.isPending ? (
+                               <Skeleton className="h-9 rounded-md" />
+                             ) : raid.isError ? (
+                               <div className="flex items-center gap-2 text-[11px] text-destructive" role="alert">
+                                 无法读取 RAID 支持情况
+                                 <Button type="button" size="sm" variant="outline" onClick={() => void raid.refetch()}>重试</Button>
+                               </div>
+                             ) : raid.data?.supported === false ? (
                               <p className="text-[11px] text-warning">
                                 此服务器不支持硬件 RAID，可改用下方"软 RAID"。
                               </p>

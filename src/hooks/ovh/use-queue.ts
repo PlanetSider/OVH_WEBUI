@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/http";
+import { api, apiErrorText } from "@/lib/http";
+import { isValidQueueBatch } from "@/lib/purchase-guards";
 import { qk } from "@/lib/query";
 import { toast } from "sonner";
 
@@ -52,6 +53,13 @@ export function useQueueList() {
   });
 }
 
+export interface QueueBatchResult {
+  success: number;
+  failed: number;
+  total: number;
+  failures: { datacenter: string; reason: string }[];
+}
+
 /**
  * 批量创建抢购任务：对每个 datacenter × quantity 调用 POST /queue。
  * 返回成功 / 失败计数。
@@ -69,10 +77,14 @@ export function useCreateQueueItem() {
       retryInterval?: number;
       quantity?: number;
     }) => {
-      const qty = Math.max(1, payload.quantity ?? 1);
+      const qty = payload.quantity ?? 1;
       const dcs = payload.datacenters;
+      if (!isValidQueueBatch(qty, dcs.length)) {
+        throw new Error("数量必须为正安全整数，且批次总任务数不能超过 200");
+      }
       let success = 0;
       let failed = 0;
+      const failures: { datacenter: string; reason: string }[] = [];
       for (const dc of dcs) {
         for (let i = 0; i < qty; i++) {
           try {
@@ -86,16 +98,17 @@ export function useCreateQueueItem() {
             success++;
           } catch (e) {
             failed++;
+            failures.push({ datacenter: dc, reason: apiErrorText(e, "请求失败") });
           }
         }
       }
-      return { success, failed, total: dcs.length * qty };
+      return { success, failed, total: dcs.length * qty, failures } satisfies QueueBatchResult;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.queue.list() });
       qc.invalidateQueries({ queryKey: qk.stats() });
     },
-    onError: (e: any) => toast.error(e.response?.data?.error || "添加任务失败"),
+    onError: (e: unknown) => toast.error(apiErrorText(e, "添加任务失败")),
   });
 }
 
@@ -111,13 +124,18 @@ export function useUpdateQueueItem() {
       options?: string[];
       retryInterval?: number;
       quantity?: number;
-    }) => (await api.put(`/queue/${encodeURIComponent(id)}`, payload)).data as { created?: number },
+    }) => {
+      if (!isValidQueueBatch(payload.quantity ?? 1, payload.datacenters.length)) {
+        throw new Error("数量必须为正安全整数，且批次总任务数不能超过 200");
+      }
+      return (await api.put(`/queue/${encodeURIComponent(id)}`, payload)).data as { created?: number };
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.queue.list() });
       qc.invalidateQueries({ queryKey: qk.stats() });
       toast.success("任务已更新");
     },
-    onError: (e: any) => toast.error(e.response?.data?.error || e.response?.data?.message || "更新任务失败"),
+    onError: (e: unknown) => toast.error(apiErrorText(e, "更新任务失败")),
   });
 }
 

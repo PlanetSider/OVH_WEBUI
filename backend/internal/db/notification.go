@@ -92,7 +92,7 @@ func rowToOutbox(row notificationOutboxRow) (types.NotificationOutboxEntry, erro
 	decodeError := ""
 	if strings.TrimSpace(row.ChannelsJSON) != "" {
 		if err := json.Unmarshal([]byte(row.ChannelsJSON), &channels); err != nil {
-			decodeError = fmt.Sprintf("decode notification channels for %s: %v", row.EventKey, err)
+			decodeError = "通知渠道数据损坏"
 			channels = []string{}
 		}
 	}
@@ -103,7 +103,7 @@ func rowToOutbox(row notificationOutboxRow) (types.NotificationOutboxEntry, erro
 		ID: row.ID, EventKey: row.EventKey, Kind: row.Kind, Payload: row.Payload,
 		Channels: channels, AwaitingChannels: row.AwaitingChannels == 1,
 		DecodeError: decodeError,
-		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		CreatedAt:   row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
 }
 

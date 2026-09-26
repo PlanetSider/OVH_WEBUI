@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -14,8 +15,7 @@ const TelegramButtonTTL = 24 * time.Hour
 // 返回 claimed=true 表示首次处理；false 表示已处理过（重放）。
 func (db *DB) TryClaimTelegramUpdate(updateID int64) (claimed bool, err error) {
 	if updateID <= 0 {
-		// 无 update_id 时不走幂等表（仍由上层 secret/chat 校验）
-		return true, nil
+		return false, fmt.Errorf("invalid telegram update_id: %d", updateID)
 	}
 	now := float64(time.Now().Unix())
 	res, err := db.Exec(
@@ -41,8 +41,9 @@ func (db *DB) CleanupTelegramUpdates(beforeUnix float64) (int64, error) {
 
 // TryClaimFeishuEvent 幂等认领 event_id。飞书重试相同事件时返回 false。
 func (db *DB) TryClaimFeishuEvent(eventID string) (claimed bool, err error) {
+	eventID = strings.TrimSpace(eventID)
 	if eventID == "" {
-		return true, nil
+		return false, fmt.Errorf("missing feishu event_id")
 	}
 	now := float64(time.Now().Unix())
 	res, err := db.Exec(

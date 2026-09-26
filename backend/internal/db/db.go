@@ -204,9 +204,62 @@ func (db *DB) migrate() error {
 	return nil
 }
 
+var allowedMigrationColumns = map[string]map[string]string{
+	"ovh_accounts": {
+		"proxy_url":   "TEXT NOT NULL DEFAULT ''",
+		"fingerprint": "TEXT NOT NULL DEFAULT ''",
+	},
+	"queue": {
+		"account_id":         "TEXT NOT NULL DEFAULT ''",
+		"discontinued":       "INTEGER NOT NULL DEFAULT 0",
+		"failure_count":      "INTEGER NOT NULL DEFAULT 0",
+		"proxy_guard_paused": "INTEGER NOT NULL DEFAULT 0",
+	},
+	"history": {
+		"account_id":      "TEXT NOT NULL DEFAULT ''",
+		"order_status":    "TEXT NOT NULL DEFAULT ''",
+		"order_status_at": "TEXT NOT NULL DEFAULT ''",
+		"timing":          "TEXT NOT NULL DEFAULT ''",
+		"total_ms":        "INTEGER NOT NULL DEFAULT 0",
+	},
+	"monitor_subscriptions": {
+		"auto_order_account_id":           "TEXT NOT NULL DEFAULT ''",
+		"discontinued":                    "INTEGER NOT NULL DEFAULT 0",
+		"discontinued_next_check_at":      "REAL NOT NULL DEFAULT 0",
+		"proxy_guard_auto_order_disabled": "INTEGER NOT NULL DEFAULT 0",
+		"memories":                        "TEXT NOT NULL DEFAULT '[]'",
+		"storages":                        "TEXT NOT NULL DEFAULT '[]'",
+		"networks":                        "TEXT NOT NULL DEFAULT '[]'",
+		"confirmed_status":                "TEXT NOT NULL DEFAULT '{}'",
+		"pending_order":                   "TEXT NOT NULL DEFAULT '{}'",
+		"pending_notify":                  "TEXT NOT NULL DEFAULT '{}'",
+		"pending_notify_channels":         "TEXT NOT NULL DEFAULT '{}'",
+	},
+	"vps_subscriptions": {
+		"auto_order_account_id":           "TEXT NOT NULL DEFAULT ''",
+		"pending_notify":                  "TEXT NOT NULL DEFAULT '{}'",
+		"pending_notify_channels":         "TEXT NOT NULL DEFAULT '{}'",
+		"auto_order":                      "INTEGER NOT NULL DEFAULT 0",
+		"quantity":                        "INTEGER NOT NULL DEFAULT 1",
+		"auto_pay":                        "INTEGER NOT NULL DEFAULT 0",
+		"os":                              "TEXT NOT NULL DEFAULT ''",
+		"proxy_guard_auto_order_disabled": "INTEGER NOT NULL DEFAULT 0",
+	},
+	"telegram_order_buttons": {
+		"used_at": "REAL NOT NULL DEFAULT 0",
+	},
+	"notification_outbox": {
+		"awaiting_channels": "INTEGER NOT NULL DEFAULT 0",
+	},
+}
+
 // addColumnIfMissing SQLite ALTER TABLE ADD COLUMN 不支持 IF NOT EXISTS,
 // 这里查 PRAGMA table_info 自己判断列是否已存在,做幂等加列。
 func (db *DB) addColumnIfMissing(table, column, typeDecl string) error {
+	allowed, ok := allowedMigrationColumns[table]
+	if !ok || allowed[column] != typeDecl {
+		return fmt.Errorf("unsupported migration identifier %s.%s", table, column)
+	}
 	type colInfo struct {
 		CID     int     `db:"cid"`
 		Name    string  `db:"name"`

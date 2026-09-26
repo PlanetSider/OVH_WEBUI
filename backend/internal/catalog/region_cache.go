@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,10 +30,11 @@ func SubsidiaryOfAccount(acc types.OVHAccount) string {
 }
 
 const (
-	regionCacheTTL     = 2 * time.Hour
-	regionCacheFailTTL = 30 * time.Second
-	availProbeTTL      = 10 * time.Minute
-	availProbeErrTTL   = 15 * time.Second
+	regionCacheTTL       = 2 * time.Hour
+	regionCacheFailTTL   = 30 * time.Second
+	availProbeTTL        = 10 * time.Minute
+	availProbeErrTTL     = 15 * time.Second
+	maxAvailProbeEntries = 4096
 )
 
 type planConfig struct {
@@ -72,7 +74,19 @@ func ecoCatalogURL(subsidiary string) string {
 
 // fetchEcoCatalogBody uses the shared public transport so catalog probes retain
 // the configured default-account proxy and its fail-closed behavior.
+const maxCatalogResponseBytes = 16 << 20
+
 func fetchEcoCatalogBody(state *app.State, subsidiary string, parse func(io.Reader) error) error {
+	return fetchEcoCatalogBodyContext(context.Background(), state, subsidiary, parse)
+}
+
+func fetchEcoCatalogBodyContext(ctx context.Context, state *app.State, subsidiary string, parse func(io.Reader) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if state == nil || state.OVH == nil {
 		return fmt.Errorf("公共目录缺少应用状态")
 	}
@@ -80,7 +94,7 @@ func fetchEcoCatalogBody(state *app.State, subsidiary string, parse func(io.Read
 	if err != nil {
 		return fmt.Errorf("公共目录代理不可用: %w", err)
 	}
-	req, err := http.NewRequest(http.MethodGet, ecoCatalogURL(subsidiary), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ecoCatalogURL(subsidiary), nil)
 	if err != nil {
 		return err
 	}
@@ -91,10 +105,10 @@ func fetchEcoCatalogBody(state *app.State, subsidiary string, parse func(io.Read
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("拉取 %s 目录失败(%s 站点): HTTP %d %s", subsidiary, ovh.SubsidiaryRegion(subsidiary), resp.StatusCode, strings.TrimSpace(string(body)))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCatalogResponseBytes))
+		return fmt.Errorf("拉取 %s 目录失败(%s 站点): HTTP %d", subsidiary, ovh.SubsidiaryRegion(subsidiary), resp.StatusCode)
 	}
-	return parse(resp.Body)
+	return parse(io.LimitReader(resp.Body, maxCatalogResponseBytes))
 }
 
 func parseEcoCatalog(r io.Reader) (map[string]planConfig, error) {
@@ -146,10 +160,10 @@ func parseEcoCatalog(r io.Reader) (map[string]planConfig, error) {
 	return plans, nil
 }
 
-// fetchSubsidiaryCatalog is injectable for bounded cache/singleflight tests.
-var fetchSubsidiaryCatalog = func(state *app.State, subsidiary string) (*subsidiaryCatalog, error) {
+// fetchSubsidiaryCatalog 可注入以测试有界缓存/单飞行为。
+var fetchSubsidiaryCatalog = func(ctx context.Context, state *app.State, subsidiary string) (*subsidiaryCatalog, error) {
 	var plans map[string]planConfig
-	if err := fetchEcoCatalogBody(state, subsidiary, func(reader io.Reader) error {
+	if err := fetchEcoCatalogBodyContext(ctx, state, subsidiary, func(reader io.Reader) error {
 		parsed, err := parseEcoCatalog(reader)
 		if err != nil {
 			return fmt.Errorf("解析 %s 目录失败: %w", subsidiary, err)
@@ -167,9 +181,21 @@ var fetchSubsidiaryCatalog = func(state *app.State, subsidiary string) (*subsidi
 }
 
 func loadSubsidiaryCatalog(state *app.State, subsidiary string) (*subsidiaryCatalog, error) {
+	return loadSubsidiaryCatalogContext(context.Background(), state, subsidiary)
+}
+
+func loadSubsidiaryCatalogContext(ctx context.Context, state *app.State, subsidiary string) (*subsidiaryCatalog, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	subsidiary = strings.ToUpper(strings.TrimSpace(subsidiary))
 	if subsidiary == "" {
 		return nil, fmt.Errorf("缺少 ovhSubsidiary,无法确定目录站点")
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
 	regionCacheMu.Lock()
 	if cached, ok := regionCache[subsidiary]; ok && time.Since(cached.fetchedAt) < regionCacheTTL {
@@ -186,14 +212,18 @@ func loadSubsidiaryCatalog(state *app.State, subsidiary string) (*subsidiaryCata
 	}
 	if call, ok := regionCacheCall[subsidiary]; ok {
 		regionCacheMu.Unlock()
-		<-call.done
-		return call.cat, call.err
+		select {
+		case <-call.done:
+			return call.cat, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	call := &catalogCall{done: make(chan struct{})}
 	regionCacheCall[subsidiary] = call
 	regionCacheMu.Unlock()
 
-	cat, err := fetchSubsidiaryCatalog(state, subsidiary)
+	cat, err := fetchSubsidiaryCatalog(ctx, state, subsidiary)
 	regionCacheMu.Lock()
 	delete(regionCacheCall, subsidiary)
 	if err == nil {
@@ -205,12 +235,14 @@ func loadSubsidiaryCatalog(state *app.State, subsidiary string) (*subsidiaryCata
 		}
 	}
 	if err != nil {
-		regionCacheFail[subsidiary] = catalogFailure{err: err, at: time.Now()}
-		if stale := regionCache[subsidiary]; stale != nil {
-			if state != nil && state.Logger != nil {
-				state.Logger.Warn(fmt.Sprintf("[region] 刷新 %s 目录失败(%s)，继续使用 %s 前缓存", subsidiary, err.Error(), time.Since(stale.fetchedAt).Truncate(time.Second)), "purchase")
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			regionCacheFail[subsidiary] = catalogFailure{err: err, at: time.Now()}
+			if stale := regionCache[subsidiary]; stale != nil {
+				if state != nil && state.Logger != nil {
+					state.Logger.Warn(fmt.Sprintf("[region] 刷新 %s 目录失败，继续使用 %s 前缓存", subsidiary, time.Since(stale.fetchedAt).Truncate(time.Second)), "purchase")
+				}
+				cat, err = stale, nil
 			}
-			cat, err = stale, nil
 		}
 	}
 	call.cat, call.err = cat, err
@@ -220,12 +252,16 @@ func loadSubsidiaryCatalog(state *app.State, subsidiary string) (*subsidiaryCata
 }
 
 func RegionForPlan(state *app.State, accountID, planCode, apiDC string) (string, error) {
+	return RegionForPlanWithContext(context.Background(), state, accountID, planCode, apiDC)
+}
+
+func RegionForPlanWithContext(ctx context.Context, state *app.State, accountID, planCode, apiDC string) (string, error) {
 	if state == nil {
 		return "", errors.New("区域解析缺少应用状态")
 	}
 	acc, _ := state.FindAccount(accountID)
 	subsidiary := SubsidiaryOfAccount(acc)
-	cat, err := loadSubsidiaryCatalog(state, subsidiary)
+	cat, err := loadSubsidiaryCatalogContext(ctx, state, subsidiary)
 	if err != nil {
 		return "", err
 	}
@@ -237,12 +273,16 @@ func RegionForPlan(state *app.State, accountID, planCode, apiDC string) (string,
 }
 
 func AddonFamiliesForPlan(state *app.State, accountID, planCode string) (map[string][]string, error) {
+	return AddonFamiliesForPlanWithContext(context.Background(), state, accountID, planCode)
+}
+
+func AddonFamiliesForPlanWithContext(ctx context.Context, state *app.State, accountID, planCode string) (map[string][]string, error) {
 	if state == nil {
 		return nil, errors.New("目录解析缺少应用状态")
 	}
 	acc, _ := state.FindAccount(accountID)
 	subsidiary := SubsidiaryOfAccount(acc)
-	cat, err := loadSubsidiaryCatalog(state, subsidiary)
+	cat, err := loadSubsidiaryCatalogContext(ctx, state, subsidiary)
 	if err != nil {
 		return nil, err
 	}
@@ -254,12 +294,16 @@ func AddonFamiliesForPlan(state *app.State, accountID, planCode string) (map[str
 }
 
 func DatacentersForPlan(state *app.State, accountID, planCode string) ([]string, error) {
+	return DatacentersForPlanWithContext(context.Background(), state, accountID, planCode)
+}
+
+func DatacentersForPlanWithContext(ctx context.Context, state *app.State, accountID, planCode string) ([]string, error) {
 	if state == nil {
 		return nil, errors.New("目录解析缺少应用状态")
 	}
 	acc, _ := state.FindAccount(accountID)
 	subsidiary := SubsidiaryOfAccount(acc)
-	cat, err := loadSubsidiaryCatalog(state, subsidiary)
+	cat, err := loadSubsidiaryCatalogContext(ctx, state, subsidiary)
 	if err != nil {
 		return nil, err
 	}
@@ -409,10 +453,14 @@ func FallbackRegion(apiDC, subsidiary string) string {
 }
 
 func ResolveRegion(state *app.State, accountID, planCode, apiDC string) (string, string) {
+	return ResolveRegionWithContext(context.Background(), state, accountID, planCode, apiDC)
+}
+
+func ResolveRegionWithContext(ctx context.Context, state *app.State, accountID, planCode, apiDC string) (string, string) {
 	if state == nil {
 		return "", "unknown"
 	}
-	if region, err := RegionForPlan(state, accountID, planCode, apiDC); err == nil {
+	if region, err := RegionForPlanWithContext(ctx, state, accountID, planCode, apiDC); err == nil {
 		return region, "catalog"
 	}
 	acc, _ := state.FindAccount(accountID)
@@ -420,9 +468,12 @@ func ResolveRegion(state *app.State, accountID, planCode, apiDC string) (string,
 }
 
 // WarmRegionCache preloads public catalog data for all configured account subsidiaries.
-func WarmRegionCache(state *app.State) {
+func WarmRegionCache(ctx context.Context, state *app.State) {
 	if state == nil {
 		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	state.AccountsMu.RLock()
 	subsidiaries := make(map[string]struct{})
@@ -431,17 +482,32 @@ func WarmRegionCache(state *app.State) {
 	}
 	state.AccountsMu.RUnlock()
 	for subsidiary := range subsidiaries {
-		if _, err := loadSubsidiaryCatalog(state, subsidiary); err != nil && state.Logger != nil {
-			state.Logger.Warn(fmt.Sprintf("[region] 预热 %s 目录失败(下单时会重试): %s", subsidiary, err.Error()), "purchase")
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if _, err := loadSubsidiaryCatalogContext(ctx, state, subsidiary); err != nil && state.Logger != nil {
+			state.Logger.Warn(fmt.Sprintf("[region] 预热 %s 目录失败（下单时会重试）", subsidiary), "purchase")
 		}
 	}
 }
 
 // RegionOfPlan probes public availability endpoints and distinguishes no record from probe failure.
 func RegionOfPlan(state *app.State, planCode string, candidateRegions []string) (string, error) {
+	return RegionOfPlanWithContext(context.Background(), state, planCode, candidateRegions)
+}
+
+func RegionOfPlanWithContext(ctx context.Context, state *app.State, planCode string, candidateRegions []string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var lastErr error
 	for _, region := range dedupRegions(candidateRegions) {
-		has, err := regionHasPlan(state, planCode, region)
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		has, err := regionHasPlanWithContext(ctx, state, planCode, region)
 		if err != nil {
 			lastErr = err
 			continue
@@ -449,6 +515,9 @@ func RegionOfPlan(state *app.State, planCode string, candidateRegions []string) 
 		if has {
 			return region, nil
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	return "", lastErr
 }
@@ -491,13 +560,54 @@ var (
 	availProbeCalls = map[string]*availProbeCall{}
 )
 
+func pruneAvailProbeLocked(now time.Time) {
+	for key, entry := range availProbeCache {
+		if now.Sub(entry.at) >= availProbeTTL {
+			delete(availProbeCache, key)
+		}
+	}
+	for key, entry := range availProbeFail {
+		if now.Sub(entry.at) >= availProbeErrTTL {
+			delete(availProbeFail, key)
+		}
+	}
+	for len(availProbeCache)+len(availProbeFail) > maxAvailProbeEntries {
+		oldestKey := ""
+		oldestAt := now
+		oldestKind := 0
+		for key, entry := range availProbeCache {
+			if oldestKind == 0 || entry.at.Before(oldestAt) {
+				oldestKey, oldestAt, oldestKind = key, entry.at, 1
+			}
+		}
+		for key, entry := range availProbeFail {
+			if oldestKind == 0 || entry.at.Before(oldestAt) {
+				oldestKey, oldestAt, oldestKind = key, entry.at, 2
+			}
+		}
+		if oldestKind == 1 {
+			delete(availProbeCache, oldestKey)
+		} else if oldestKind == 2 {
+			delete(availProbeFail, oldestKey)
+		} else {
+			return
+		}
+	}
+}
+
 // probeRegionHasPlan 保留两参数注入点，便于无网络测试替换；生产调用通过
 // probeRegionHasPlanWithState 使用共享公共 transport。
 var probeRegionHasPlan = func(region, planCode string) (bool, error) {
-	return probeRegionHasPlanHTTP(&http.Client{Timeout: 20 * time.Second}, region, planCode)
+	return probeRegionHasPlanHTTP(context.Background(), &http.Client{Timeout: 20 * time.Second}, region, planCode)
 }
 
-var probeRegionHasPlanWithState = func(state *app.State, region, planCode string) (bool, error) {
+var probeRegionHasPlanWithState = func(ctx context.Context, state *app.State, region, planCode string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if state == nil || state.OVH == nil {
 		return probeRegionHasPlan(region, planCode)
 	}
@@ -505,13 +615,16 @@ var probeRegionHasPlanWithState = func(state *app.State, region, planCode string
 	if err != nil {
 		return false, err
 	}
-	return probeRegionHasPlanHTTP(client, region, planCode)
+	return probeRegionHasPlanHTTP(ctx, client, region, planCode)
 }
 
-func probeRegionHasPlanHTTP(client *http.Client, region, planCode string) (bool, error) {
+func probeRegionHasPlanHTTP(ctx context.Context, client *http.Client, region, planCode string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	query := url.Values{}
 	query.Set("planCode", planCode)
-	req, err := http.NewRequest(http.MethodGet, ovh.APIBaseURLForRegion(region)+"/v1/dedicated/server/datacenter/availabilities?"+query.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ovh.APIBaseURLForRegion(region)+"/v1/dedicated/server/datacenter/availabilities?"+query.Encode(), nil)
 	if err != nil {
 		return false, err
 	}
@@ -525,15 +638,26 @@ func probeRegionHasPlanHTTP(client *http.Client, region, planCode string) (bool,
 		return false, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var records []json.RawMessage
-	if err := json.NewDecoder(resp.Body).Decode(&records); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCatalogResponseBytes)).Decode(&records); err != nil {
 		return false, err
 	}
 	return len(records) > 0, nil
 }
 
 func regionHasPlan(state *app.State, planCode, region string) (bool, error) {
+	return regionHasPlanWithContext(context.Background(), state, planCode, region)
+}
+
+func regionHasPlanWithContext(ctx context.Context, state *app.State, planCode, region string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	key := strings.TrimSpace(planCode) + "\x00" + strings.ToUpper(strings.TrimSpace(region))
 	availProbeMu.Lock()
+	pruneAvailProbeLocked(time.Now())
 	if cached, ok := availProbeCache[key]; ok && time.Since(cached.at) < availProbeTTL {
 		availProbeMu.Unlock()
 		return cached.has, nil
@@ -544,22 +668,27 @@ func regionHasPlan(state *app.State, planCode, region string) (bool, error) {
 	}
 	if call, ok := availProbeCalls[key]; ok {
 		availProbeMu.Unlock()
-		<-call.done
-		return call.has, call.err
+		select {
+		case <-call.done:
+			return call.has, call.err
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
 	}
 	call := &availProbeCall{done: make(chan struct{})}
 	availProbeCalls[key] = call
 	availProbeMu.Unlock()
 
-	has, err := probeRegionHasPlanWithState(state, region, planCode)
+	has, err := probeRegionHasPlanWithState(ctx, state, region, planCode)
 	availProbeMu.Lock()
 	delete(availProbeCalls, key)
-	if err != nil {
-		availProbeFail[key] = availProbeFailure{err: err, at: time.Now()}
-	} else {
+	if err == nil {
 		availProbeCache[key] = availProbeEntry{has: has, at: time.Now()}
 		delete(availProbeFail, key)
+	} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		availProbeFail[key] = availProbeFailure{err: err, at: time.Now()}
 	}
+	pruneAvailProbeLocked(time.Now())
 	call.has, call.err = has, err
 	availProbeMu.Unlock()
 	close(call.done)

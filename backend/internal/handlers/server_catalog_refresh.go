@@ -95,7 +95,7 @@ func refreshServerCatalogAndNotify(state *app.State, mon *monitor.Monitor, sourc
 	}
 	notifyNewServers(mon, plans)
 	if err := updateDiscontinuedCatalogState(state, mon, plans, previousPlans); err != nil {
-		state.Logger.Warn("更新型号停售状态失败: "+err.Error(), "server_catalog")
+		state.Logger.Warn("更新型号停售状态失败", "server_catalog")
 	}
 	if source == "" {
 		source = "主动"
@@ -120,7 +120,7 @@ func runHourlyDataRefresh(state *app.State, mon *monitor.Monitor) {
 	go func() {
 		defer wg.Done()
 		if err := refreshServerCatalogAndNotify(state, mon, "整点"); err != nil {
-			state.Logger.Warn("整点刷新服务器目录失败: "+err.Error(), "server_catalog")
+			state.Logger.Warn("整点刷新服务器目录失败", "server_catalog")
 		}
 	}()
 	wg.Wait()
@@ -139,7 +139,7 @@ func StartHourlyDataRefresh(state *app.State, mon *monitor.Monitor) func() {
 		go func() {
 			defer startupWG.Done()
 			if err := ensureRealtimeAvailabilitySnapshots(state); err != nil {
-				state.Logger.Warn("实时可用性启动补采失败: "+err.Error(), "availability")
+				state.Logger.Warn("实时可用性启动补采失败", "availability")
 			}
 		}()
 		go func() {
@@ -147,7 +147,7 @@ func StartHourlyDataRefresh(state *app.State, mon *monitor.Monitor) func() {
 			_, _, valid := state.ServerCache.Snapshot()
 			if !valid {
 				if err := refreshServerCatalogAndNotify(state, mon, "启动补采"); err != nil {
-					state.Logger.Warn("服务器目录启动补采失败: "+err.Error(), "server_catalog")
+					state.Logger.Warn("服务器目录启动补采失败", "server_catalog")
 				}
 			}
 		}()

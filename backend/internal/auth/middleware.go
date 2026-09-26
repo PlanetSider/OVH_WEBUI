@@ -26,8 +26,8 @@ func DefaultWhitelist() map[string]struct{} {
 		"/api/version":              {}, // 前端启动时拉版本号,登录前可见
 		"/api/version/check-update": {}, // 更新检查也免鉴权,登录前可提示
 		// /api/internal/monitor/price 已移出白名单：改进程内直调，或需 X-API-Key
-		"/api/telegram/webhook": {},
-		"/api/feishu/events": {},
+		"/api/telegram/webhook":   {},
+		"/api/feishu/events":      {},
 		"/api/feishu/card-action": {},
 	}
 }
@@ -83,21 +83,36 @@ func Middleware(cfg Config) gin.HandlerFunc {
 		}
 
 		// 可选时间戳校验（防重放）：与服务器时间相差超过 5 分钟则拒绝
-		if ts := c.GetHeader("X-Request-Time"); ts != "" {
-			if reqMs, err := strconv.ParseInt(ts, 10, 64); err == nil {
-				diff := time.Now().UnixMilli() - reqMs
-				if diff < 0 {
-					diff = -diff
-				}
-				if diff > 5*60*1000 {
-					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-						"error":   "Request expired",
-						"message": "请求已过期（时间戳验证失败）",
-						"code":    "TIMESTAMP_EXPIRED",
-					})
-					return
-				}
-			}
+		// 时间戳是最低限度的过期检查；真正防重放仍应使用 nonce 或签名会话。
+		ts := c.GetHeader("X-Request-Time")
+		if ts == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error":   "Missing request timestamp",
+				"message": "缺少请求时间戳",
+				"code":    "NO_REQUEST_TIME",
+			})
+			return
+		}
+		reqMs, err := strconv.ParseInt(ts, 10, 64)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error":   "Invalid request timestamp",
+				"message": "请求时间戳格式无效",
+				"code":    "INVALID_REQUEST_TIME",
+			})
+			return
+		}
+		diff := time.Now().UnixMilli() - reqMs
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > 5*60*1000 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error":   "Request expired",
+				"message": "请求已过期（时间戳验证失败）",
+				"code":    "TIMESTAMP_EXPIRED",
+			})
+			return
 		}
 
 		c.Next()

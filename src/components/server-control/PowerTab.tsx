@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Power, RotateCw, HardDrive, Monitor, Zap, Server, Cog, Activity } from "lucide-react";
 import type { OwnedServer } from "@/hooks/use-server-control";
 import { Button } from "@/components/ui/button";
-import { api, apiErrorText } from "@/lib/http";
+import { apiErrorText } from "@/lib/http";
+import { useScopedAccountApi } from "@/hooks/ovh/use-account-scope";
 import { toast } from "sonner";
 import { BootModeDialog } from "./BootModeDialog";
 import { TasksDialog } from "./TasksDialog";
@@ -14,6 +15,7 @@ import { SplaDialog } from "./SplaDialog";
 
 /** 电源与系统 Tab：重启 / 重装 / IPMI / 启动模式 / 解锁 Windows / 任务 / BIOS / 安装进度 */
 export function PowerTab({ server }: { server: OwnedServer }) {
+  const api = useScopedAccountApi();
   const [bootOpen, setBootOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
   const [reinstallOpen, setReinstallOpen] = useState(false);

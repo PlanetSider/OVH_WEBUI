@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/availability"
+	"github.com/ovh-webui/server/internal/ovh"
 	"github.com/ovh-webui/server/internal/types"
 )
 
@@ -39,7 +41,17 @@ type ConfigAvailabilityResult struct {
 //   - monitor 检查 loop 没有"当前账户"概念,直接传 "",意味着只能保证默认账户 + 同 subsidiary 账户准确;
 //     quick-order / Telegram 这种已知 account_id 的调用方应该传具体 ID。
 func CheckServerAvailabilityWithConfigsStrict(state *app.State, planCode string, accountID string) (ConfigAvailabilityResult, error) {
+	return CheckServerAvailabilityWithConfigsStrictContext(context.Background(), state, planCode, accountID)
+}
+
+func CheckServerAvailabilityWithConfigsStrictContext(ctx context.Context, state *app.State, planCode string, accountID string) (ConfigAvailabilityResult, error) {
 	empty := ConfigAvailabilityResult{Configs: map[string]*ConfigAvailability{}}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return empty, err
+	}
 	planCode = strings.TrimSpace(planCode)
 	if planCode == "" {
 		return empty, fmt.Errorf("planCode 不能为空")
@@ -54,8 +66,8 @@ func CheckServerAvailabilityWithConfigsStrict(state *app.State, planCode string,
 	var availabilities []map[string]interface{}
 	q := url.Values{}
 	q.Set("planCode", planCode)
-	if err := client.Get("/dedicated/server/datacenter/availabilities?"+q.Encode(), &availabilities); err != nil {
-		state.Logger.Error(fmt.Sprintf("[配置监控] 获取配置可用性失败: %s", err.Error()), "monitor")
+	if err := client.GetWithContext(ctx, "/dedicated/server/datacenter/availabilities?"+q.Encode(), &availabilities); err != nil {
+		state.Logger.Error(fmt.Sprintf("[配置监控] 获取配置可用性失败: %s", ovh.ErrorSummary(err)), "monitor")
 		return empty, fmt.Errorf("获取 %s 配置可用性失败: %w", planCode, err)
 	}
 
@@ -67,10 +79,13 @@ func CheckServerAvailabilityWithConfigsStrict(state *app.State, planCode string,
 	state.Logger.Info(fmt.Sprintf("[配置监控] OVH API 返回 %d 个配置组合", len(availabilities)), "monitor")
 
 	// 目录数据由 catalog 包统一缓存；不要在每次监控轮次中重复拉整份公开目录。
-	addonFamilies, err := AddonFamiliesForPlan(state, accountID, planCode)
+	addonFamilies, err := AddonFamiliesForPlanWithContext(ctx, state, accountID, planCode)
 	if err != nil {
+		if ctx.Err() != nil {
+			return empty, ctx.Err()
+		}
 		if errors.Is(err, ErrPlanNotInCatalog) {
-			if verdict, reason := ClassifyPlan(state, accountID, planCode, "monitor"); verdict != PlanVerdictUnknown && reason != "" {
+			if verdict, reason := ClassifyPlanWithContext(ctx, state, accountID, planCode, "monitor"); verdict != PlanVerdictUnknown && reason != "" {
 				return empty, errors.New(reason)
 			}
 		}
@@ -182,7 +197,7 @@ func CheckServerAvailabilityWithConfigsStrict(state *app.State, planCode string,
 func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accountID string) map[string]*ConfigAvailability {
 	result, err := CheckServerAvailabilityWithConfigsStrict(state, planCode, accountID)
 	if err != nil {
-		state.Logger.Warn("[配置监控] "+err.Error(), "monitor")
+		state.Logger.Warn("[配置监控] 获取配置可用性失败", "monitor")
 		return map[string]*ConfigAvailability{}
 	}
 	return result.Configs
@@ -216,7 +231,7 @@ func CheckServerAvailability(state *app.State, planCode string, options []string
 	q := url.Values{}
 	q.Set("planCode", planCode)
 	if err := client.Get("/dedicated/server/datacenter/availabilities?"+q.Encode(), &availabilities); err != nil {
-		state.Logger.Error(fmt.Sprintf("Failed to check availability for %s: %s", planCode, err.Error()), "")
+		state.Logger.Error(fmt.Sprintf("Failed to check availability for %s", planCode), "")
 		return nil, err
 	}
 
@@ -381,7 +396,7 @@ var dcNameMap = map[string][2]string{
 func LoadServerList(state *app.State) []types.ServerPlan {
 	client, err := state.OVH.ClientFor("")
 	if err != nil {
-		state.Logger.Error("Failed to load server list: "+err.Error(), "")
+		state.Logger.Error("Failed to load server list", "")
 		return nil
 	}
 	acc, _ := state.FindAccount("")
@@ -392,7 +407,7 @@ func LoadServerList(state *app.State) []types.ServerPlan {
 
 	var catalogResp map[string]interface{}
 	if err := client.Get("/order/catalog/public/eco?ovhSubsidiary="+subsidiary, &catalogResp); err != nil {
-		state.Logger.Error("Failed to load server list: "+err.Error(), "")
+		state.Logger.Error("Failed to load server list", "")
 		return nil
 	}
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -102,7 +103,7 @@ func (r proxyHealthReporter) ReportFailure(accountID string, cause error) {
 		return
 	}
 	if r.logger != nil {
-		r.logger.Warn("账户 "+accountID+" 的代理状态变化: "+event.Status.LastError, "proxyguard")
+		r.logger.Warn("账户 "+accountID+" 的代理状态变化", "proxyguard")
 	}
 }
 
@@ -212,6 +213,14 @@ type State struct {
 	queueTickMu       sync.Mutex
 	queueTickRunning  bool
 
+	// backgroundMu 管理非主循环的有限辅助任务（例如成功订单详情补全和目录预热）。
+	// 任务只允许在关闭前登记，关闭时取消父 context 并等待退出。
+	backgroundMu      sync.Mutex
+	backgroundCtx     context.Context
+	backgroundCancel  context.CancelFunc
+	backgroundWG      sync.WaitGroup
+	backgroundClosing bool
+
 	// loadFailed 记录启动/重载时无法读取的持久化表。对应内存快照不可信时，
 	// 所有整表覆盖写和基于该快照的 mutation 都必须拒绝，避免空快照抹掉磁盘数据。
 	loadFailedMu sync.RWMutex
@@ -279,12 +288,15 @@ type FeishuConnectionController interface {
 
 // NewState 构造应用状态。DB 必须已 Open。
 func NewState(paths storage.Paths, cfg *config.Store, lg *logger.Logger, sqliteDB *db.DB) *State {
+	backgroundCtx, backgroundCancel := context.WithCancel(context.Background())
 	s := &State{
 		Paths:                         paths,
 		Config:                        cfg,
 		Logger:                        lg,
 		ServerCache:                   NewServerListCache(),
 		DB:                            sqliteDB,
+		backgroundCtx:                 backgroundCtx,
+		backgroundCancel:              backgroundCancel,
 		DeletedTaskIDs:                make(map[string]struct{}),
 		checkoutTasks:                 make(map[string]string),
 		purchaseTasks:                 make(map[string]string),
@@ -306,7 +318,56 @@ func NewState(paths storage.Paths, cfg *config.Store, lg *logger.Logger, sqliteD
 	return s
 }
 
-// SetProxyGuardMonitorMutator 注入监控订阅的持久化 owner。app 不直接依赖
+// GoBackground 登记一个会在 State 关闭时被取消并等待的辅助任务。
+func (s *State) GoBackground(fn func(context.Context)) bool {
+	if s == nil || fn == nil {
+		return false
+	}
+	s.backgroundMu.Lock()
+	defer s.backgroundMu.Unlock()
+	if s.backgroundClosing {
+		return false
+	}
+	if s.backgroundCtx == nil {
+		s.backgroundCtx, s.backgroundCancel = context.WithCancel(context.Background())
+	}
+	ctx := s.backgroundCtx
+	s.backgroundWG.Add(1)
+	go func() {
+		defer s.backgroundWG.Done()
+		fn(ctx)
+	}()
+	return true
+}
+
+// StopBackground 取消并等待所有已登记的辅助任务。
+func (s *State) StopBackground(waitCtx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
+	s.backgroundMu.Lock()
+	s.backgroundClosing = true
+	if s.backgroundCancel != nil {
+		s.backgroundCancel()
+	}
+	s.backgroundMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.backgroundWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-waitCtx.Done():
+		return waitCtx.Err()
+	}
+}
+
 // monitor 包，避免循环依赖；生产启动层传入 Monitor.MutateSubscriptions 的适配器。
 func (s *State) SetProxyGuardMonitorMutator(mutator ProxyGuardMonitorMutator) {
 	if s == nil {
@@ -351,33 +412,33 @@ func (s *State) HandleProxyGuardEvent(event proxyguard.Event) {
 	switch event.Kind {
 	case proxyguard.EventTrip:
 		if count, err := s.mutateProxyGuardQueue(accountID, false); err != nil {
-			action.Errors = append(action.Errors, "抢购队列: "+err.Error())
+			action.Errors = append(action.Errors, "抢购队列状态变更失败")
 		} else {
 			action.PausedQueue = count
 		}
 		if count, err := s.mutateProxyGuardMonitor(accountID, false); err != nil {
-			action.Errors = append(action.Errors, "独服订阅: "+err.Error())
+			action.Errors = append(action.Errors, "独服订阅状态变更失败")
 		} else {
 			action.DisabledMonitorAutoOrder = count
 		}
 		if count, err := s.mutateProxyGuardVPS(accountID, false); err != nil {
-			action.Errors = append(action.Errors, "VPS 订阅: "+err.Error())
+			action.Errors = append(action.Errors, "VPS 订阅状态变更失败")
 		} else {
 			action.DisabledVPSAutoOrder = count
 		}
 	case proxyguard.EventRecovery:
 		if count, err := s.mutateProxyGuardQueue(accountID, true); err != nil {
-			action.Errors = append(action.Errors, "恢复抢购队列: "+err.Error())
+			action.Errors = append(action.Errors, "恢复抢购队列失败")
 		} else {
 			action.RestoredQueue = count
 		}
 		if count, err := s.mutateProxyGuardMonitor(accountID, true); err != nil {
-			action.Errors = append(action.Errors, "恢复独服订阅: "+err.Error())
+			action.Errors = append(action.Errors, "恢复独服订阅失败")
 		} else {
 			action.RestoredMonitorAutoOrder = count
 		}
 		if count, err := s.mutateProxyGuardVPS(accountID, true); err != nil {
-			action.Errors = append(action.Errors, "恢复 VPS 订阅: "+err.Error())
+			action.Errors = append(action.Errors, "恢复 VPS 订阅失败")
 		} else {
 			action.RestoredVPSAutoOrder = count
 		}
@@ -400,10 +461,10 @@ func (s *State) HandleProxyGuardEvent(event proxyguard.Event) {
 			logger.Info(fmt.Sprintf("账户 %s 代理恢复：恢复队列 %d，恢复独服自动下单 %d，恢复 VPS 自动下单 %d",
 				accountID, action.RestoredQueue, action.RestoredMonitorAutoOrder, action.RestoredVPSAutoOrder), "proxyguard")
 		case proxyguard.EventReminder:
-			logger.Warn("账户 "+accountID+" 的代理仍不可用: "+event.Status.LastError, "proxyguard")
+			logger.Warn("账户 "+accountID+" 的代理仍不可用", "proxyguard")
 		}
-		for _, errText := range action.Errors {
-			logger.Error("代理熔断状态变更未完全落库: "+errText, "proxyguard")
+		for range action.Errors {
+			logger.Error("代理熔断状态变更未完全落库", "proxyguard")
 		}
 	}
 	if notify != nil {
@@ -521,7 +582,7 @@ func (s *State) RestoreProxyGuardGates() {
 				}
 			}
 		} else if s.Logger != nil {
-			s.Logger.Warn("恢复代理熔断门禁时读取独服订阅失败: "+err.Error(), "proxyguard")
+			s.Logger.Warn("恢复代理熔断门禁时读取独服订阅失败", "proxyguard")
 		}
 	}
 }
@@ -683,7 +744,7 @@ func (s *State) LoadAll() {
 	// 恢复为成功历史；结果不确定的任务从队列隔离并保留数据库记录，
 	// 防止启动后再次 checkout 造成重复下单。
 	if recovered, quarantined, err := s.DB.RecoverCheckoutAttempts(s.recoveryNotificationChannels()); err != nil {
-		s.Logger.Error("recover checkout attempts: "+err.Error(), "system")
+		s.Logger.Error("recover checkout attempts 失败", "system")
 		queueSafe = false
 	} else {
 		if recovered > 0 {
@@ -697,7 +758,7 @@ func (s *State) LoadAll() {
 	// checkout 成功后，成功历史和队列删除会在同一事务内提交。旧版本可能
 	// 在两次写入之间退出，因此启动时先清理已有成功历史对应的残留任务。
 	if removed, err := s.DB.RemoveSuccessfullyPurchasedQueueItems(); err != nil {
-		s.Logger.Error("cleanup purchased queue items: "+err.Error(), "system")
+		s.Logger.Error("cleanup purchased queue items 失败", "system")
 		queueSafe = false
 	} else if removed > 0 {
 		s.Logger.Warn(fmt.Sprintf("启动时清理了 %d 个已有成功订单的残留队列任务", removed), "system")
@@ -821,6 +882,40 @@ func (s *State) LockNotificationOutbox() {
 	}
 }
 
+// LockNotificationOutboxContext 获取通知发送锁，并在调用方取消时返回。
+func (s *State) LockNotificationOutboxContext(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if s.notificationOutboxMu.TryLock() {
+			if err := ctx.Err(); err != nil {
+				s.notificationOutboxMu.Unlock()
+				return err
+			}
+			return nil
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func (s *State) UnlockNotificationOutbox() {
 	if s != nil {
 		s.notificationOutboxMu.Unlock()
@@ -869,10 +964,10 @@ func (s *State) MarkLoadFailed(table string, err error) {
 	if s.loadFailed == nil {
 		s.loadFailed = make(map[string]string)
 	}
-	s.loadFailed[table] = err.Error()
+	s.loadFailed[table] = "读取持久化表失败"
 	s.loadFailedMu.Unlock()
 	if s.Logger != nil {
-		s.Logger.Error("load "+table+" 失败，已禁止本次运行覆盖写该表: "+err.Error(), "system")
+		s.Logger.Error("load "+table+" 失败，已禁止本次运行覆盖写该表", "system")
 	}
 }
 
@@ -892,12 +987,12 @@ func (s *State) SaveBlocked(table string) error {
 		return fmt.Errorf("拒绝写 %s: 状态未初始化", table)
 	}
 	s.loadFailedMu.RLock()
-	reason, blocked := s.loadFailed[table]
+	_, blocked := s.loadFailed[table]
 	s.loadFailedMu.RUnlock()
 	if !blocked {
 		return nil
 	}
-	return fmt.Errorf("拒绝写 %s: 启动时读取失败 (%s)，继续写入可能用不完整内存快照覆盖磁盘数据；请修复后重启", table, reason)
+	return fmt.Errorf("拒绝写 %s: 启动时读取失败；继续写入可能用不完整内存快照覆盖磁盘数据，请修复后重启", table)
 }
 
 // LoadFailures 返回当前记录的持久化读取失败副本，供健康检查和诊断使用。
@@ -1352,6 +1447,51 @@ func (s *State) WithAccountCheckoutGuard(accountID string, mutate func() error) 
 	s.vpsPersistMu.Lock()
 	defer s.vpsPersistMu.Unlock()
 	return s.WithAccountMutation(mutate)
+}
+
+// PruneDeletedTaskIDs 回收已经不可能影响后台处理的任务隔离标记。
+// 数据库查询失败时保留标记，避免把不确定 checkout 重新放回可处理路径。
+func (s *State) PruneDeletedTaskIDs() {
+	if s == nil || s.DB == nil {
+		return
+	}
+
+	s.checkoutMu.Lock()
+	defer s.checkoutMu.Unlock()
+	s.queuePersistMu.Lock()
+	defer s.queuePersistMu.Unlock()
+	s.QueueMu.Lock()
+	defer s.QueueMu.Unlock()
+
+	queued := make(map[string]struct{}, len(s.Queue))
+	for _, item := range s.Queue {
+		queued[item.ID] = struct{}{}
+	}
+	s.DeletedTaskIDsMu.Lock()
+	ids := make([]string, 0, len(s.DeletedTaskIDs))
+	for id := range s.DeletedTaskIDs {
+		ids = append(ids, id)
+	}
+	s.DeletedTaskIDsMu.Unlock()
+
+	for _, id := range ids {
+		if _, active := s.purchaseTasks[id]; active {
+			continue
+		}
+		if _, active := s.checkoutTasks[id]; active {
+			continue
+		}
+		if _, exists := queued[id]; exists {
+			continue
+		}
+		hasAttempt, err := s.DB.HasCheckoutAttempt(id)
+		if err != nil || hasAttempt {
+			continue
+		}
+		s.DeletedTaskIDsMu.Lock()
+		delete(s.DeletedTaskIDs, id)
+		s.DeletedTaskIDsMu.Unlock()
+	}
 }
 
 // IsQueueItemRunning 在 checkout 前确认任务仍存在且仍处于运行状态。
@@ -1866,7 +2006,7 @@ func (s *State) SaveServers() error {
 func (s *State) migrateLegacyConfigToAccount() {
 	n, err := s.DB.CountAccounts()
 	if err != nil {
-		s.Logger.Error("count accounts: "+err.Error(), "system")
+		s.Logger.Error("count accounts 失败", "system")
 		return
 	}
 	if n > 0 {
@@ -1902,7 +2042,7 @@ func (s *State) migrateLegacyConfigToAccount() {
 		CreatedAt:   types.NowISO(),
 	}
 	if err := s.DB.UpsertAccount(acc); err != nil {
-		s.Logger.Error("migrate legacy config to account: "+err.Error(), "system")
+		s.Logger.Error("migrate legacy config to account 失败", "system")
 		return
 	}
 	// 回填现有数据的 account_id 列(从空值 → 新账户 ID)
@@ -1912,7 +2052,7 @@ func (s *State) migrateLegacyConfigToAccount() {
 		`UPDATE config_sniper_tasks SET account_id = ? WHERE account_id = '' OR account_id IS NULL`,
 	} {
 		if _, err := s.DB.Exec(stmt, acc.ID); err != nil {
-			s.Logger.Warn("backfill account_id: "+err.Error(), "system")
+			s.Logger.Warn("backfill account_id 失败", "system")
 		}
 	}
 	s.Logger.Info("已把旧 kv['config'] 迁移成默认账户: "+acc.Name+" ("+acc.Zone+")", "system")
@@ -1937,12 +2077,12 @@ func (s *State) SaveAll() {
 	// 成功历史必须先于队列落盘。若进程在两步之间退出，启动清理会根据成功
 	// 历史移除残留任务；反过来则可能丢失订单记录。
 	if err := s.SaveHistory(); err != nil {
-		s.Logger.Error("save history: "+err.Error(), "system")
+		s.Logger.Error("save history 失败", "system")
 	}
 	if err := s.SaveQueue(); err != nil {
-		s.Logger.Error("save queue: "+err.Error(), "system")
+		s.Logger.Error("save queue 失败", "system")
 	}
 	if err := s.SaveServers(); err != nil {
-		s.Logger.Error("save servers: "+err.Error(), "system")
+		s.Logger.Error("save servers 失败", "system")
 	}
 }

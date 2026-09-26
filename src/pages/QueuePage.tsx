@@ -42,11 +42,14 @@ import {
   useUpdateQueueItem,
   usePurchaseTimings,
   type QueueItem,
+  type QueueBatchResult,
   type PurchaseTiming,
 } from "@/hooks/use-queue";
 import { useServers } from "@/hooks/use-servers";
 import { OVH_DATACENTERS as OVH_DC_LIST } from "@/lib/datacenters";
 import { AccountSelect } from "@/components/common/AccountSelect";
+import { useAccounts } from "@/hooks/use-accounts";
+import { isValidQueueBatch, MAX_QUEUE_BATCH_TASKS, mergeQueueOptions, resolveImportedQueueOptions } from "@/lib/purchase-guards";
 import { AccountChip } from "@/components/common/AccountChip";
 import { TimingChip } from "@/components/common/TimingChip";
 import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
@@ -76,12 +79,14 @@ function QueuePage() {
   const timings = usePurchaseTimings();
   const toggle = useToggleQueueItem();
   const remove = useRemoveQueueItem();
+  const deleteInFlight = useRef(false);
   const clear = useClearQueue();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const createPlanCode = searchParams.get("create") || undefined;
   const createOptions = searchParams.get("options") || undefined;
   const [showClearDialog, setShowClearDialog] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<QueueItem | null>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [editingItem, setEditingItem] = useState<QueueItem | null>(null);
   const [prefillPlanCode, setPrefillPlanCode] = useState<string>("");
@@ -126,7 +131,15 @@ function QueuePage() {
         }
       />
 
-      {queue.isPending ? (
+      {queue.isError && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/40 p-3 text-sm">
+          <span>{queue.data ? "队列刷新失败，正在显示上次数据" : "队列加载失败"}</span>
+          <Button variant="outline" size="sm" onClick={() => void queue.refetch()} disabled={queue.isFetching}>
+            <RefreshCw className="w-4 h-4" />重试
+          </Button>
+        </div>
+      )}
+      {queue.isError && !queue.data ? null : queue.isPending ? (
         <div className="space-y-3">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-20 rounded-2xl" />
@@ -153,8 +166,9 @@ function QueuePage() {
                   action: q.status === "running" ? "pause" : "resume",
                 })
               }
-               onDelete={() => remove.mutate(q.id)}
-               onEdit={() => setEditingItem(q)}
+              onDelete={() => setDeleteTarget(q)}
+              deletePending={remove.isPending}
+              onEdit={() => setEditingItem(q)}
             />
           ))}
         </div>
@@ -178,6 +192,37 @@ function QueuePage() {
               }}
             >
               确认清空
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!deleteTarget} onOpenChange={(next) => !next && !remove.isPending && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除并停止任务？</DialogTitle>
+            <DialogDescription>
+              {deleteTarget?.planCode} · {deleteTarget?.datacenter.toUpperCase()} 将立即停止并从队列移除，此操作不可撤销。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={remove.isPending}>取消</Button>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending || !deleteTarget}
+              onClick={async () => {
+                if (!deleteTarget || deleteInFlight.current || remove.isPending) return;
+                deleteInFlight.current = true;
+                try {
+                  await remove.mutateAsync(deleteTarget.id);
+                  setDeleteTarget(null);
+                } catch {
+                  // 删除 hook 已报告错误，保留确认目标供用户重试。
+                } finally {
+                  deleteInFlight.current = false;
+                }
+              }}
+            >
+              {remove.isPending ? "删除中…" : "确认删除"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -215,9 +260,12 @@ function CreateQueueDialog({
   initialOptions?: string;
 }) {
   const servers = useServers();
+  const accounts = useAccounts();
   const availQ = useAvailability();
   const variantIndex = useMemo(() => buildVariantIndex(availQ.data), [availQ.data]);
   const create = useCreateQueueItem();
+  const submitInFlight = useRef(false);
+  const [batchResult, setBatchResult] = useState<QueueBatchResult | null>(null);
   const [accountId, setAccountId] = useState("");
   const [planCode, setPlanCode] = useState(initialPlanCode || "");
   const [datacenters, setDatacenters] = useState<string[]>([]);
@@ -243,35 +291,29 @@ function CreateQueueDialog({
   // 切 planCode 清空 picked —— 之前选的 addon 对新机型多半不适用。
   // initialOptions 由外部传入时(从其它入口"快速添加"过来),解析后塞进 picked 让用户能看到。
   const prevPlanCodeRef = useRef("");
+  const prevImportedOptionsRef = useRef("");
   useEffect(() => {
+    if (!open) {
+      prevPlanCodeRef.current = "";
+      prevImportedOptionsRef.current = "";
+      return;
+    }
     const code = planCode.trim();
-    if (code === prevPlanCodeRef.current) return;
+    const importedOptions = code === (initialPlanCode || "").trim() ? initialOptions || "" : "";
+    if (importedOptions && !servers.isSuccess) return;
+    if (code === prevPlanCodeRef.current && importedOptions === prevImportedOptionsRef.current) return;
     prevPlanCodeRef.current = code;
-    if (initialOptions && code === (initialPlanCode || "").trim()) {
-      // 走"外部带 initialOptions 进来"分支:
-      //   - 能映射到 chip 组的塞进 picked
-      //   - 剩下没匹配上的(chip 没覆盖到的 addon)塞进 extraInput
-      const wantedList = initialOptions.split(",").map((v) => v.trim()).filter(Boolean);
-      const consumed = new Set<string>();
-      const next: Partial<Record<OptionGroupKey, string>> = {};
+    prevImportedOptionsRef.current = importedOptions;
+    if (importedOptions) {
       const groupedMap = matchedServer ? groupOptions(matchedServer.availableOptions) : null;
-      if (groupedMap) {
-        for (const g of Object.keys(groupedMap) as OptionGroupKey[]) {
-          const hit = groupedMap[g].find((o) => wantedList.includes(o.value));
-          if (hit) {
-            next[g] = hit.value;
-            consumed.add(hit.value);
-          }
-        }
-      }
-      setPicked(next);
-      const leftover = wantedList.filter((v) => !consumed.has(v));
-      setExtraInput(leftover.join(", "));
+      const resolved = resolveImportedQueueOptions(importedOptions, groupedMap);
+      setPicked(resolved.picked);
+      setExtraInput(resolved.extras.join(", "));
     } else {
       setPicked({});
       setExtraInput("");
     }
-  }, [planCode, initialOptions, initialPlanCode, matchedServer]);
+  }, [open, planCode, initialOptions, initialPlanCode, matchedServer, servers.isSuccess]);
 
   /** 按组拆分该机型的所有可选 addon */
   const grouped = useMemo(
@@ -283,18 +325,8 @@ function CreateQueueDialog({
     [matchedServer]
   );
 
-  /** 提交给后端的 addon planCode 列表。
-   *  matchedServer 在 → 走 chip 选择(picked);不在 → 走手填(extraInput)。
-   *  二选一,不混用。 */
-  const parsedOptions = useMemo(() => {
-    if (matchedServer) {
-      return Object.values(picked).filter(Boolean) as string[];
-    }
-    return extraInput
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean);
-  }, [matchedServer, picked, extraInput]);
+  /** 分组选配和目录未覆盖的 addon 一并提交。 */
+  const parsedOptions = useMemo(() => mergeQueueOptions(picked, extraInput), [picked, extraInput]);
 
   // option chip 的绿/红点:跟服务器列表对话框同一套逻辑
   const variants = matchedServer ? variantIndex[matchedServer.planCode] : undefined;
@@ -311,9 +343,11 @@ function CreateQueueDialog({
     );
   };
 
-  const qty = Number(quantity) || 1;
-  const totalTasks = datacenters.length * qty;
-  const canSubmit = !!accountId && planCode.trim().length > 0 && datacenters.length > 0 && qty > 0;
+  const qty = Number(quantity);
+  const validBatch = quantity.trim() !== "" && isValidQueueBatch(qty, datacenters.length);
+  const totalTasks = validBatch ? datacenters.length * qty : 0;
+  const waitingForImport = !!initialOptions && planCode.trim() === (initialPlanCode || "").trim() && !servers.isSuccess;
+  const canSubmit = !!accountId && planCode.trim().length > 0 && validBatch && !waitingForImport && !batchResult;
 
   const reset = () => {
     setPlanCode("");
@@ -322,11 +356,14 @@ function CreateQueueDialog({
     setRetryInterval(String(DEFAULT_RETRY_INTERVAL));
     setPicked({});
     setExtraInput("");
+    setBatchResult(null);
     prevPlanCodeRef.current = "";
+    prevImportedOptionsRef.current = "";
   };
 
   const handleClose = () => {
     if (create.isPending) return;
+    setBatchResult(null);
     onOpenChange(false);
   };
 
@@ -340,27 +377,43 @@ function CreateQueueDialog({
   const clearAllDC = () => setDatacenters([]);
 
   const handleSubmit = async () => {
-    if (!canSubmit) {
-      toast.error("请填写计划代码并至少选择一个数据中心");
+    if (submitInFlight.current || create.isPending) return;
+    if (!validBatch) {
+      toast.error(`数量必须为正安全整数，且本批次不能超过 ${MAX_QUEUE_BATCH_TASKS} 个任务`);
       return;
     }
-    const result = await create.mutateAsync({
-      account_id: accountId,
-      planCode: planCode.trim(),
-      datacenters,
-      quantity: qty,
-      retryInterval: Number(retryInterval) || DEFAULT_RETRY_INTERVAL,
-      options: parsedOptions,
-    });
-    if (result.success > 0) {
-      toast.success(`已创建 ${result.success}/${result.total} 个抢购任务`);
+    if (!canSubmit) {
+      toast.error(waitingForImport ? "服务器目录尚未加载，请等待或重试" : "请填写账户、计划代码并选择数据中心");
+      return;
     }
-    if (result.failed > 0) {
-      toast.error(`${result.failed} 个任务创建失败`);
+    const selectedAccount = accounts.data?.find((account) => account.id === accountId);
+    if (!selectedAccount) {
+      toast.error("无法确认下单账户，请重试加载账户列表");
+      return;
     }
-    if (result.success > 0) {
-      reset();
-      onOpenChange(false);
+    if (!window.confirm(`用账户 ${selectedAccount.name}（${selectedAccount.zone || selectedAccount.endpoint}）创建 ${totalTasks} 个自动抢购任务？每个成功创建的任务将立即启动。`)) return;
+    submitInFlight.current = true;
+    try {
+      const result = await create.mutateAsync({
+        account_id: accountId,
+        planCode: planCode.trim(),
+        datacenters,
+        quantity: qty,
+        retryInterval: Number(retryInterval) || DEFAULT_RETRY_INTERVAL,
+        options: parsedOptions,
+      });
+      if (result.success === result.total) {
+        toast.success(`已创建 ${result.success} 个抢购任务`);
+        reset();
+        onOpenChange(false);
+        return;
+      }
+      setBatchResult(result);
+      toast.error(`已创建 ${result.success}/${result.total} 个任务，${result.failed} 个失败；请查看明细，不要直接重提整批`);
+    } catch {
+      // 校验失败或请求异常已由 mutation 通知，保留输入供用户修正。
+    } finally {
+      submitInFlight.current = false;
     }
   };
 
@@ -391,6 +444,16 @@ function CreateQueueDialog({
               servers={servers.data || []}
               placeholder="选择或搜索服务器型号"
             />
+            {waitingForImport && (
+              <div role={servers.isError ? "alert" : "status"} className="flex flex-wrap items-center gap-2 mt-2 text-[12px] text-muted-foreground">
+                <span>{servers.isError ? "服务器目录加载失败，无法核对导入选配" : "正在读取服务器目录并核对导入选配…"}</span>
+                {servers.isError && (
+                  <Button type="button" size="sm" variant="outline" onClick={() => void servers.refetch()} disabled={servers.isFetching}>
+                    <RefreshCw className="w-4 h-4" />重试目录
+                  </Button>
+                )}
+              </div>
+            )}
             {matchedServer && (
               <p className="text-[11px] text-muted-foreground mt-1 truncate">
                 {matchedServer.cpu} · {matchedServer.memory} · {matchedServer.storage}
@@ -466,8 +529,11 @@ function CreateQueueDialog({
                 placeholder="默认: 1"
               />
               <p className="text-[11px] text-muted-foreground mt-1">
-                每台服务器单独成单
+                每台服务器单独成单；单批最多 {MAX_QUEUE_BATCH_TASKS} 个任务
               </p>
+              {datacenters.length > 0 && !validBatch && (
+                <p role="alert" className="text-[11px] text-destructive mt-1">数量须为正整数，机房数 × 数量不得超过 {MAX_QUEUE_BATCH_TASKS}</p>
+              )}
             </div>
             <div>
               <label className="block text-[13px] font-medium mb-1.5">
@@ -489,18 +555,15 @@ function CreateQueueDialog({
             </div>
           </div>
 
-          {/* 可选配置:planCode 在 catalog 里 → 走 chip 选择;
-                planCode 自定义不在 catalog → 走手填。两者互斥不同时存在。 */}
+          {/* 分组配置与目录未覆盖的额外 addon 同时保留。 */}
           <div>
             <label className="block text-[13px] font-medium mb-1.5">
               可选配置
               <span className="text-muted-foreground ml-2 font-normal">
-                {grouped
-                  ? "（点击 chip 选择,留空走 OVH 默认下单）"
-                  : "（catalog 里没找到这个型号,需要手填 addon planCode）"}
+                {grouped ? "（选择配置，留空走 OVH 默认下单）" : "（自定义型号可手填 addon planCode）"}
               </span>
             </label>
-            {grouped ? (
+            {grouped && (
               <div className="space-y-4">
                 {(["cpu", "memory", "systemStorage", "storage", "bandwidth", "vrack", "other"] as OptionGroupKey[])
                   .filter((g) => grouped[g].length > 0)
@@ -521,14 +584,15 @@ function CreateQueueDialog({
                     />
                   ))}
               </div>
-            ) : (
-              // planCode 不在 catalog 里(用户手填了自定义型号) → 走手动输入
-              <Input
-                placeholder="addon planCode,逗号分隔。例如:ram-64g-ecc-2400, softraid-2x450nvme-24sk50"
-                value={extraInput}
-                onChange={(e) => setExtraInput(e.target.value)}
-              />
             )}
+            <Input
+              className="mt-3"
+              aria-label="其他 addon planCode，逗号分隔"
+              placeholder={grouped ? "其他 addon planCode，逗号分隔（可选）" : "addon planCode，逗号分隔"}
+              value={extraInput}
+              disabled={waitingForImport || create.isPending || !!batchResult}
+              onChange={(e) => setExtraInput(e.target.value)}
+            />
 
             {parsedOptions.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-border">
@@ -544,11 +608,22 @@ function CreateQueueDialog({
 
 
           {/* 汇总提示 */}
-          {datacenters.length > 0 && (
+          {validBatch && (
             <div className="border border-border rounded-2xl p-3 text-[12px] text-muted-foreground">
               将创建 <span className="font-semibold text-foreground">{totalTasks}</span> 个独立任务
               （{datacenters.length} 个数据中心 × {qty} 台
               {parsedOptions.length > 0 ? ` · 含 ${parsedOptions.length} 个可选配置` : ""}）
+            </div>
+          )}
+          {batchResult && (
+            <div role="alert" className="rounded-md border border-destructive/40 p-3 text-sm space-y-2">
+              <p>本批已创建 {batchResult.success}/{batchResult.total} 个任务，其余 {batchResult.failed} 个失败。不要直接重复提交整个批次。</p>
+              <ul className="list-disc pl-5 max-h-24 overflow-y-auto">
+                {batchResult.failures.map((failure, index) => (
+                  <li key={`${failure.datacenter}-${index}`}>{failure.datacenter.toUpperCase()}：{failure.reason}</li>
+                ))}
+              </ul>
+              <Button type="button" variant="outline" size="sm" onClick={() => { reset(); onOpenChange(false); }}>关闭并检查队列</Button>
             </div>
           )}
         </div>
@@ -557,7 +632,7 @@ function CreateQueueDialog({
           <Button variant="outline" onClick={handleClose} disabled={create.isPending}>
             取消
           </Button>
-          <Button onClick={handleSubmit} disabled={!canSubmit || create.isPending}>
+          <Button onClick={handleSubmit} disabled={!canSubmit || create.isPending || accounts.isPending || !!batchResult}>
             {create.isPending ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -586,6 +661,7 @@ function QueueEditDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const servers = useServers();
+  const accounts = useAccounts();
   const availability = useAvailability();
   const variantIndex = useMemo(() => buildVariantIndex(availability.data), [availability.data]);
   const update = useUpdateQueueItem();
@@ -674,25 +750,43 @@ function QueueEditDialog({
     setDatacenters((current) => current.includes(code) ? current.filter((value) => value !== code) : [...current, code]);
   };
 
+  const editQty = Number(quantity);
+  const validEditBatch = quantity.trim() !== "" && isValidQueueBatch(editQty, datacenters.length);
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!item || !accountId || !planCode.trim() || datacenters.length === 0) {
       toast.error("请填写账户、型号并至少选择一个数据中心");
       return;
     }
+    if (!validEditBatch) {
+      toast.error(`数量须为正整数，且机房数 × 数量不得超过 ${MAX_QUEUE_BATCH_TASKS}`);
+      return;
+    }
+    const selectedAccount = accounts.data?.find((account) => account.id === accountId);
+    if (!selectedAccount) {
+      toast.error("无法确认下单账户，请重试加载账户列表");
+      return;
+    }
+    const total = datacenters.length * editQty;
+    if (total > 1 && !window.confirm(`用账户 ${selectedAccount.name}（${selectedAccount.zone || selectedAccount.endpoint}）将此任务扩展为 ${total} 个自动抢购任务？新增任务将立即启动。`)) return;
     const options = server
       ? [...(Object.values(picked).filter(Boolean) as string[]), ...rawOptions]
       : rawOptions;
-    await update.mutateAsync({
-      id: item.id,
-      account_id: accountId,
-      planCode: planCode.trim(),
-      datacenters,
-      quantity: Math.max(1, Number(quantity) || 1),
-      retryInterval: Math.max(1, Number(retryInterval) || DEFAULT_RETRY_INTERVAL),
-      options,
-    });
-    onOpenChange(false);
+    try {
+      await update.mutateAsync({
+        id: item.id,
+        account_id: accountId,
+        planCode: planCode.trim(),
+        datacenters,
+        quantity: editQty,
+        retryInterval: Math.max(1, Number(retryInterval) || DEFAULT_RETRY_INTERVAL),
+        options,
+      });
+      onOpenChange(false);
+    } catch {
+      // mutation 已提示错误，留在编辑表单供用户修正。
+    }
   };
 
   return (
@@ -766,11 +860,17 @@ function QueueEditDialog({
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div><label className="block text-[11px] text-muted-foreground mb-1">每个数据中心数量</label><Input type="number" min={1} max={100} value={quantity} onChange={(event) => setQuantity(event.target.value)} /></div>
+              <div>
+                <label className="block text-[11px] text-muted-foreground mb-1">每个数据中心数量</label>
+                <Input type="number" min={1} max={MAX_QUEUE_BATCH_TASKS} step={1} value={quantity} onChange={(event) => setQuantity(event.target.value)} />
+                {datacenters.length > 0 && !validEditBatch && (
+                  <p role="alert" className="text-[11px] text-destructive mt-1">数量须为正整数，单批最多 {MAX_QUEUE_BATCH_TASKS} 个任务</p>
+                )}
+              </div>
               <div><label className="block text-[11px] text-muted-foreground mb-1">重试间隔（秒）</label><Input type="number" min={1} value={retryInterval} onChange={(event) => setRetryInterval(event.target.value)} /></div>
             </div>
           </div>
-          <DialogFooter className="mt-4 border-t border-border pt-4"><Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={update.isPending}>取消</Button><Button type="submit" disabled={update.isPending}>{update.isPending ? "保存中…" : "保存修改"}</Button></DialogFooter>
+          <DialogFooter className="mt-4 border-t border-border pt-4"><Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={update.isPending}>取消</Button><Button type="submit" disabled={!validEditBatch || !accountId || !planCode.trim() || accounts.isPending || update.isPending}>{update.isPending ? "保存中…" : "保存修改"}</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
@@ -782,12 +882,14 @@ function QueueRow({
   timing,
   onToggle,
   onDelete,
+  deletePending,
   onEdit,
 }: {
   item: QueueItem;
   timing?: PurchaseTiming;
   onToggle: () => void;
   onDelete: () => void;
+  deletePending: boolean;
   onEdit: () => void;
 }) {
   const chip = (() => {
@@ -859,7 +961,8 @@ function QueueRow({
               {item.status === "running" ? <PauseCircle className="w-4 h-4" /> : <PlayCircle className="w-4 h-4" />}
             </Button>
           )}
-          <Button variant="ghost" size="icon" onClick={onDelete} aria-label="删除">
+          <Button variant="ghost" size="icon" onClick={onDelete} disabled={deletePending}
+            aria-label={`删除 ${item.planCode} ${item.datacenter.toUpperCase()} 任务`} title="删除任务">
             <X className="w-4 h-4" />
           </Button>
         </div>

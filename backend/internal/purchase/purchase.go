@@ -63,12 +63,16 @@ func markDefinitive(state *app.State, item *types.QueueItem) {
 func recordStageFailure(state *app.State, item *types.QueueItem, errMsg string, cause error, timing ...*timeline) {
 	if IsCancellation(cause) {
 		state.ClearAttemptOutcome(item.ID)
+		errMsg = "下单已取消"
 	} else if cause != nil {
 		if IsTransient(cause) {
 			markTransient(state, item, cause)
 		} else {
 			markDefinitive(state, item)
 		}
+		// External SDK errors may contain upstream response details. Keep those
+		// in diagnostics only; history is returned to the UI and notifications.
+		errMsg = "下单阶段失败，请稍后重试"
 	} else {
 		markDefinitive(state, item)
 	}
@@ -141,7 +145,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		if errors.Is(err, app.ErrQueueCheckoutInProgress) {
 			state.Logger.Info("任务 "+item.ID+" 已有进行中的购买流程，跳过重复启动", "purchase")
 		} else {
-			state.Logger.Warn("任务 "+item.ID+" 缺少有效账户或身份已失效，安全跳过购买: "+err.Error(), "purchase")
+			state.Logger.Warn("任务 "+item.ID+" 缺少有效账户或身份已失效，安全跳过购买", "purchase")
 		}
 		return false
 	}
@@ -156,7 +160,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 
 	client, err := state.OVH.ClientFor(resolvedAccountID)
 	if err != nil {
-		state.Logger.Error("PurchaseServer: 取 OVH client 失败 ("+resolvedAccountID+"): "+err.Error(), "purchase")
+		state.Logger.Error("PurchaseServer: OVH client 初始化失败（账户 "+resolvedAccountID+"）", "purchase")
 		return false
 	}
 	// SDK 的 NewRequest 在签名阶段可能先读取 OVH 时间，单纯依赖
@@ -197,8 +201,8 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	q.Set("planCode", item.PlanCode)
 	if err := get("/dedicated/server/datacenter/availabilities?"+q.Encode(), &availabilities); err != nil {
 		tl.mark("查库存")
-		errMsg := err.Error()
-		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, errMsg), "purchase")
+		errMsg := "查询库存失败，请稍后重试"
+		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, ovh.ErrorSummary(err)), "purchase")
 		recordStageFailure(state, item, errMsg, err, tl)
 		return false
 	}
@@ -267,15 +271,15 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		"ovhSubsidiary": subsidiary,
 	}, &cartResult); err != nil {
 		tl.mark("创建购物车")
-		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
-		recordStageFailure(state, item, err.Error(), err, tl)
+		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, ovh.ErrorSummary(err)), "purchase")
+		recordStageFailure(state, item, "创建购物车失败，请稍后重试", err, tl)
 		return false
 	}
 	tl.mark("创建购物车")
 	cartID, _ = cartResult["cartId"].(string)
 	if strings.TrimSpace(cartID) == "" {
 		tl.mark("创建购物车")
-		errMsg := fmt.Sprintf("创建购物车成功但响应缺少 cartId（响应: %v）", cartResult)
+		errMsg := "创建购物车成功但响应缺少 cartId"
 		state.Logger.Error(errMsg, "purchase")
 		recordStageFailure(state, item, errMsg, nil, tl)
 		return false
@@ -294,7 +298,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := client.DeleteWithContext(cleanupCtx, "/order/cart/"+cartID, nil); err != nil {
-			state.Logger.Debug(fmt.Sprintf("清理失败 cart %s: %s", cartID, err.Error()), "purchase")
+			state.Logger.Debug(fmt.Sprintf("清理失败 cart %s: %s", cartID, ovh.ErrorSummary(err)), "purchase")
 		} else {
 			state.Logger.Debug("已清理失败 cart "+cartID, "purchase")
 		}
@@ -306,8 +310,8 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	state.Logger.Info("绑定购物车 "+cartID, "purchase")
 	if err := post("/order/cart/"+cartID+"/assign", map[string]interface{}{}, nil); err != nil {
 		tl.mark("绑定购物车")
-		errMsg := err.Error()
-		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, errMsg), "purchase")
+		errMsg := "绑定购物车失败，请稍后重试"
+		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, ovh.ErrorSummary(err)), "purchase")
 		state.Logger.Error("错误发生时的购物车ID: "+cartID, "purchase")
 		recordStageFailure(state, item, errMsg, err, tl)
 		return false
@@ -320,9 +324,9 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	itemResult, baseDuration, basePricingMode, err := price.AddBaseEcoItem(ctx, client, cartID, item.PlanCode)
 	if err != nil {
 		tl.mark("添加基础商品")
-		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
+		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, ovh.ErrorSummary(err)), "purchase")
 		state.Logger.Error(fmt.Sprintf("错误发生时的购物车ID: %s", cartID), "purchase")
-		recordStageFailure(state, item, err.Error(), err, tl)
+		recordStageFailure(state, item, "添加基础商品失败，请稍后重试", err, tl)
 		return false
 	}
 	if baseDuration != "P1M" || basePricingMode != "default" {
@@ -334,7 +338,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	}
 	if itemID == 0 {
 		tl.mark("添加基础商品")
-		errMsg := fmt.Sprintf("无法从购物车响应中解析 itemId（响应: %v）", itemResult)
+		errMsg := "无法从购物车响应中解析 itemId"
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生未知错误: %s", item.PlanCode, errMsg), "purchase")
 		state.Logger.Error("错误发生时的购物车ID: "+cartID, "purchase")
 		recordStageFailure(state, item, errMsg, nil, tl)
@@ -360,7 +364,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		// 对应 Python: 查 requiredConfiguration 看 region 是否必填
 		var required []map[string]interface{}
 		if err := get(fmt.Sprintf("/order/cart/%s/item/%d/requiredConfiguration", cartID, itemID), &required); err != nil {
-			state.Logger.Warn(fmt.Sprintf("获取必需配置失败或区域为必需但未确定: %s", err.Error()), "purchase")
+			state.Logger.Warn(fmt.Sprintf("获取必需配置失败或区域为必需但未确定: %s", ovh.ErrorSummary(err)), "purchase")
 		} else {
 			for _, conf := range required {
 				if label, _ := conf["label"].(string); label == "region" {
@@ -388,8 +392,8 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	}
 	for _, c := range configurations {
 		if err := postConfig(c.label, c.value); err != nil {
-			errMsg := err.Error()
-			state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误(%s): %s", item.PlanCode, c.label, errMsg), "purchase")
+			errMsg := "设置必需配置失败，请稍后重试"
+			state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误(%s): %s", item.PlanCode, c.label, ovh.ErrorSummary(err)), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的购物车ID: %s", cartID), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的基础商品ID: %d", itemID), "purchase")
 			tl.mark("配置参数")
@@ -433,8 +437,8 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 			q.Set("planCode", item.PlanCode)
 			if err := get(fmt.Sprintf("/order/cart/%s/eco/options?%s", cartID, q.Encode()), &availableEcoOpts); err != nil {
 				// 拉 eco/options 失败 → 中止订单。否则会用基础 plan 默认存储（多半是 HDD）下到错误配置
-				errMsg := fmt.Sprintf("获取 Eco 硬件选项列表失败: %s（用户指定了 %d 个选项，无法验证，已取消下单避免下到错误配置）", err.Error(), len(filtered))
-				state.Logger.Error(errMsg, "purchase")
+				errMsg := fmt.Sprintf("获取 Eco 硬件选项列表失败（用户指定了 %d 个选项，无法验证，已取消下单避免下到错误配置）", len(filtered))
+				state.Logger.Error(errMsg+": "+ovh.ErrorSummary(err), "purchase")
 				tl.mark("硬件选项")
 				recordStageFailure(state, item, errMsg, err, tl)
 				return false
@@ -457,7 +461,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 				duration, pricingMode, validPricing := price.PickEcoCartPricing(avail["prices"], baseDuration)
 				if !validPricing {
 					if baseDuration != "P1M" || basePricingMode != "default" {
-						errMsg := fmt.Sprintf("硬件选项 %s 缺少与基础商品匹配的有效计价", matchedCode)
+						errMsg := "硬件选项缺少有效计价，已取消下单避免下到错误配置"
 						state.Logger.Error(errMsg, "purchase")
 						tl.mark("硬件选项")
 						recordStageFailure(state, item, errMsg, nil, tl)
@@ -481,7 +485,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 				state.Logger.Debug(fmt.Sprintf("Eco 选项 %s 匹配为 %s (%s)", wanted, matchedCode, tier), "purchase")
 			}
 			if len(missing) > 0 {
-				errMsg := fmt.Sprintf("用户请求的硬件选项 %v 未在 OVH 可用 Eco 选项中找到（已取消下单避免下到错误配置）", missing)
+				errMsg := "请求的硬件选项不可用，已取消下单避免下到错误配置"
 				state.Logger.Error(errMsg, "purchase")
 				tl.mark("硬件选项")
 				recordStageFailure(state, item, errMsg, nil, tl)
@@ -493,8 +497,8 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 			state.Logger.Info(fmt.Sprintf("串行添加 %d 个 Eco 选项: %v", len(todo), filtered), "purchase")
 			for _, t := range todo {
 				if err := post(fmt.Sprintf("/order/cart/%s/eco/options", cartID), t.body, nil); err != nil {
-					state.Logger.Error(fmt.Sprintf("添加 Eco 选项 %s 失败: %s", t.planCode, err.Error()), "purchase")
-					errMsg := fmt.Sprintf("添加 Eco 选项 %s 失败: %s（已取消下单避免下到错误配置）", t.planCode, err.Error())
+					errMsg := fmt.Sprintf("添加 Eco 选项 %s 失败（已取消下单避免下到错误配置）", t.planCode)
+					state.Logger.Error(errMsg+": "+ovh.ErrorSummary(err), "purchase")
 					tl.mark("硬件选项")
 					recordStageFailure(state, item, errMsg, err, tl)
 					return false
@@ -547,12 +551,12 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 			// 继续创建新购物车或重复下单。
 			state.Logger.Warn("任务已有 checkout 恢复记录，停止自动重试并隔离等待人工核对: "+item.ID, "purchase")
 			if quarantineErr := state.QuarantineQueueItem(item.ID); quarantineErr != nil {
-				state.Logger.Error("隔离已有 checkout 恢复记录的任务失败: "+quarantineErr.Error(), "purchase")
+				state.Logger.Error("隔离已有 checkout 恢复记录的任务失败", "purchase")
 			}
 			return false
 		}
-		errMsg := fmt.Sprintf("无法记录 checkout 防重复保护: %s", err)
-		state.Logger.Error(errMsg, "purchase")
+		errMsg := "无法记录 checkout 防重复保护，请联系管理员"
+		state.Logger.Error("无法记录 checkout 防重复保护", "purchase")
 		// 这是 checkout 闸门/本地持久化错误，不属于可安全重试的 OVH 阶段。
 		markDefinitive(state, item)
 		tl.mark("结账")
@@ -563,7 +567,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	// checkout 闸门已登记后若上下文被取消，checkout 尚未发出，可安全清理 attempt。
 	if ctx.Err() != nil {
 		if removeErr := state.CancelCheckoutAttemptBeforeRequest(item.ID); removeErr != nil {
-			state.Logger.Warn("取消 checkout 时清理防重复记录失败: "+removeErr.Error(), "purchase")
+			state.Logger.Warn("取消 checkout 时清理防重复记录失败", "purchase")
 		}
 		state.Logger.Info("任务 "+item.ID+" 在最终结账检查时已取消，取消 checkout", "purchase")
 		timingOutcome = "cancelled"
@@ -571,7 +575,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	}
 	if err := client.PostWithContext(ctx, "/order/cart/"+cartID+"/checkout", checkoutPayload, &checkoutResult); err != nil {
 		tl.mark("结账")
-		errMsg := err.Error()
+		errMsg := "结账失败，请稍后重试"
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, errMsg), "purchase")
 		// 只有 OVH 明确拒绝 checkout 的客户端错误，才能删除 attempt 并允许
 		// 重试。5xx/超时/冲突/连接中断都可能发生在请求已被接收之后，结果
@@ -579,14 +583,14 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		definitiveFailure := checkoutFailureIsDefinitive(err)
 		if definitiveFailure {
 			if removeErr := state.FinishCheckoutHTTPError(item.ID); removeErr != nil {
-				state.Logger.Warn("checkout 明确失败，但清理防重复记录失败: "+removeErr.Error(), "purchase")
+				state.Logger.Warn("checkout 明确失败，但清理防重复记录失败", "purchase")
 			}
 		} else {
 			preserveCart = true
 			if quarantineErr := state.QuarantineQueueItemDuringCheckout(item.ID); quarantineErr != nil {
-				state.Logger.Error("checkout 结果不确定，隔离队列任务落盘失败（本进程仍已阻止重试）: "+quarantineErr.Error(), "purchase")
+				state.Logger.Error("checkout 结果不确定，隔离队列任务落盘失败（本进程仍已阻止重试）", "purchase")
 			}
-			errMsg = "checkout 结果不确定，已停止自动重试并保留购物车供人工核查: " + errMsg
+			errMsg = "checkout 结果不确定，已停止自动重试并保留购物车供人工核查"
 			state.Logger.Warn(errMsg+"（任务 "+item.ID+"，购物车 "+cartID+"）", "purchase")
 		}
 		if definitiveFailure {
@@ -609,7 +613,7 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		// checkout_attempt，也不能让任务自动重试，否则可能重复下单。
 		preserveCart = true
 		if quarantineErr := state.QuarantineQueueItemDuringCheckout(item.ID); quarantineErr != nil {
-			state.Logger.Error("checkout 未返回订单号，隔离队列任务失败（本进程仍会保留 attempt）: "+quarantineErr.Error(), "purchase")
+			state.Logger.Error("checkout 未返回订单号，隔离队列任务失败（本进程仍会保留 attempt）", "purchase")
 		}
 		errMsg := "checkout 已返回成功但未提供订单号，结果不确定，已停止自动重试并保留购物车供人工核查"
 		state.Logger.Warn(errMsg+"（任务 "+item.ID+"，购物车 "+cartID+"）", "purchase")
@@ -621,12 +625,12 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	success = true
 	timingOutcome = "ordered"
 	if err := state.DB.CompleteCheckoutAttempt(item.ID, orderID, orderURL); err != nil {
-		state.Logger.Warn("checkout 成功但无法更新订单恢复记录，尝试安全补写: "+err.Error(), "purchase")
+		state.Logger.Warn("checkout 成功但无法更新订单恢复记录，尝试安全补写", "purchase")
 		if ensureErr := state.DB.EnsureCheckoutAttemptCompleted(*item, cartID, orderID, orderURL); ensureErr != nil {
 			// 后续成功事务仍会尝试原子写历史并删除队列。若它也失败，
 			// 进程内隔离标记会阻止自动重试；这里输出最高优先级日志，
 			// 提醒人工按订单号核对恢复记录异常。
-			state.Logger.Error("checkout 成功但无法补写订单恢复记录: "+ensureErr.Error()+"（订单 "+orderID+"）", "purchase")
+			state.Logger.Error("checkout 成功但无法补写订单恢复记录（订单 "+orderID+"）", "purchase")
 		}
 	}
 
@@ -642,9 +646,14 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		return false
 	}
 
-	// 异步补:从 /me/order/{orderID} 读 expirationDate + 价格,写回 history
+	// 异步补全 /me/order/{orderID} 的 expirationDate + 价格，但纳入
+	// State 的后台任务组，停机时会取消并等待后再保存/关闭数据库。
 	if orderID != "" {
-		go backfillOrderDetail(state, client, item.ID, orderID, tl)
+		if !state.GoBackground(func(backgroundCtx context.Context) {
+			backfillOrderDetail(backgroundCtx, state, client, item.ID, orderID, tl)
+		}) {
+			state.Logger.Warn("后台订单详情补全未启动：应用正在关闭", "purchase")
+		}
 	}
 
 	state.Logger.Info(fmt.Sprintf("成功购买 %s 在 %s (订单ID: %s, URL: %s)",
@@ -741,7 +750,7 @@ func recordSuccess(ctx context.Context, state *app.State, item *types.QueueItem,
 	if notificationErr != nil {
 		// 订单成功状态的原子落盘优先级高于通知。通知载荷构造失败时记录
 		// 明确错误，但不能因此让已成功的 checkout 留在可重试队列。
-		state.Logger.Error("构造抢购成功通知失败，将只保存订单成功状态: "+notificationErr.Error(), "purchase")
+		state.Logger.Error("构造抢购成功通知失败，将只保存订单成功状态", "purchase")
 		notification = nil
 	}
 	for attempt := 1; attempt <= purchaseSuccessPersistAttempts; attempt++ {
@@ -753,12 +762,11 @@ func recordSuccess(ctx context.Context, state *app.State, item *types.QueueItem,
 				// 冲突不是可重试的数据库瞬时错误。原成功历史必须保留，
 				// 新 checkout attempt 也不能删除；仅把残留队列任务隔离。
 				if quarantineErr := state.QuarantineQueueItemDuringCheckout(item.ID); quarantineErr != nil {
-					state.Logger.Error("订单冲突后隔离队列任务失败（checkout 记录仍保留）: "+quarantineErr.Error(), "purchase")
+					state.Logger.Error("订单冲突后隔离队列任务失败（checkout 记录仍保留）", "purchase")
 				}
 				return false, err
 			}
-			state.Logger.Error(fmt.Sprintf("订单已创建，但持久化成功状态失败（%d/%d）: %s",
-				attempt, purchaseSuccessPersistAttempts, err), "purchase")
+			state.Logger.Error(fmt.Sprintf("订单已创建，但持久化成功状态失败（%d/%d）", attempt, purchaseSuccessPersistAttempts), "purchase")
 			if attempt == purchaseSuccessPersistAttempts {
 				break
 			}
@@ -813,16 +821,19 @@ func recordHistoryStatus(state *app.State, item *types.QueueItem, status, errMsg
 		}
 		return append(history, entry), nil
 	}); err != nil {
-		state.Logger.Error("保存抢购历史状态失败: "+err.Error(), "purchase")
+		state.Logger.Error("保存抢购历史状态失败", "purchase")
 	}
 }
 
 // backfillOrderDetail 下单成功后异步补 history 行的 expirationTime + price。
 // 不阻塞 PurchaseServer 主流程,即便这一步失败 history 也已经标 success(只是少了价格 / 过期时间)。
 // 在独立 goroutine 跑,持有 OVH client 引用,只 read /me/order/{orderID}。
-func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderID string, timing *timeline) {
+func backfillOrderDetail(parent context.Context, state *app.State, client *ovhsdk.Client, taskID, orderID string, timing *timeline) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	// 订单详情是辅助信息，不应让进程停机时的后台 goroutine 无限等待。
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
 	var orderInfo map[string]interface{}
 	if err := client.GetWithContext(ctx, "/me/order/"+orderID, &orderInfo); err != nil {
@@ -830,7 +841,7 @@ func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderI
 			timing.mark("补全订单详情")
 			recordTimingToHistory(state, taskID, timing)
 		}
-		state.Logger.Warn(fmt.Sprintf("异步查询订单 %s 详情失败: %s", orderID, err.Error()), "purchase")
+		state.Logger.Warn(fmt.Sprintf("异步查询订单 %s 详情失败: %s", orderID, ovh.ErrorSummary(err)), "purchase")
 		return
 	}
 	if timing != nil {
@@ -900,7 +911,7 @@ func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderI
 		return history, nil
 	})
 	if err != nil {
-		state.Logger.Warn("补全订单 "+orderID+" 详情落盘失败: "+err.Error(), "purchase")
+		state.Logger.Warn("补全订单 "+orderID+" 详情落盘失败", "purchase")
 	} else if changed {
 		state.Logger.Info(fmt.Sprintf("补全订单 %s 详情: 过期时间=%q 价格=%v",
 			orderID, expirationTime, priceInfo != nil), "purchase")

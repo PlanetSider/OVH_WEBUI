@@ -1,6 +1,6 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   Cloud, Power, PowerOff, RefreshCw, Monitor, KeyRound, HardDrive, Cpu, MemoryStick,
   MapPin, Globe, CalendarClock, CalendarPlus, Repeat, Eye, EyeOff,
@@ -41,13 +41,15 @@ import { RenewalDialog } from "@/components/server-control/RenewalDialog";
 import { EngagementDialog, type EngagementHooks } from "@/components/server-control/EngagementDialog";
 import { toast } from "sonner";
 
+const EMPTY_VPS: OwnedVps[] = [];
+
 function VpsControlPage() {
   const q = useOwnedVps();
   const { hidden, toggle } = useHideIp();
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [activeAccount, setActiveAccount] = useActiveServerControlAccount();
   const { data: accounts } = useAccounts();
-  const vpsList = q.data || [];
+  const vpsList = q.data ?? EMPTY_VPS;
 
   useEffect(() => {
     if (!activeAccount && accounts && accounts.length > 0) {
@@ -57,16 +59,11 @@ function VpsControlPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accounts]);
 
+  // Keep the selection in the current account's list, including after deletions.
   useEffect(() => {
-    setSelectedName(null);
-  }, [activeAccount]);
-
-  // 自动选第一台
-  useEffect(() => {
-    if (!selectedName && vpsList.length > 0) {
-      setSelectedName(vpsList[0].serviceName);
-    }
-  }, [vpsList, selectedName]);
+    setSelectedName((previous) => vpsList.some((v) => v.serviceName === previous)
+      ? previous : (vpsList[0]?.serviceName ?? null));
+  }, [vpsList]);
 
   const selected = vpsList.find((v) => v.serviceName === selectedName) || null;
   const aliases = useServerAliases();
@@ -140,7 +137,18 @@ function VpsControlPage() {
       </Card>
 
       {/* 内容区 */}
-      {!q.isPending && vpsList.length === 0 ? (
+      {q.isError && q.data && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border border-destructive/40 p-3 text-sm">
+          <span>VPS 列表刷新失败，正在显示上次数据</span>
+          <Button variant="outline" size="sm" onClick={() => void q.refetch()} disabled={q.isFetching}>重试</Button>
+        </div>
+      )}
+      {q.isError && !q.data ? (
+        <div role="alert" className="space-y-3 py-8 text-center">
+          <p>VPS 列表加载失败</p>
+          <Button variant="outline" onClick={() => void q.refetch()}>重试</Button>
+        </div>
+      ) : !q.isPending && vpsList.length === 0 ? (
         <Card>
           <CardContent className="py-12">
             <EmptyState icon={Cloud} title="该账户下暂无 VPS" description="可以去 OVH 官网下单,或换个有 VPS 的账户" />
@@ -148,6 +156,7 @@ function VpsControlPage() {
         </Card>
       ) : selected ? (
         <VpsDetail
+          key={`${activeAccount}:${selected.serviceName}`}
           server={selected}
           aliases={aliases}
           onSetAlias={setAlias}
@@ -276,10 +285,8 @@ function VpsDetail({
   };
   const handleTerminate = async () => {
     try {
-      const res = await terminate.mutateAsync({ serviceName: server.serviceName });
+      await terminate.mutateAsync({ serviceName: server.serviceName });
       toast.success("终止请求已提交,请查邮件获取 token");
-      // 服务端响应里会带 token,但实际操作 OVH 用邮件 token 才能真正确认,这里保留邮件 token 输入
-      console.log("[VPS] terminate response:", res);
     } catch (e: any) {
       toast.error(e?.response?.data?.error || "提交失败");
     }
@@ -500,7 +507,16 @@ function VpsDetail({
           <div className="border border-border rounded-2xl p-4 space-y-3">
             <h3 className="text-sm font-semibold">服务器别名</h3>
             <p className="text-[12px] text-muted-foreground">本地别名,不影响 OVH 真实名(`{server.serviceName}`)</p>
-            <AliasEditor serviceName={server.serviceName} aliases={aliases} onSetAlias={onSetAlias} />
+            {aliases.isError && (
+              <p role="alert" className="text-xs text-destructive">别名刷新失败，正在显示上次数据。</p>
+            )}
+            {aliases.data !== undefined ? (
+              <AliasEditor serviceName={server.serviceName} aliases={aliases} onSetAlias={onSetAlias} />
+            ) : aliases.isError ? (
+              <Button variant="outline" size="sm" onClick={() => void aliases.refetch()}>重试加载别名</Button>
+            ) : (
+              <Skeleton className="h-10" />
+            )}
           </div>
 
           {!isUS ? (
@@ -724,6 +740,7 @@ function ChangeContactInline({
   const [admin, setAdmin] = useState("");
   const [tech, setTech] = useState("");
   const [billing, setBilling] = useState("");
+  const formId = useId();
 
   const handleSubmit = async () => {
     if (!admin && !tech && !billing) {
@@ -753,16 +770,16 @@ function ChangeContactInline({
       </DialogHeader>
       <div className="space-y-3 py-1">
         <div>
-          <label className="text-[12px] font-semibold block mb-1.5">Admin 联系人</label>
-          <Input value={admin} onChange={(e) => setAdmin(e.target.value)} placeholder="ab12345-ovh 或 someone@example.com" />
+          <label htmlFor={`${formId}-admin`} className="text-[12px] font-semibold block mb-1.5">Admin 联系人</label>
+          <Input id={`${formId}-admin`} value={admin} onChange={(e) => setAdmin(e.target.value)} placeholder="ab12345-ovh 或 someone@example.com" />
         </div>
         <div>
-          <label className="text-[12px] font-semibold block mb-1.5">Tech 联系人</label>
-          <Input value={tech} onChange={(e) => setTech(e.target.value)} placeholder="ab12345-ovh 或邮箱" />
+          <label htmlFor={`${formId}-tech`} className="text-[12px] font-semibold block mb-1.5">Tech 联系人</label>
+          <Input id={`${formId}-tech`} value={tech} onChange={(e) => setTech(e.target.value)} placeholder="ab12345-ovh 或邮箱" />
         </div>
         <div>
-          <label className="text-[12px] font-semibold block mb-1.5">Billing 联系人</label>
-          <Input value={billing} onChange={(e) => setBilling(e.target.value)} placeholder="ab12345-ovh 或邮箱" />
+          <label htmlFor={`${formId}-billing`} className="text-[12px] font-semibold block mb-1.5">Billing 联系人</label>
+          <Input id={`${formId}-billing`} value={billing} onChange={(e) => setBilling(e.target.value)} placeholder="ab12345-ovh 或邮箱" />
         </div>
         <p className="text-[11px] text-muted-foreground">留空保持原联系人;待审请求可在 server-control 页面统一管理</p>
       </div>

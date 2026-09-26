@@ -1,13 +1,17 @@
 package ovh
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	ovhsdk "github.com/ovh/go-ovh/ovh"
 
 	"github.com/ovh-webui/server/internal/types"
 )
@@ -19,6 +23,19 @@ type testProxyReporter struct {
 
 func (r *testProxyReporter) ReportFailure(string, error) { r.failures++ }
 func (r *testProxyReporter) ReportSuccess(string)        { r.success++ }
+
+func TestErrorSummaryDoesNotExposeProviderText(t *testing.T) {
+	apiErr := fmt.Errorf("wrapped provider body: %w", &ovhsdk.APIError{Code: 400})
+	if got := ErrorSummary(apiErr); got != "OVH API 请求失败（HTTP 400）" {
+		t.Fatalf("API error summary = %q", got)
+	}
+	if got := ErrorSummary(errors.New("response body contains api-secret")); got != "OVH 请求失败" {
+		t.Fatalf("unknown error summary = %q", got)
+	}
+	if got := ErrorSummary(context.Canceled); got != "请求已取消" {
+		t.Fatalf("cancellation summary = %q", got)
+	}
+}
 
 func TestValidateProxyURL(t *testing.T) {
 	valid := []string{"", "http://127.0.0.1:8080", "https://proxy.example:443", "socks5://u:p@127.0.0.1:1080", "socks5h://127.0.0.1:1080"}

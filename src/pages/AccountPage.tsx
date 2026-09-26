@@ -25,6 +25,12 @@ function AccountPage() {
     <div className="space-y-6">
       <PageHeader icon={User} title="账户管理" description="查看和管理您的 OVH 账户信息" />
 
+      {info.isError && (
+        <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-destructive">
+          <span>{info.data ? "账户信息刷新失败，当前显示上次成功加载的数据" : "账户信息加载失败"}</span>
+          <Button variant="outline" size="sm" onClick={() => void info.refetch()} disabled={info.isFetching}>重试</Button>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <KpiCard
           icon={User}
@@ -32,6 +38,7 @@ function AccountPage() {
           value={info.data?.customerCode}
           sub={info.data?.nichandle}
           loading={info.isPending}
+          error={info.isError && !info.data}
           badge={
             info.data && (
               <Chip tone={info.data.kycValidated ? "success" : "warning"}>
@@ -41,13 +48,14 @@ function AccountPage() {
             )
           }
         />
-        <KpiCard icon={Mail} label="邮箱" value={info.data?.email} loading={info.isPending} />
+        <KpiCard icon={Mail} label="邮箱" value={info.data?.email} loading={info.isPending} error={info.isError && !info.data} />
         <KpiCard
           icon={User}
           label="账户持有人"
           value={info.data ? `${info.data.firstname ?? ""} ${info.data.name ?? ""}`.trim() : undefined}
           sub={info.data?.city && info.data?.country ? `${info.data.city}, ${info.data.country}` : undefined}
           loading={info.isPending}
+          error={info.isError && !info.data}
         />
       </div>
 
@@ -77,6 +85,7 @@ function KpiCard({
   value,
   sub,
   loading,
+  error,
   badge,
 }: {
   icon: LucideIcon;
@@ -84,6 +93,7 @@ function KpiCard({
   value?: string;
   sub?: string;
   loading?: boolean;
+  error?: boolean;
   badge?: React.ReactNode;
 }) {
   return (
@@ -99,6 +109,8 @@ function KpiCard({
           </div>
           {loading ? (
             <Skeleton className="h-6 w-32 mt-1" />
+          ) : error ? (
+            <p className="text-sm text-destructive mt-1">加载失败</p>
           ) : (
             <p className="text-lg font-bold truncate" title={value}>{value || "—"}</p>
           )}
@@ -106,6 +118,38 @@ function KpiCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function QueryFailure({
+  icon,
+  title,
+  stale = false,
+  loading,
+  onRetry,
+}: {
+  icon: LucideIcon;
+  title: string;
+  stale?: boolean;
+  loading: boolean;
+  onRetry: () => void;
+}) {
+  if (stale) {
+    return (
+      <div role="alert" className="flex flex-wrap items-center gap-3 p-4 text-sm text-destructive">
+        <span>刷新失败，当前显示上次成功加载的数据</span>
+        <Button variant="outline" size="sm" onClick={onRetry} disabled={loading}>重试</Button>
+      </div>
+    );
+  }
+  return (
+    <div role="alert">
+      <EmptyState
+        icon={icon}
+        title={title}
+        action={<Button variant="outline" onClick={onRetry} disabled={loading}>重试</Button>}
+      />
+    </div>
   );
 }
 
@@ -123,10 +167,15 @@ function EmailsTab() {
             刷新
           </Button>
         </div>
-        {emails.isPending ? (
+        {emails.isError && emails.data && (
+          <QueryFailure icon={Inbox} title="邮件历史加载失败" stale loading={emails.isFetching} onRetry={() => void emails.refetch()} />
+        )}
+        {emails.isPending || (emails.isFetching && !emails.data) ? (
           <div className="p-4 space-y-2">
             {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-xl" />)}
           </div>
+        ) : emails.isError && !emails.data ? (
+          <QueryFailure icon={Inbox} title="邮件历史加载失败" loading={emails.isFetching} onRetry={() => void emails.refetch()} />
         ) : (emails.data || []).length === 0 ? (
           <EmptyState icon={Inbox} title="暂无邮件" />
         ) : (
@@ -196,12 +245,17 @@ function OrdersTab() {
             刷新
           </Button>
         </div>
-        {orders.isPending ? (
+        {orders.isError && orders.data && (
+          <QueryFailure icon={ShoppingCart} title="订单记录加载失败" stale loading={orders.isFetching} onRetry={() => void orders.refetch()} />
+        )}
+        {orders.isPending || (orders.isFetching && !orders.data) ? (
           <div className="space-y-2">
             {Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-16 rounded-xl" />
             ))}
           </div>
+        ) : orders.isError && !orders.data ? (
+          <QueryFailure icon={ShoppingCart} title="订单记录加载失败" loading={orders.isFetching} onRetry={() => void orders.refetch()} />
         ) : (orders.data || []).length === 0 ? (
           <EmptyState icon={ShoppingCart} title="暂无订单记录" />
         ) : (
@@ -276,10 +330,15 @@ function RefundsTab() {
             刷新
           </Button>
         </div>
-        {refunds.isPending ? (
+        {refunds.isError && refunds.data && (
+          <QueryFailure icon={Inbox} title="退款记录加载失败" stale loading={refunds.isFetching} onRetry={() => void refunds.refetch()} />
+        )}
+        {refunds.isPending || (refunds.isFetching && !refunds.data) ? (
           <div className="space-y-2">
             {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)}
           </div>
+        ) : refunds.isError && !refunds.data ? (
+          <QueryFailure icon={Inbox} title="退款记录加载失败" loading={refunds.isFetching} onRetry={() => void refunds.refetch()} />
         ) : (refunds.data || []).length === 0 ? (
           <EmptyState icon={Inbox} title="暂无退款记录" />
         ) : (

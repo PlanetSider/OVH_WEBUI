@@ -26,7 +26,7 @@ func GetBurst(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "该服务器不支持突发带宽功能", "notAvailable": true})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "burst": burst})
@@ -45,7 +45,9 @@ func UpdateBurst(state *app.State) gin.HandlerFunc {
 		var body struct {
 			Status string `json:"status"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.Status == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少status参数"})
 			return
@@ -54,7 +56,7 @@ func UpdateBurst(state *app.State) gin.HandlerFunc {
 		if err := client.Put("/dedicated/server/"+svc+"/burst", map[string]interface{}{
 			"status": body.Status,
 		}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		state.Logger.Info("更新服务器 "+svc+" 突发带宽状态为: "+body.Status, "server_control")
@@ -78,7 +80,7 @@ func GetFirewall(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "该服务器不支持防火墙功能", "notAvailable": true})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "firewall": fw})
@@ -97,7 +99,9 @@ func UpdateFirewall(state *app.State) gin.HandlerFunc {
 		var body struct {
 			Enabled *bool `json:"enabled"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.Enabled == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少enabled参数"})
 			return
@@ -106,7 +110,7 @@ func UpdateFirewall(state *app.State) gin.HandlerFunc {
 		if err := client.Put("/dedicated/server/"+svc+"/features/firewall", map[string]interface{}{
 			"enabled": *body.Enabled,
 		}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		text := "启用"
@@ -133,7 +137,7 @@ func GetBackupFTP(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "备份FTP未激活", "notActivated": true})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "backupFtp": d})
@@ -157,11 +161,11 @@ func ActivateBackupFTP(state *app.State) gin.HandlerFunc {
 					"success":      false,
 					"error":        "该服务器无法使用备份FTP服务",
 					"notAvailable": true,
-					"reason":       err.Error(),
+					"reason":       "该服务器无法使用备份FTP服务",
 				})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		state.Logger.Info("激活服务器 "+svc+" 备份FTP成功", "server_control")
@@ -180,7 +184,7 @@ func DeleteBackupFTP(state *app.State) gin.HandlerFunc {
 		}
 		var result map[string]interface{}
 		if err := client.Delete("/dedicated/server/"+svc+"/features/backupFTP", &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		state.Logger.Info("删除服务器 "+svc+" 备份FTP成功", "server_control")
@@ -199,7 +203,7 @@ func GetBackupFTPAccess(state *app.State) gin.HandlerFunc {
 		}
 		var blocks []string
 		if err := client.Get("/dedicated/server/"+svc+"/features/backupFTP/access", &blocks); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		// 并发拉每个 IP block 的详情
@@ -233,7 +237,9 @@ func AddBackupFTPAccess(state *app.State) gin.HandlerFunc {
 			NFS     bool   `json:"nfs"`
 			CIFS    bool   `json:"cifs"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.IPBlock == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少ipBlock参数"})
 			return
@@ -249,7 +255,7 @@ func AddBackupFTPAccess(state *app.State) gin.HandlerFunc {
 			"ipBlock": body.IPBlock,
 			"nfs":     body.NFS,
 		}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		state.Logger.Info("添加备份FTP访问IP "+body.IPBlock+" 成功", "server_control")
@@ -268,7 +274,7 @@ func DeleteBackupFTPAccess(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := client.Delete("/dedicated/server/"+svc+"/features/backupFTP/access/"+ipBlock, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		state.Logger.Info("删除备份FTP访问IP "+ipBlock+" 成功", "server_control")
@@ -287,7 +293,7 @@ func ChangeBackupFTPPassword(state *app.State) gin.HandlerFunc {
 		}
 		var result map[string]interface{}
 		if err := client.Post("/dedicated/server/"+svc+"/features/backupFTP/password", map[string]interface{}{}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		state.Logger.Info("修改服务器 "+svc+" 备份FTP密码成功", "server_control")
@@ -306,7 +312,7 @@ func GetBackupFTPAuthorizableBlocks(state *app.State) gin.HandlerFunc {
 		}
 		var blocks []string
 		if err := client.Get("/dedicated/server/"+svc+"/features/backupFTP/authorizableBlocks", &blocks); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "blocks": blocks})
@@ -328,7 +334,7 @@ func GetBackupCloud(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "云备份未激活", "notActivated": true})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "backupCloud": d})
@@ -346,7 +352,7 @@ func GetBackupCloudOfferDetails(state *app.State) gin.HandlerFunc {
 		}
 		var d map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/backupCloudOfferDetails", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器特性请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "offerDetails": d})

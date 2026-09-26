@@ -17,7 +17,6 @@ func testAccount(id, createdAt string, isDefault bool) types.OVHAccount {
 	}
 }
 
-
 func TestMigrateAccountSecretsEncryptsLegacyValues(t *testing.T) {
 	database, err := Open(t.TempDir())
 	if err != nil {
@@ -35,7 +34,7 @@ func TestMigrateAccountSecretsEncryptsLegacyValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	var raw struct {
-		AppKey  string `db:"app_key"`
+		AppKey   string `db:"app_key"`
 		ProxyURL string `db:"proxy_url"`
 	}
 	if err := database.Get(&raw, `SELECT app_key, proxy_url FROM ovh_accounts WHERE id = ?`, account.ID); err != nil {
@@ -136,6 +135,9 @@ func TestDeleteAccountRejectsUnresolvedCheckoutAndRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := database.RecordCheckoutAttempt(queue[0], "cart-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteCheckoutAttempt("task-a", "order-a", "https://orders.invalid/order-a"); err != nil {
 		t.Fatal(err)
 	}
 

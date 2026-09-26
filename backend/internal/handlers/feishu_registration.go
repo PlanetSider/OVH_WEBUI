@@ -54,6 +54,8 @@ type feishuRegistrationResponse struct {
 	} `json:"user_info"`
 }
 
+const maxFeishuRegistrationResponseBytes = 1 << 20
+
 func callFeishuRegistration(endpoint string, values url.Values) (feishuRegistrationResponse, error) {
 	if endpoint != feishuRegistrationURL && endpoint != larkRegistrationURL {
 		return feishuRegistrationResponse{}, fmt.Errorf("不受信任的飞书注册端点")
@@ -69,7 +71,13 @@ func callFeishuRegistration(endpoint string, values url.Values) (feishuRegistrat
 		return feishuRegistrationResponse{}, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxFeishuRegistrationResponseBytes+1))
+	if err != nil {
+		return feishuRegistrationResponse{}, fmt.Errorf("读取飞书注册接口响应失败")
+	}
+	if len(raw) > maxFeishuRegistrationResponseBytes {
+		return feishuRegistrationResponse{}, fmt.Errorf("飞书注册接口响应过大")
+	}
 	var result feishuRegistrationResponse
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return result, fmt.Errorf("飞书注册接口返回了无效数据")
@@ -80,11 +88,7 @@ func callFeishuRegistration(endpoint string, values url.Values) (feishuRegistrat
 		if result.Error != "" {
 			return result, nil
 		}
-		message := result.ErrorDescription
-		if message == "" {
-			message = fmt.Sprintf("HTTP %d", resp.StatusCode)
-		}
-		return result, fmt.Errorf("飞书注册接口失败：%s", message)
+		return result, fmt.Errorf("飞书注册接口失败：HTTP %d", resp.StatusCode)
 	}
 	return result, nil
 }
@@ -115,15 +119,12 @@ func StartFeishuRegistration(state *app.State) gin.HandlerFunc {
 		feishuRegistrationNoStore(c)
 		initResult, err := callFeishuRegistration(feishuRegistrationURL, url.Values{"action": {"init"}})
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Warn("初始化飞书注册服务失败", "feishu")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "飞书注册服务暂不可用"})
 			return
 		}
 		if initResult.Error != "" {
-			message := strings.TrimSpace(initResult.ErrorDescription)
-			if message == "" {
-				message = initResult.Error
-			}
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "初始化飞书扫码注册失败：" + message})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "初始化飞书扫码注册失败"})
 			return
 		}
 		supported := false
@@ -144,15 +145,12 @@ func StartFeishuRegistration(state *app.State) gin.HandlerFunc {
 			"request_user_info": {"open_id"},
 		})
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Warn("创建飞书注册会话失败", "feishu")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "飞书注册服务暂不可用"})
 			return
 		}
 		if beginResult.Error != "" {
-			message := strings.TrimSpace(beginResult.ErrorDescription)
-			if message == "" {
-				message = beginResult.Error
-			}
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "创建飞书扫码会话失败：" + message})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "创建飞书扫码会话失败"})
 			return
 		}
 		if beginResult.DeviceCode == "" || beginResult.VerificationComplete == "" {
@@ -237,7 +235,8 @@ func PollFeishuRegistration(state *app.State) gin.HandlerFunc {
 
 		result, err := callFeishuRegistration(endpoint, url.Values{"action": {"poll"}, "device_code": {deviceCode}})
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "status": "error", "error": err.Error()})
+			state.Logger.Warn("轮询飞书注册服务失败", "feishu")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "status": "error", "error": "飞书注册服务暂不可用"})
 			return
 		}
 		if result.UserInfo.TenantBrand == "lark" && endpoint != larkRegistrationURL && result.ClientID == "" {
@@ -309,11 +308,7 @@ func PollFeishuRegistration(state *app.State) gin.HandlerFunc {
 			feishuRegistrationSessions.Unlock()
 			c.JSON(http.StatusGone, gin.H{"success": false, "status": "expired", "error": "二维码已过期，请重新生成"})
 		default:
-			message := strings.TrimSpace(result.ErrorDescription)
-			if message == "" {
-				message = result.Error
-			}
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "status": "error", "error": message})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "status": "error", "error": "飞书注册服务返回错误"})
 		}
 	}
 }

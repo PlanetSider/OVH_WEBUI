@@ -33,7 +33,7 @@ func GetVpsMitigation(state *app.State) gin.HandlerFunc {
 		}
 		var ips []string
 		if err := client.Get("/vps/"+svc+"/ips", &ips); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 防护请求失败"})
 			return
 		}
 		type ipResult struct {
@@ -72,7 +72,7 @@ func GetVpsMitigation(state *app.State) gin.HandlerFunc {
 		for _, r := range results {
 			row := gin.H{"ipBlock": r.ip, "mitigations": r.mitigations}
 			if r.err != nil {
-				row["error"] = r.err.Error()
+				row["error"] = "获取防护状态失败"
 			}
 			if r.mitigations == nil {
 				row["mitigations"] = []interface{}{}
@@ -108,7 +108,7 @@ func EnableVpsMitigation(state *app.State) gin.HandlerFunc {
 		var result map[string]interface{}
 		if err := client.Post("/ip/"+encoded+"/mitigation",
 			map[string]interface{}{"ipOnMitigation": ip}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 防护请求失败"})
 			return
 		}
 		state.Logger.Info("VPS IP "+ip+" 启用永久 DDoS 缓解", "vps_control")
@@ -136,7 +136,7 @@ func DisableVpsMitigation(state *app.State) gin.HandlerFunc {
 		}
 		encoded := strings.ReplaceAll(ipBlock, "/", "%2F")
 		if err := client.Delete("/ip/"+encoded+"/mitigation/"+ip, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 防护请求失败"})
 			return
 		}
 		state.Logger.Info("VPS IP "+ip+" 关闭永久 DDoS 缓解", "vps_control")

@@ -18,10 +18,10 @@ import (
 
 // 生产安全默认值
 const (
-	MaxQuantityPerOrder   = 3   // /buy /queue 单次数量上限
-	MaxOrdersPerRequest   = 10  // 单次请求最多创建的队列项
-	MaxConfigsWhenNoOpts  = 1   // 未指定 options 时最多取 N 套配置
-	MaxDCsWhenNoDC        = 1   // 未指定机房时最多取 N 个机房（避免全机房扇出）
+	MaxQuantityPerOrder   = 3                 // /buy /queue 单次数量上限
+	MaxOrdersPerRequest   = 10                // 单次请求最多创建的队列项
+	MaxConfigsWhenNoOpts  = 1                 // 未指定 options 时最多取 N 套配置
+	MaxDCsWhenNoDC        = 1                 // 未指定机房时最多取 N 个机房（避免全机房扇出）
 	MaxQueueLen           = app.MaxQueueItems // 全局队列长度硬顶
 	MaxTelegramBodyBytes  = 64 * 1024
 	UpdateIDRetentionDays = 7
@@ -41,7 +41,7 @@ func EnsureWebhookSecret(state *app.State) (string, error) {
 			cfg.TgWebhookSecret = env
 			if err := state.Config.Set(cfg); err != nil {
 				// 环境变量仍可用于校验，落盘失败不阻断
-				state.Logger.Warn("写入 TG_WEBHOOK_SECRET 到 config 失败: "+err.Error(), "telegram")
+				state.Logger.Warn("写入 TG_WEBHOOK_SECRET 到 config 失败", "telegram")
 			}
 		}
 		return env, nil
@@ -87,6 +87,7 @@ func ValidateWebhookSecret(state *app.State, headerValue string) bool {
 // IsAuthorizedActor 授权规则（生产收紧）：
 //  1. 配置的 TgChatID 必须匹配 chat_id（私聊或指定群）；或
 //  2. 兼容：TgChatID 填的是 user id，且当前 user_id 匹配（私聊）。
+//
 // 群聊（chat_id < 0）时：必须 chat 匹配，且发送者 user_id 也必须等于 |TgChatID|
 // 若 TgChatID 本身是负数群 ID，则仅允许该群（任意成员——建议改用私聊 Chat ID）。
 func IsAuthorizedActor(state *app.State, chatID, userID interface{}) bool {

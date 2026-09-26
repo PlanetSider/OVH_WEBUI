@@ -155,7 +155,7 @@ func processQueueItem(ctx context.Context, state *app.State, candidate types.Que
 	})
 	if err != nil {
 		if snapshot.ID != "" {
-			state.Logger.Error("保存队列重试状态失败: "+err.Error(), "queue")
+			state.Logger.Error("保存队列重试状态失败", "queue")
 		}
 		return
 	}
@@ -217,7 +217,7 @@ func processQueueItem(ctx context.Context, state *app.State, candidate types.Que
 		return queue, nil
 	})
 	if err != nil {
-		state.Logger.Error("更新失败预算或移除达到上限任务失败: "+err.Error(), "queue")
+		state.Logger.Error("更新失败预算或移除达到上限任务失败", "queue")
 		return
 	}
 	if terminated {

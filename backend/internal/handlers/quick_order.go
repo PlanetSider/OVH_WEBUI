@@ -66,7 +66,9 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			FromMonitor        bool     `json:"fromMonitor"`
 			SkipDuplicateCheck bool     `json:"skipDuplicateCheck"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.PlanCode == "" || body.Datacenter == "" {
 			c.JSON(http.StatusOK, gin.H{"success": false, "error": "缺少 planCode 或 datacenter"})
 			return
@@ -90,7 +92,7 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 		if len(options) == 0 {
 			availabilityResult, availabilityErr := catalog.CheckServerAvailabilityWithConfigsStrict(state, body.PlanCode, body.AccountID)
 			if availabilityErr != nil {
-				err := "无法安全获取指定配置库存：" + availabilityErr.Error()
+				err := "无法安全获取指定配置库存，请稍后重试"
 				state.Logger.Warn("[quick_order] "+err, "quick_order")
 				c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err})
 				return
@@ -111,14 +113,10 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			}
 		}
 
-		priceResult := price.GetInternal(state, body.AccountID, body.PlanCode, body.Datacenter, options)
+		priceResult := price.GetInternalWithContext(c.Request.Context(), state, body.AccountID, body.PlanCode, body.Datacenter, options)
 		if !priceResult.Success {
-			err := priceResult.Error
-			if err == "" {
-				err = "价格查询失败"
-			}
-			state.Logger.Warn("快速下单前价格校验失败: "+body.PlanCode+"@"+body.Datacenter+" - "+err, "quick_order")
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "价格校验失败：" + err})
+			state.Logger.Warn("快速下单前价格校验失败: "+body.PlanCode+"@"+body.Datacenter, "quick_order")
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "价格校验失败，请稍后重试"})
 			return
 		}
 		if priceResult.Price == nil {
@@ -139,8 +137,8 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 		}
 
 		if err := enqueueQuickOrder(state, body.AccountID, body.PlanCode, body.Datacenter, options, body.FromMonitor, body.SkipDuplicateCheck); err != nil {
-			state.Logger.Info(err.Error(), "quick_order")
-			c.JSON(http.StatusTooManyRequests, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Info("快速下单操作失败", "quick_order")
+			c.JSON(http.StatusTooManyRequests, gin.H{"success": false, "error": "请求过于频繁或任务已存在，请稍后重试"})
 			return
 		}
 

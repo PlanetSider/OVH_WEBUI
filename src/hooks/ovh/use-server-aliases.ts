@@ -1,15 +1,14 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, getActiveServerControlAccount } from "@/lib/http";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useAccountQuery, useScopedAccountApi } from "@/hooks/ovh/use-account-scope";
 import { toast } from "sonner";
 
 /** 服务器本地别名 map: { service_name: alias }。
- *  - axios interceptor 会自动给 /server-control/* 加 ?account=<id>,所以不用手传
- *  - 切账户时 active-account 变 → axios 自动用新 id,需要前端再 invalidate 这个 query
- *  - alias 为空字符串等于"未设置",后端会去删除该行
+ *  读取与写入都绑定当前账户；空别名表示删除该账户的记录。
  */
 export function useServerAliases() {
-  return useQuery<Record<string, string>>({
-    queryKey: ["server-control", "aliases", getActiveServerControlAccount()],
+  const api = useScopedAccountApi();
+  return useAccountQuery<Record<string, string>>(api.accountId, {
+    queryKey: ["server-control", "aliases"],
     queryFn: async () => (await api.get<Record<string, string>>("/server-control/aliases")).data,
     staleTime: 30 * 60_000,
     gcTime: 60 * 60_000,
@@ -19,6 +18,7 @@ export function useServerAliases() {
 
 /** 设置 / 删除一台机器的别名 */
 export function useSetServerAlias() {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ serviceName, alias }: { serviceName: string; alias: string }) => {

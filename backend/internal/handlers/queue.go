@@ -49,7 +49,7 @@ func AddQueueItem(state *app.State) gin.HandlerFunc {
 			RetryInterval int      `json:"retryInterval"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "请求处理失败"})
 			return
 		}
 		body.PlanCode = strings.TrimSpace(body.PlanCode)
@@ -102,12 +102,12 @@ func AddQueueItem(state *app.State) gin.HandlerFunc {
 			}
 			return append(queue, item), nil
 		}); err != nil {
-			state.Logger.Error("添加队列任务失败: "+err.Error(), "queue")
+			state.Logger.Error("添加队列任务失败", "queue")
 			status := http.StatusInternalServerError
 			if errors.Is(err, app.ErrAccountNotFound) {
 				status = http.StatusBadRequest
 			}
-			c.JSON(status, gin.H{"status": "error", "error": err.Error()})
+			c.JSON(status, gin.H{"status": "error", "error": "队列操作失败"})
 			return
 		}
 		state.Logger.Info("添加任务 "+item.ID+" ("+item.PlanCode+" 在 "+item.Datacenter+", 账户 "+body.AccountID+") 到队列并立即启动 (状态: running)", "")
@@ -144,17 +144,18 @@ func RemoveQueueItem(state *app.State) gin.HandlerFunc {
 			// 或其它并发流程设置的隔离标记，删除失败不能把它撤销。
 			rollbackQueueItemDeleted(state, id, alreadyMarked)
 			if errors.Is(err, app.ErrQueueCheckoutInProgress) {
-				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "队列操作冲突"})
 			} else if errors.Is(err, errQueueItemNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "任务不存在"})
 			} else {
-				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "操作失败"})
 			}
 			return
 		}
 		if removed != nil {
 			state.Logger.Info("Removed "+removed.PlanCode+" from queue (ID: "+id+")", "system")
 		}
+		state.PruneDeletedTaskIDs()
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
 	}
 }
@@ -186,13 +187,14 @@ func ClearQueue(state *app.State) gin.HandlerFunc {
 			}
 			state.DeletedTaskIDsMu.Unlock()
 			if errors.Is(err, app.ErrQueueCheckoutInProgress) {
-				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "队列操作冲突"})
 			} else {
-				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "操作失败"})
 			}
 			return
 		}
 		state.Logger.Info("Cleared all queue items ("+strconv.Itoa(count)+" items removed)", "")
+		state.PruneDeletedTaskIDs()
 		c.JSON(http.StatusOK, gin.H{"status": "success", "count": count})
 	}
 }
@@ -205,7 +207,7 @@ func UpdateQueueStatus(state *app.State) gin.HandlerFunc {
 			Status string `json:"status"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "请求处理失败"})
 			return
 		}
 		body.Status = strings.TrimSpace(body.Status)
@@ -228,11 +230,11 @@ func UpdateQueueStatus(state *app.State) gin.HandlerFunc {
 		})
 		if err != nil {
 			if errors.Is(err, app.ErrQueueCheckoutInProgress) {
-				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "队列操作冲突"})
 			} else if errors.Is(err, errQueueItemNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "任务不存在"})
 			} else {
-				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "操作失败"})
 			}
 			return
 		}
@@ -257,7 +259,7 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 			Quantity      *int      `json:"quantity"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "请求处理失败"})
 			return
 		}
 
@@ -382,18 +384,18 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 		})
 		if err != nil {
 			if errors.Is(err, app.ErrQueueCheckoutInProgress) {
-				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "队列操作冲突"})
 				return
 			}
 			if errors.Is(err, app.ErrAccountNotFound) {
-				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "请求处理失败"})
 				return
 			}
 			if errors.Is(err, errQueueItemNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": err.Error()})
+				c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "任务不存在"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "操作失败"})
 			return
 		}
 		state.Logger.Info("更新抢购任务 "+id+"，新增 "+strconv.Itoa(created)+" 个任务", "queue")
@@ -407,7 +409,7 @@ func ClearPurchaseHistory(state *app.State) gin.HandlerFunc {
 		if err := state.MutateHistory(func([]types.PurchaseHistoryEntry) ([]types.PurchaseHistoryEntry, error) {
 			return []types.PurchaseHistoryEntry{}, nil
 		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "操作失败"})
 			return
 		}
 		state.Logger.Info("Purchase history cleared", "")

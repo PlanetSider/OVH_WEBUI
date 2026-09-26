@@ -9,7 +9,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/http";
+import { useScopedAccountApi } from "@/hooks/ovh/use-account-scope";
 import { toast } from "sonner";
 
 type ConsoleResult = {
@@ -33,6 +33,7 @@ export function IpmiDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
+  const api = useScopedAccountApi();
   const [countdown, setCountdown] = useState(60);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ConsoleResult | null>(null);

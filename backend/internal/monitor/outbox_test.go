@@ -104,8 +104,11 @@ func TestNewProxyGuardNotificationScrubsProxyCredentials(t *testing.T) {
 	if entry.Kind != NotificationKindProxyGuard || !strings.HasPrefix(entry.EventKey, "proxy_guard:trip:account-1:") {
 		t.Fatalf("entry identity = %#v", entry)
 	}
-	if strings.Contains(entry.Payload, "secret") || strings.Contains(entry.Payload, "user:") {
-		t.Fatalf("proxy credentials leaked in payload: %s", entry.Payload)
+	if strings.Contains(entry.Payload, "secret") || strings.Contains(entry.Payload, "user:") || strings.Contains(entry.Payload, "proxyconnect") {
+		t.Fatalf("proxy credentials or provider error leaked in payload: %s", entry.Payload)
+	}
+	if !strings.Contains(entry.Payload, "代理探测失败") {
+		t.Fatalf("stable proxy error missing from payload: %s", entry.Payload)
 	}
 	if !strings.Contains(entry.Payload, "proxy.example") {
 		t.Fatalf("scrubbed proxy missing from payload: %s", entry.Payload)

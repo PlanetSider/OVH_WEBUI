@@ -30,7 +30,9 @@ func ChangeVpsContact(state *app.State) gin.HandlerFunc {
 			return
 		}
 		var body map[string]interface{}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		params := map[string]interface{}{}
 		if v, ok := body["contactAdmin"].(string); ok && v != "" {
 			params["contactAdmin"] = v
@@ -47,7 +49,7 @@ func ChangeVpsContact(state *app.State) gin.HandlerFunc {
 		}
 		var taskIDs []int64
 		if err := client.Post("/vps/"+svc+"/changeContact", params, &taskIDs); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("VPS %s 联系人变更已提交: %v, tasks=%v", svc, params, taskIDs), "vps_control")
@@ -67,11 +69,11 @@ func TerminateVps(state *app.State) gin.HandlerFunc {
 		}
 		var token string
 		if err := client.Post("/vps/"+svc+"/terminate", map[string]interface{}{}, &token); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		state.Logger.Warn("VPS "+svc+" 终止请求已提交,等邮件 token", "vps_control")
-		c.JSON(http.StatusOK, gin.H{"success": true, "message": "终止请求已提交,请查邮件获取 token", "token": token})
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "终止请求已提交,请查邮件获取 token"})
 	}
 }
 
@@ -90,7 +92,9 @@ func ConfirmVpsTermination(state *app.State) gin.HandlerFunc {
 			Reason     string `json:"reason"`
 			Commentary string `json:"commentary"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.Token == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 token"})
 			return
@@ -104,7 +108,7 @@ func ConfirmVpsTermination(state *app.State) gin.HandlerFunc {
 		}
 		var resp string
 		if err := client.Post("/vps/"+svc+"/confirmTermination", params, &resp); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		state.Logger.Warn("VPS "+svc+" 终止已确认", "vps_control")
@@ -124,7 +128,7 @@ func GetVpsSecondaryDns(state *app.State) gin.HandlerFunc {
 		}
 		var domains []string
 		if err := client.Get("/vps/"+svc+"/secondaryDnsDomains", &domains); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		details := parallelGetStringKeys(client, domains, func(d string) string {
@@ -157,7 +161,9 @@ func AddVpsSecondaryDns(state *app.State) gin.HandlerFunc {
 			Domain string `json:"domain"`
 			IP     string `json:"ip"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.Domain == "" || body.IP == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "domain 和 ip 必填"})
 			return
@@ -166,7 +172,7 @@ func AddVpsSecondaryDns(state *app.State) gin.HandlerFunc {
 			"domain": body.Domain,
 			"ip":     body.IP,
 		}, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		state.Logger.Info("VPS "+svc+" 添加二级 DNS "+body.Domain, "vps_control")
@@ -185,7 +191,7 @@ func DeleteVpsSecondaryDns(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := client.Delete("/vps/"+svc+"/secondaryDnsDomains/"+domain, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		state.Logger.Info("VPS "+svc+" 删除二级 DNS "+domain, "vps_control")
@@ -205,7 +211,7 @@ func GetVpsOptions(state *app.State) gin.HandlerFunc {
 		}
 		var opts []string
 		if err := client.Get("/vps/"+svc+"/option", &opts); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		details := parallelGetStringKeys(client, opts, func(o string) string {
@@ -235,7 +241,7 @@ func DeleteVpsOption(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := client.Delete("/vps/"+svc+"/option/"+opt, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		state.Logger.Info("VPS "+svc+" 取消附加选项 "+opt, "vps_control")

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/http";
+import { useAccountQuery, useScopedAccountApi } from "@/hooks/ovh/use-account-scope";
 import { qk } from "@/lib/query";
 
 /* ────────────── 类型定义 ────────────── */
@@ -84,7 +84,8 @@ export interface VpsSnapshot {
 /* ────────────── List + Info + Status ────────────── */
 
 export function useOwnedVps() {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.list(),
     queryFn: async () => {
       const res = await api.get("/vps-control/list");
@@ -95,7 +96,8 @@ export function useOwnedVps() {
 }
 
 export function useVpsInfo(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.info(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/info`);
@@ -107,7 +109,8 @@ export function useVpsInfo(svc: string | null) {
 
 /** VPS 网络服务存活探测(ping/dns/http/https/smtp/ssh) — 跟 info.state 不一样 */
 export function useVpsServiceStatus(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.status(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/status`);
@@ -119,7 +122,8 @@ export function useVpsServiceStatus(svc: string | null) {
 }
 
 export function useVpsServiceInfo(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.serviceInfo(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/serviceinfo`);
@@ -130,6 +134,7 @@ export function useVpsServiceInfo(svc: string | null) {
 }
 
 export function useUpdateVpsRenewal(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { mode: "auto" | "manual" | "delete"; period?: number }) => {
@@ -142,6 +147,7 @@ export function useUpdateVpsRenewal(svc: string) {
 
 /** 设置 VPS 终止策略。不要调用 /terminate：那是立即终止。 */
 export function useUpdateVpsTerminationPolicy(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { policy: "empty" | "terminateAtExpirationDate" | "terminateAtEngagementDate" }) => {
@@ -153,7 +159,8 @@ export function useUpdateVpsTerminationPolicy(svc: string) {
 }
 
 export function useVpsIps(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.ips(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/ips`);
@@ -164,6 +171,7 @@ export function useVpsIps(svc: string | null) {
 }
 
 export function useSetVpsIpReverse(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { ip: string; reverse: string }) => {
@@ -175,7 +183,8 @@ export function useSetVpsIpReverse(svc: string) {
 }
 
 export function useVpsDatacenter(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.datacenter(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/datacenter`);
@@ -194,6 +203,7 @@ export function useVpsDatacenter(svc: string | null) {
 /* ────────────── Power ────────────── */
 
 export function useVpsStart(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () => (await api.post(`/vps-control/${svc}/start`)).data,
@@ -205,6 +215,7 @@ export function useVpsStart(svc: string) {
 }
 
 export function useVpsStop(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () => (await api.post(`/vps-control/${svc}/stop`)).data,
@@ -216,6 +227,7 @@ export function useVpsStop(svc: string) {
 }
 
 export function useVpsReboot(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () => (await api.post(`/vps-control/${svc}/reboot`)).data,
@@ -228,6 +240,7 @@ export function useVpsReboot(svc: string) {
 }
 
 export function useVpsConsoleUrl(svc: string) {
+  const api = useScopedAccountApi();
   return useMutation({
     mutationFn: async () => {
       const res = await api.post(`/vps-control/${svc}/console`);
@@ -237,6 +250,7 @@ export function useVpsConsoleUrl(svc: string) {
 }
 
 export function useVpsSetPassword(svc: string) {
+  const api = useScopedAccountApi();
   return useMutation({
     mutationFn: async () => (await api.post(`/vps-control/${svc}/password`)).data,
   });
@@ -246,7 +260,8 @@ export function useVpsSetPassword(svc: string) {
 
 /** 当前安装的系统信息(EU /distribution / US /images/current) */
 export function useVpsCurrentOS(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.currentOS(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/current-os`);
@@ -265,7 +280,8 @@ export function useVpsCurrentOS(svc: string | null) {
 }
 
 export function useVpsTemplates(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.templates(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/templates`);
@@ -277,6 +293,7 @@ export function useVpsTemplates(svc: string | null) {
 }
 
 export function useReinstallVps(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: {
@@ -295,7 +312,8 @@ export function useReinstallVps(svc: string) {
 /* ────────────── Tasks ────────────── */
 
 export function useVpsTasks(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.tasks(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/tasks`);
@@ -306,7 +324,8 @@ export function useVpsTasks(svc: string | null) {
 }
 
 export function useVpsTask(svc: string | null, taskId: number | string | null, refetchInterval = 0) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.task(svc || "", taskId || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/tasks/${taskId}`);
@@ -320,7 +339,8 @@ export function useVpsTask(svc: string | null, taskId: number | string | null, r
 /* ────────────── Snapshot ────────────── */
 
 export function useVpsSnapshot(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.snapshot(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/snapshot`);
@@ -331,6 +351,7 @@ export function useVpsSnapshot(svc: string | null) {
 }
 
 export function useCreateVpsSnapshot(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { description?: string }) => (await api.post(`/vps-control/${svc}/snapshot`, vars)).data,
@@ -339,6 +360,7 @@ export function useCreateVpsSnapshot(svc: string) {
 }
 
 export function useUpdateVpsSnapshot(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { description: string }) => (await api.put(`/vps-control/${svc}/snapshot`, vars)).data,
@@ -347,6 +369,7 @@ export function useUpdateVpsSnapshot(svc: string) {
 }
 
 export function useRevertVpsSnapshot(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () => (await api.post(`/vps-control/${svc}/snapshot/revert`)).data,
@@ -358,6 +381,7 @@ export function useRevertVpsSnapshot(svc: string) {
 }
 
 export function useDeleteVpsSnapshot(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () => (await api.delete(`/vps-control/${svc}/snapshot`)).data,
@@ -368,6 +392,7 @@ export function useDeleteVpsSnapshot(svc: string) {
 /* ────────────── Misc ────────────── */
 
 export function useChangeVpsContact() {
+  const api = useScopedAccountApi();
   return useMutation({
     mutationFn: async (vars: { serviceName: string; admin?: string; tech?: string; billing?: string }) => {
       const body: Record<string, string> = {};
@@ -380,6 +405,7 @@ export function useChangeVpsContact() {
 }
 
 export function useTerminateVps() {
+  const api = useScopedAccountApi();
   return useMutation({
     mutationFn: async (vars: { serviceName: string }) =>
       (await api.post(`/vps-control/${vars.serviceName}/terminate`)).data,
@@ -387,6 +413,7 @@ export function useTerminateVps() {
 }
 
 export function useConfirmTerminateVps() {
+  const api = useScopedAccountApi();
   return useMutation({
     mutationFn: async (vars: { serviceName: string; token: string; reason?: string; commentary?: string }) =>
       (await api.post(`/vps-control/${vars.serviceName}/confirm-termination`, {
@@ -398,7 +425,8 @@ export function useConfirmTerminateVps() {
 }
 
 export function useVpsSecondaryDns(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.secondaryDns(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/secondary-dns`);
@@ -409,6 +437,7 @@ export function useVpsSecondaryDns(svc: string | null) {
 }
 
 export function useAddVpsSecondaryDns(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { domain: string; ip: string }) =>
@@ -418,6 +447,7 @@ export function useAddVpsSecondaryDns(svc: string) {
 }
 
 export function useDeleteVpsSecondaryDns(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (domain: string) =>
@@ -427,7 +457,8 @@ export function useDeleteVpsSecondaryDns(svc: string) {
 }
 
 export function useVpsOptions(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.options(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/options`);
@@ -438,6 +469,7 @@ export function useVpsOptions(svc: string | null) {
 }
 
 export function useDeleteVpsOption(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (option: string) =>
@@ -449,7 +481,8 @@ export function useDeleteVpsOption(svc: string) {
 /* ────────────── Engagement(合同期) ────────────── */
 
 export function useVpsEngagement(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.engagement(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/engagement`);
@@ -460,7 +493,8 @@ export function useVpsEngagement(svc: string | null) {
 }
 
 export function useVpsEngagementAvailable(svc: string | null, enabled = true) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.engagementAvailable(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/engagement/available`);
@@ -471,7 +505,8 @@ export function useVpsEngagementAvailable(svc: string | null, enabled = true) {
 }
 
 export function useVpsEngagementRequest(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.engagementRequest(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/engagement/request`);
@@ -482,6 +517,7 @@ export function useVpsEngagementRequest(svc: string | null) {
 }
 
 export function useCreateVpsEngagementRequest(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { pricingMode: string }) =>
@@ -494,6 +530,7 @@ export function useCreateVpsEngagementRequest(svc: string) {
 }
 
 export function useDeleteVpsEngagementRequest(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () =>
@@ -503,6 +540,7 @@ export function useDeleteVpsEngagementRequest(svc: string) {
 }
 
 export function useUpdateVpsEngagementEndRule(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { strategy: string }) =>
@@ -527,7 +565,8 @@ export interface VpsMitigationBlock {
 }
 
 export function useVpsMitigation(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.mitigation(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/mitigation`);
@@ -547,6 +586,7 @@ export function useVpsMitigation(svc: string | null) {
 }
 
 export function useEnableVpsMitigation(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { ip: string; block: string }) =>
@@ -556,6 +596,7 @@ export function useEnableVpsMitigation(svc: string) {
 }
 
 export function useDisableVpsMitigation(svc: string) {
+  const api = useScopedAccountApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { ip: string; block: string }) =>
@@ -565,7 +606,8 @@ export function useDisableVpsMitigation(svc: string) {
 }
 
 export function useVpsAutomatedBackup(svc: string | null) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery(api.accountId, {
     queryKey: qk.vpsControl.automatedBackup(svc || ""),
     queryFn: async () => {
       const res = await api.get(`/vps-control/${svc}/automated-backup`);

@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -75,6 +76,14 @@ func appendPriceBlock(msg *strings.Builder, priceText string) {
 // SendAvailabilityAlertGrouped 对应 Python: send_availability_alert_grouped
 func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
 	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string, expectedChannels ...[]string) NotificationDeliveryResult {
+	return m.SendAvailabilityAlertGroupedWithContext(context.Background(), planCode, availableDCs, configInfo, serverName, priceErrorMessage, traceID, configTraceID, expectedChannels...)
+}
+
+func (m *Monitor) SendAvailabilityAlertGroupedWithContext(ctx context.Context, planCode string, availableDCs []map[string]interface{},
+	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string, expectedChannels ...[]string) NotificationDeliveryResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	var msg strings.Builder
 	msg.WriteString("🎉 服务器上架通知！\n\n")
@@ -174,13 +183,15 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 	expected := ConfiguredNotificationChannels(m.state)
-	if len(expectedChannels) > 0 { expected = canonicalNotificationChannels(expectedChannels[0]) }
+	if len(expectedChannels) > 0 {
+		expected = canonicalNotificationChannels(expectedChannels[0])
+	}
 	for idx, dcInfo := range availableDCs {
 		dc, _ := dcInfo["dc"].(string)
 		if notificationChannelSelected(expected, NotificationChannelTelegram) {
 			msgUUID := uuid.NewString()
 			if err := m.AddMessageUUID(msgUUID, planCode, dc, options, configInfo); err != nil {
-				m.state.Logger.Warn("持久化 Telegram 一键下单按钮失败，通知将不包含该按钮: "+err.Error(), "monitor")
+				m.state.Logger.Warn("持久化 Telegram 一键下单按钮失败，通知将不包含该按钮", "monitor")
 			} else {
 				m.state.Logger.Debug(fmt.Sprintf("生成消息UUID: %s, 配置: %s@%s, options=%v", msgUUID, planCode, dc, options), "monitor")
 				cb := map[string]string{"a": "add_to_queue", "u": msgUUID}
@@ -198,7 +209,7 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		if notificationChannelSelected(expected, NotificationChannelFeishu) {
 			feishuUUID := uuid.NewString()
 			if err := m.AddMessageUUID(feishuUUID, planCode, dc, options, configInfo); err != nil {
-				m.state.Logger.Warn("持久化飞书一键下单按钮失败，通知将不包含该按钮: "+err.Error(), "monitor")
+				m.state.Logger.Warn("持久化飞书一键下单按钮失败，通知将不包含该按钮", "monitor")
 			} else {
 				feishuActions = append(feishuActions, map[string]interface{}{
 					"tag":   "button",
@@ -219,10 +230,10 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 	replyMarkup := map[string]interface{}{"inline_keyboard": keyboard}
 	delivered := NotificationDeliveryResult{}
 	if notificationChannelSelected(expected, NotificationChannelFeishu) {
-		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "🎉 服务器上架通知", msg.String(), "green", feishuActions)
+		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, "🎉 服务器上架通知", msg.String(), "green", feishuActions)
 	}
 	if notificationChannelSelected(expected, NotificationChannelWeixin) {
-		delivered[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg.String()+"\n\n微信下单：/buy "+planCode+" <机房代码>")
+		delivered[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg.String()+"\n\n微信下单：/buy "+planCode+" <机房代码>")
 	}
 
 	configDesc := ""
@@ -234,13 +245,13 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 	m.state.Logger.Info(fmt.Sprintf("正在发送汇总Telegram通知: %s%s - %d个机房", planCode, configDesc, len(availableDCs)), "monitor")
 	tgOK := false
 	if notificationChannelSelected(expected, NotificationChannelTelegram) {
-		tgOK = telegram.SendMessage(m.state, msg.String(), replyMarkup)
+		tgOK = telegram.SendMessageWithContext(ctx, m.state, msg.String(), replyMarkup)
 		delivered[NotificationChannelTelegram] = tgOK
 	}
 	if tgOK {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram汇总通知发送成功: %s%s", planCode, configDesc), "monitor")
 	} else {
-		 m.state.Logger.Warn(fmt.Sprintf("⚠️ Telegram汇总通知发送失败: %s%s", planCode, configDesc), "monitor")
+		m.state.Logger.Warn(fmt.Sprintf("⚠️ Telegram汇总通知发送失败: %s%s", planCode, configDesc), "monitor")
 	}
 	return delivered
 }
@@ -248,6 +259,14 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 // SendUnavailableAlertGrouped 对应 Python: send_unavailable_alert_grouped
 func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []map[string]interface{},
 	configInfo map[string]interface{}, serverName, traceID, configTraceID string, expectedChannels ...[]string) NotificationDeliveryResult {
+	return m.SendUnavailableAlertGroupedWithContext(context.Background(), planCode, unavailableDCs, configInfo, serverName, traceID, configTraceID, expectedChannels...)
+}
+
+func (m *Monitor) SendUnavailableAlertGroupedWithContext(ctx context.Context, planCode string, unavailableDCs []map[string]interface{},
+	configInfo map[string]interface{}, serverName, traceID, configTraceID string, expectedChannels ...[]string) NotificationDeliveryResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	var msg strings.Builder
 	msg.WriteString("📦 服务器下架通知\n\n")
@@ -283,13 +302,15 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 	}
 	msg.WriteString("\n⏰ 时间: " + m.nowBeijing().Format("2006-01-02 15:04:05"))
 	expected := ConfiguredNotificationChannels(m.state)
-	if len(expectedChannels) > 0 { expected = canonicalNotificationChannels(expectedChannels[0]) }
+	if len(expectedChannels) > 0 {
+		expected = canonicalNotificationChannels(expectedChannels[0])
+	}
 	delivered := NotificationDeliveryResult{}
 	if notificationChannelSelected(expected, NotificationChannelFeishu) {
-		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "📦 服务器下架通知", msg.String(), "grey", nil)
+		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, "📦 服务器下架通知", msg.String(), "grey", nil)
 	}
 	if notificationChannelSelected(expected, NotificationChannelWeixin) {
-		delivered[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg.String())
+		delivered[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg.String())
 	}
 
 	configDesc := ""
@@ -301,7 +322,7 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 	m.state.Logger.Info(fmt.Sprintf("正在发送聚合下架Telegram通知: %s%s - %d个机房", planCode, configDesc, len(unavailableDCs)), "monitor")
 	tgOK := false
 	if notificationChannelSelected(expected, NotificationChannelTelegram) {
-		tgOK = telegram.SendMessage(m.state, msg.String(), nil)
+		tgOK = telegram.SendMessageWithContext(ctx, m.state, msg.String(), nil)
 		delivered[NotificationChannelTelegram] = tgOK
 	}
 	if tgOK {
@@ -315,6 +336,14 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 // SendAvailabilityAlert 对应 Python: send_availability_alert
 func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType string,
 	configInfo map[string]interface{}, serverName, durationText, priceCheckError, traceID, configTraceID, detectedTime string, expectedChannels ...[]string) NotificationDeliveryResult {
+	return m.SendAvailabilityAlertWithContext(context.Background(), planCode, datacenter, status, changeType, configInfo, serverName, durationText, priceCheckError, traceID, configTraceID, detectedTime, expectedChannels...)
+}
+
+func (m *Monitor) SendAvailabilityAlertWithContext(ctx context.Context, planCode, datacenter, status, changeType string,
+	configInfo map[string]interface{}, serverName, durationText, priceCheckError, traceID, configTraceID, detectedTime string, expectedChannels ...[]string) NotificationDeliveryResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	var msg strings.Builder
 	pushTime := m.nowBeijing()
@@ -340,7 +369,7 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 			accountID, _ := configInfo["accountId"].(string)
 			// 1:1 对应 Python server_monitor.py:1331-1392：用 30 秒超时保护，
 			// 否则在 OVH 价格 API 卡死时整个通知会阻塞
-			priceText, _ = m.getPriceWithTimeout(accountID, planCode, datacenter, configInfo, 30*time.Second)
+			priceText, _ = m.getPriceWithTimeoutContext(ctx, accountID, planCode, datacenter, configInfo, 30*time.Second)
 		}
 		if priceText != "" {
 			appendPriceBlock(&msg, priceText)
@@ -465,17 +494,19 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 		template, title = "orange", "⚠️ 价格校验失败通知"
 	}
 	expected := ConfiguredNotificationChannels(m.state)
-	if len(expectedChannels) > 0 { expected = canonicalNotificationChannels(expectedChannels[0]) }
+	if len(expectedChannels) > 0 {
+		expected = canonicalNotificationChannels(expectedChannels[0])
+	}
 	delivered := NotificationDeliveryResult{}
 	if notificationChannelSelected(expected, NotificationChannelFeishu) {
-		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, title, msg.String(), template, nil)
+		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, title, msg.String(), template, nil)
 	}
 	if notificationChannelSelected(expected, NotificationChannelWeixin) {
-		delivered[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg.String())
+		delivered[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg.String())
 	}
 	tgOK := false
 	if notificationChannelSelected(expected, NotificationChannelTelegram) {
-		tgOK = telegram.SendMessage(m.state, msg.String(), nil)
+		tgOK = telegram.SendMessageWithContext(ctx, m.state, msg.String(), nil)
 		delivered[NotificationChannelTelegram] = tgOK
 	}
 	if tgOK {
@@ -488,10 +519,17 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 
 // SendNewServerAlert 对应 Python: send_new_server_alert
 func (m *Monitor) SendNewServerAlert(server map[string]interface{}, expectedChannels ...[]string) NotificationDeliveryResult {
+	return m.SendNewServerAlertWithContext(context.Background(), server, expectedChannels...)
+}
+
+func (m *Monitor) SendNewServerAlertWithContext(ctx context.Context, server map[string]interface{}, expectedChannels ...[]string) NotificationDeliveryResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	planCode, _ := server["planCode"].(string)
 	priceText := ""
 	if planCode != "" {
-		priceText = m.getCatalogPriceInfoText("", planCode, nil)
+		priceText = m.getCatalogPriceInfoTextWithContext(ctx, "", planCode, nil)
 	}
 	msg := fmt.Sprintf("🆕 新服务器上架通知！\n\n型号: %v\n名称: %v\nCPU: %v\n内存: %v\n存储: %v\n带宽: %v\n",
 		server["planCode"], server["name"], server["cpu"], server["memory"], server["storage"], server["bandwidth"],
@@ -506,13 +544,13 @@ func (m *Monitor) SendNewServerAlert(server map[string]interface{}, expectedChan
 	}
 	delivered := NotificationDeliveryResult{}
 	if notificationChannelSelected(expected, NotificationChannelFeishu) {
-		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "🆕 新服务器上架通知", msg, "green", nil)
+		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, "🆕 新服务器上架通知", msg, "green", nil)
 	}
 	if notificationChannelSelected(expected, NotificationChannelTelegram) {
-		delivered[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
+		delivered[NotificationChannelTelegram] = telegram.SendMessageWithContext(ctx, m.state, msg, nil)
 	}
 	if notificationChannelSelected(expected, NotificationChannelWeixin) {
-		delivered[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)
+		delivered[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
 	}
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
 	return delivered

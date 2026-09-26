@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { useAccounts } from "@/hooks/use-accounts";
 import {
   getActiveServerControlAccount,
@@ -12,7 +11,6 @@ import {
  */
 export function ActiveAccountSync() {
   const { data: accounts, isSuccess } = useAccounts();
-  const qc = useQueryClient();
   const lastFixed = useRef<string>("");
 
   useEffect(() => {
@@ -40,11 +38,7 @@ export function ActiveAccountSync() {
 
     setActiveServerControlAccount(next.id);
     lastFixed.current = next.id;
-    // 清掉带旧 account 的缓存结果
-    void qc.invalidateQueries({ queryKey: ["server-control"] });
-    void qc.invalidateQueries({ queryKey: ["account"] });
-    void qc.invalidateQueries({ queryKey: ["vps-control"] });
-  }, [accounts, isSuccess, qc]);
+  }, [accounts, isSuccess]);
 
   return null;
 }

@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -22,8 +23,9 @@ import (
 )
 
 const (
-	feishuBindingsKV        = "feishu_bindings"
-	feishuDefaultBindingKey = "default"
+	feishuBindingsKV          = "feishu_bindings"
+	feishuDefaultBindingKey   = "default"
+	maxFeishuAPIResponseBytes = 2 << 20
 )
 
 var feishuToken struct {
@@ -149,15 +151,50 @@ func decryptFeishuPayload(keyText, encrypted string) (map[string]interface{}, er
 	return nil, fmt.Errorf("无法解密飞书事件")
 }
 
+func lockFeishuTokenContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if feishuToken.Mutex.TryLock() {
+			return nil
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func feishuTenantToken(state *app.State) (string, error) {
-	feishuToken.Lock()
+	return feishuTenantTokenWithContext(context.Background(), state)
+}
+
+func feishuTenantTokenWithContext(ctx context.Context, state *app.State) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := lockFeishuTokenContext(ctx); err != nil {
+		return "", err
+	}
 	defer feishuToken.Unlock()
 	if feishuToken.value != "" && time.Now().Before(feishuToken.expiresAt) {
 		return feishuToken.value, nil
 	}
 	cfg := state.Config.Get()
 	body, _ := json.Marshal(map[string]string{"app_id": cfg.FeishuAppID, "app_secret": cfg.FeishuAppSecret})
-	req, err := http.NewRequest(http.MethodPost, feishuOpenAPIBase(state)+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, feishuOpenAPIBase(state)+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -167,7 +204,13 @@ func feishuTenantToken(state *app.State) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxFeishuAPIResponseBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("读取飞书 tenant_access_token 响应失败")
+	}
+	if len(raw) > maxFeishuAPIResponseBytes {
+		return "", fmt.Errorf("飞书 tenant_access_token 响应过大")
+	}
 	var result struct {
 		Code   int    `json:"code"`
 		Msg    string `json:"msg"`
@@ -175,10 +218,10 @@ func feishuTenantToken(state *app.State) (string, error) {
 		Expire int    `json:"expire"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", err
+		return "", fmt.Errorf("飞书 tenant_access_token 响应无效")
 	}
 	if result.Code != 0 || result.Token == "" {
-		return "", fmt.Errorf("获取飞书 tenant_access_token 失败: %s", result.Msg)
+		return "", fmt.Errorf("获取飞书 tenant_access_token 失败")
 	}
 	feishuToken.value = result.Token
 	feishuToken.expiresAt = time.Now().Add(time.Duration(result.Expire-120) * time.Second)
@@ -186,7 +229,17 @@ func feishuTenantToken(state *app.State) (string, error) {
 }
 
 func feishuAPIRequest(state *app.State, method, endpoint string, payload interface{}, result interface{}) error {
-	token, err := feishuTenantToken(state)
+	return feishuAPIRequestWithContext(context.Background(), state, method, endpoint, payload, result)
+}
+
+func feishuAPIRequestWithContext(ctx context.Context, state *app.State, method, endpoint string, payload interface{}, result interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	token, err := feishuTenantTokenWithContext(ctx, state)
 	if err != nil {
 		return err
 	}
@@ -198,7 +251,7 @@ func feishuAPIRequest(state *app.State, method, endpoint string, payload interfa
 		}
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequest(method, feishuOpenAPIBase(state)+"/open-apis"+endpoint, reader)
+	req, err := http.NewRequestWithContext(ctx, method, feishuOpenAPIBase(state)+"/open-apis"+endpoint, reader)
 	if err != nil {
 		return err
 	}
@@ -209,30 +262,36 @@ func feishuAPIRequest(state *app.State, method, endpoint string, payload interfa
 		return err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxFeishuAPIResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("读取飞书接口响应失败")
+	}
+	if len(raw) > maxFeishuAPIResponseBytes {
+		return fmt.Errorf("飞书接口响应过大")
+	}
 	var envelope struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
 	_ = json.Unmarshal(raw, &envelope)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || envelope.Code != 0 {
-		message := strings.TrimSpace(envelope.Msg)
-		if message == "" {
-			message = strings.TrimSpace(string(raw))
-		}
-		return fmt.Errorf("飞书接口返回 HTTP %d / code %d: %s", resp.StatusCode, envelope.Code, message)
+		return fmt.Errorf("飞书接口返回 HTTP %d / code %d", resp.StatusCode, envelope.Code)
 	}
 	if result != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, result); err != nil {
-			return fmt.Errorf("飞书接口返回了无效数据: %w", err)
+			return fmt.Errorf("飞书接口返回了无效数据")
 		}
 	}
 	return nil
 }
 
 func feishuSend(state *app.State, openID, msgType string, content interface{}) error {
+	return feishuSendWithContext(context.Background(), state, openID, msgType, content)
+}
+
+func feishuSendWithContext(ctx context.Context, state *app.State, openID, msgType string, content interface{}) error {
 	encoded, _ := json.Marshal(content)
-	return feishuAPIRequest(state, http.MethodPost, "/im/v1/messages?receive_id_type=open_id", map[string]interface{}{
+	return feishuAPIRequestWithContext(ctx, state, http.MethodPost, "/im/v1/messages?receive_id_type=open_id", map[string]interface{}{
 		"receive_id": openID,
 		"msg_type":   msgType,
 		"content":    string(encoded),
@@ -240,11 +299,19 @@ func feishuSend(state *app.State, openID, msgType string, content interface{}) e
 }
 
 func FeishuSendText(state *app.State, openID, text string) error {
-	return feishuSend(state, openID, "text", map[string]string{"text": text})
+	return FeishuSendTextWithContext(context.Background(), state, openID, text)
+}
+
+func FeishuSendTextWithContext(ctx context.Context, state *app.State, openID, text string) error {
+	return feishuSendWithContext(ctx, state, openID, "text", map[string]string{"text": text})
 }
 
 func FeishuSendCard(state *app.State, openID string, card map[string]interface{}) error {
-	return feishuSend(state, openID, "interactive", card)
+	return FeishuSendCardWithContext(context.Background(), state, openID, card)
+}
+
+func FeishuSendCardWithContext(ctx context.Context, state *app.State, openID string, card map[string]interface{}) error {
+	return feishuSendWithContext(ctx, state, openID, "interactive", card)
 }
 
 const feishuStreamElementID = "ovh_stream_md"
@@ -301,13 +368,17 @@ func feishuCardKitCard(card map[string]interface{}, content string, streaming bo
 }
 
 func feishuCardKitCreate(state *app.State, card map[string]interface{}) (string, error) {
+	return feishuCardKitCreateWithContext(context.Background(), state, card)
+}
+
+func feishuCardKitCreateWithContext(ctx context.Context, state *app.State, card map[string]interface{}) (string, error) {
 	data, _ := json.Marshal(card)
 	var result struct {
 		Data struct {
 			CardID string `json:"card_id"`
 		} `json:"data"`
 	}
-	if err := feishuAPIRequest(state, http.MethodPost, "/cardkit/v1/cards", map[string]interface{}{
+	if err := feishuAPIRequestWithContext(ctx, state, http.MethodPost, "/cardkit/v1/cards", map[string]interface{}{
 		"type": "card_json",
 		"data": string(data),
 	}, &result); err != nil {
@@ -320,8 +391,12 @@ func feishuCardKitCreate(state *app.State, card map[string]interface{}) (string,
 }
 
 func feishuCardKitUpdateContent(state *app.State, cardID, content string, sequence int) error {
+	return feishuCardKitUpdateContentWithContext(context.Background(), state, cardID, content, sequence)
+}
+
+func feishuCardKitUpdateContentWithContext(ctx context.Context, state *app.State, cardID, content string, sequence int) error {
 	endpoint := fmt.Sprintf("/cardkit/v1/cards/%s/elements/%s/content", url.PathEscape(cardID), feishuStreamElementID)
-	return feishuAPIRequest(state, http.MethodPut, endpoint, map[string]interface{}{
+	return feishuAPIRequestWithContext(ctx, state, http.MethodPut, endpoint, map[string]interface{}{
 		"content":  content,
 		"sequence": sequence,
 		"uuid":     fmt.Sprintf("c_%s_%d", cardID, sequence),
@@ -329,8 +404,12 @@ func feishuCardKitUpdateContent(state *app.State, cardID, content string, sequen
 }
 
 func feishuCardKitUpdate(state *app.State, cardID string, card map[string]interface{}, sequence int) error {
+	return feishuCardKitUpdateWithContext(context.Background(), state, cardID, card, sequence)
+}
+
+func feishuCardKitUpdateWithContext(ctx context.Context, state *app.State, cardID string, card map[string]interface{}, sequence int) error {
 	data, _ := json.Marshal(card)
-	return feishuAPIRequest(state, http.MethodPut, "/cardkit/v1/cards/"+url.PathEscape(cardID), map[string]interface{}{
+	return feishuAPIRequestWithContext(ctx, state, http.MethodPut, "/cardkit/v1/cards/"+url.PathEscape(cardID), map[string]interface{}{
 		"card": map[string]interface{}{
 			"type": "card_json",
 			"data": string(data),
@@ -341,13 +420,17 @@ func feishuCardKitUpdate(state *app.State, cardID string, card map[string]interf
 }
 
 func feishuCardKitFinish(state *app.State, cardID, summary string, sequence int) error {
+	return feishuCardKitFinishWithContext(context.Background(), state, cardID, summary, sequence)
+}
+
+func feishuCardKitFinishWithContext(ctx context.Context, state *app.State, cardID, summary string, sequence int) error {
 	settings, _ := json.Marshal(map[string]interface{}{
 		"config": map[string]interface{}{
 			"streaming_mode": false,
 			"summary":        map[string]interface{}{"content": summary},
 		},
 	})
-	return feishuAPIRequest(state, http.MethodPatch, "/cardkit/v1/cards/"+url.PathEscape(cardID)+"/settings", map[string]interface{}{
+	return feishuAPIRequestWithContext(ctx, state, http.MethodPatch, "/cardkit/v1/cards/"+url.PathEscape(cardID)+"/settings", map[string]interface{}{
 		"settings": string(settings),
 		"sequence": sequence,
 		"uuid":     fmt.Sprintf("s_%s_%d", cardID, sequence),
@@ -376,39 +459,67 @@ func feishuStreamChunks(text string) []string {
 // FeishuSendStreamingCard 使用 CardKit 真流式生命周期发送通知。
 // CardKit 不可用或权限不足时自动退回普通 interactive 卡片，保证通知不丢失。
 func FeishuSendStreamingCard(state *app.State, openID string, card map[string]interface{}) error {
+	return FeishuSendStreamingCardWithContext(context.Background(), state, openID, card)
+}
+
+func FeishuSendStreamingCardWithContext(ctx context.Context, state *app.State, openID string, card map[string]interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	fullText := feishuStreamingText(card)
 	streamCard := feishuCardKitCard(card, "正在生成通知…", true)
-	cardID, err := feishuCardKitCreate(state, streamCard)
+	cardID, err := feishuCardKitCreateWithContext(ctx, state, streamCard)
 	if err != nil {
-		state.Logger.Warn("CardKit 创建流式卡片失败，降级为普通卡片: "+err.Error(), "feishu")
-		return FeishuSendCard(state, openID, card)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		state.Logger.Warn("CardKit 创建流式卡片失败，降级为普通卡片", "feishu")
+		return FeishuSendCardWithContext(ctx, state, openID, card)
 	}
-	if err := feishuSend(state, openID, "interactive", map[string]interface{}{
+	if err := feishuSendWithContext(ctx, state, openID, "interactive", map[string]interface{}{
 		"type": "card",
 		"data": map[string]interface{}{"card_id": cardID},
 	}); err != nil {
-		state.Logger.Warn("CardKit 卡片实例发送失败，降级为普通卡片: "+err.Error(), "feishu")
-		return FeishuSendCard(state, openID, card)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		state.Logger.Warn("CardKit 卡片实例发送失败，降级为普通卡片", "feishu")
+		return FeishuSendCardWithContext(ctx, state, openID, card)
 	}
 	sequence := 0
 	for _, content := range feishuStreamChunks(fullText) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		sequence++
-		if err := feishuCardKitUpdateContent(state, cardID, content, sequence); err != nil {
-			state.Logger.Warn("CardKit 流式内容更新失败，将直接完成当前卡片: "+err.Error(), "feishu")
+		if err := feishuCardKitUpdateContentWithContext(ctx, state, cardID, content, sequence); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			state.Logger.Warn("CardKit 流式内容更新失败，将直接完成当前卡片", "feishu")
 			break
 		}
 	}
 	sequence++
-	if err := feishuCardKitUpdate(state, cardID, feishuCardKitCard(card, fullText, true), sequence); err != nil {
-		state.Logger.Warn("CardKit 最终整卡更新失败: "+err.Error(), "feishu")
+	if err := feishuCardKitUpdateWithContext(ctx, state, cardID, feishuCardKitCard(card, fullText, true), sequence); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		state.Logger.Warn("CardKit 最终整卡更新失败", "feishu")
 	}
 	sequence++
 	summary := strings.ReplaceAll(strings.TrimSpace(fullText), "\n", " ")
 	if len([]rune(summary)) > 50 {
 		summary = string([]rune(summary)[:49]) + "…"
 	}
-	if err := feishuCardKitFinish(state, cardID, summary, sequence); err != nil {
-		state.Logger.Warn("CardKit 关闭流式模式失败: "+err.Error(), "feishu")
+	if err := feishuCardKitFinishWithContext(ctx, state, cardID, summary, sequence); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		state.Logger.Warn("CardKit 关闭流式模式失败", "feishu")
 	}
 	return nil
 }
@@ -492,7 +603,14 @@ func FeishuDeleteDefaultBinding(state *app.State) error {
 }
 
 func NotificationConfigured(state *app.State, accountID string) (bool, string) {
-	if ok, _ := telegram.VerifyConfig(state); ok {
+	return NotificationConfiguredWithContext(context.Background(), state, accountID)
+}
+
+func NotificationConfiguredWithContext(ctx context.Context, state *app.State, accountID string) (bool, string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ok, _ := telegram.VerifyConfigWithContext(ctx, state); ok {
 		return true, ""
 	}
 	if FeishuEnabled(state) {
@@ -511,11 +629,39 @@ func NotificationConfigured(state *app.State, accountID string) (bool, string) {
 
 // SendWeixinNotification 将同一份通知文案发送到全局绑定的微信 iLink 用户。
 func SendWeixinNotification(state *app.State, message string) bool {
-	return state.Config.Get().IsWeixinNotificationsEnabled() && state.Weixin != nil && state.Weixin.SendDefault(message)
+	return SendWeixinNotificationWithContext(context.Background(), state, message)
+}
+
+func SendWeixinNotificationWithContext(ctx context.Context, state *app.State, message string) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !state.Config.Get().IsWeixinNotificationsEnabled() || state.Weixin == nil {
+		return false
+	}
+	if notifier, ok := state.Weixin.(interface {
+		SendDefaultWithContext(context.Context, string) bool
+	}); ok {
+		return notifier.SendDefaultWithContext(ctx, message)
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	return state.Weixin.SendDefault(message)
 }
 
 // FeishuSendDefaultNotification 向全局飞书接收人发送通知。
 func FeishuSendDefaultNotification(state *app.State, title, text, template string, actions []interface{}) bool {
+	return FeishuSendDefaultNotificationWithContext(context.Background(), state, title, text, template, actions)
+}
+
+func FeishuSendDefaultNotificationWithContext(ctx context.Context, state *app.State, title, text, template string, actions []interface{}) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false
+	}
 	if !FeishuEnabled(state) {
 		return false
 	}
@@ -523,8 +669,8 @@ func FeishuSendDefaultNotification(state *app.State, title, text, template strin
 	if !ok {
 		return false
 	}
-	if err := FeishuSendStreamingCard(state, binding.OpenID, FeishuTextCard(title, text, template, actions)); err != nil {
-		state.Logger.Warn("发送飞书通知失败: "+err.Error(), "feishu")
+	if err := FeishuSendStreamingCardWithContext(ctx, state, binding.OpenID, FeishuTextCard(title, text, template, actions)); err != nil {
+		state.Logger.Warn("发送飞书通知失败", "feishu")
 		return false
 	}
 	return true

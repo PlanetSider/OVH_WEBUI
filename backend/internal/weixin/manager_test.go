@@ -1,9 +1,13 @@
 package weixin
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExtractTextAndSplit(t *testing.T) {
@@ -24,6 +28,36 @@ func TestExtractTextAndSplit(t *testing.T) {
 		if len([]rune(chunk)) > 8 {
 			t.Fatalf("chunk too long: %q", chunk)
 		}
+	}
+}
+
+func TestPollLoginScrubsUnknownProviderStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"provider-secret-status"}`))
+	}))
+	defer server.Close()
+
+	manager := &Manager{
+		client: NewClient(server.Client(), server.URL),
+		loginSessions: map[string]*loginSession{
+			"session": {
+				ID:        "session",
+				QRCode:    "qr",
+				BaseURL:   server.URL,
+				ExpiresAt: time.Now().Add(time.Minute),
+			},
+		},
+	}
+	result, err := manager.PollLogin(context.Background(), "session")
+	if err != nil {
+		t.Fatalf("PollLogin error = %v", err)
+	}
+	if result.Error != "扫码状态异常，请重新尝试" {
+		t.Fatalf("unknown status error = %q", result.Error)
+	}
+	if strings.Contains(result.Error, "provider-secret-status") {
+		t.Fatalf("provider status leaked: %q", result.Error)
 	}
 }
 

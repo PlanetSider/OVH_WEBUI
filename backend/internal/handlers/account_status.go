@@ -15,7 +15,7 @@ func AccountsStatus(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		accounts, err := state.DB.ListAccounts()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取账户状态失败"})
 			return
 		}
 		results := make([]gin.H, len(accounts))
@@ -29,25 +29,31 @@ func AccountsStatus(state *app.State) gin.HandlerFunc {
 					item["proxyPaused"] = status.Paused
 					item["proxyConsecutiveFailures"] = status.ConsecutiveFailures
 					if status.LastError != "" {
-						item["proxyLastError"] = status.LastError
+						item["proxyLastError"] = "代理连接失败"
 					}
 				}
 				client, clientErr := state.OVH.ClientFor(account.ID)
 				if clientErr != nil {
-					item["error"] = clientErr.Error()
+					item["error"] = "账户认证失败"
 					results[index] = item
 					return
 				}
 				var me map[string]interface{}
 				if err := client.Get("/me", &me); err != nil {
-					item["error"] = err.Error()
+					item["error"] = "账户认证失败"
 					results[index] = item
 					return
 				}
 				item["valid"] = true
-				if email, ok := me["email"].(string); ok { item["email"] = email }
-				if firstname, ok := me["firstname"].(string); ok { item["firstname"] = firstname }
-				if name, ok := me["name"].(string); ok { item["ovhName"] = name }
+				if email, ok := me["email"].(string); ok {
+					item["email"] = email
+				}
+				if firstname, ok := me["firstname"].(string); ok {
+					item["firstname"] = firstname
+				}
+				if name, ok := me["name"].(string); ok {
+					item["ovhName"] = name
+				}
 				results[index] = item
 			}(i, account)
 		}

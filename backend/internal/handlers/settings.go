@@ -14,26 +14,26 @@ import (
 
 type settingsResponse struct {
 	types.Config
-	AppKeyConfigured              bool `json:"appKeyConfigured"`
-	AppSecretConfigured           bool `json:"appSecretConfigured"`
-	ConsumerKeyConfigured         bool `json:"consumerKeyConfigured"`
-	TelegramTokenConfigured       bool `json:"tgTokenConfigured"`
-	TelegramChatConfigured        bool `json:"tgChatIdConfigured"`
-	TelegramWebhookConfigured     bool `json:"tgWebhookSecretConfigured"`
-	FeishuAppSecretConfigured     bool `json:"feishuAppSecretConfigured"`
-	FeishuVerificationConfigured  bool `json:"feishuVerificationTokenConfigured"`
-	FeishuEncryptConfigured       bool `json:"feishuEncryptKeyConfigured"`
+	AppKeyConfigured             bool `json:"appKeyConfigured"`
+	AppSecretConfigured          bool `json:"appSecretConfigured"`
+	ConsumerKeyConfigured        bool `json:"consumerKeyConfigured"`
+	TelegramTokenConfigured      bool `json:"tgTokenConfigured"`
+	TelegramChatConfigured       bool `json:"tgChatIdConfigured"`
+	TelegramWebhookConfigured    bool `json:"tgWebhookSecretConfigured"`
+	FeishuAppSecretConfigured    bool `json:"feishuAppSecretConfigured"`
+	FeishuVerificationConfigured bool `json:"feishuVerificationTokenConfigured"`
+	FeishuEncryptConfigured      bool `json:"feishuEncryptKeyConfigured"`
 }
 
 func toSettingsResponse(cfg types.Config) settingsResponse {
 	response := settingsResponse{
-		Config: cfg,
+		Config:           cfg,
 		AppKeyConfigured: cfg.AppKey != "", AppSecretConfigured: cfg.AppSecret != "",
 		ConsumerKeyConfigured: cfg.ConsumerKey != "", TelegramTokenConfigured: cfg.TgToken != "",
 		TelegramChatConfigured: cfg.TgChatID != "", TelegramWebhookConfigured: cfg.TgWebhookSecret != "",
-		FeishuAppSecretConfigured: cfg.FeishuAppSecret != "",
+		FeishuAppSecretConfigured:    cfg.FeishuAppSecret != "",
 		FeishuVerificationConfigured: cfg.FeishuVerificationToken != "",
-		FeishuEncryptConfigured: cfg.FeishuEncryptKey != "",
+		FeishuEncryptConfigured:      cfg.FeishuEncryptKey != "",
 	}
 	response.AppKey, response.AppSecret, response.ConsumerKey = "", "", ""
 	response.TgToken, response.TgChatID, response.TgWebhookSecret = "", "", ""
@@ -54,7 +54,7 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var patch types.Config
 		if err := c.ShouldBindJSON(&patch); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求格式无效"})
 			return
 		}
 
@@ -149,7 +149,7 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		}
 
 		if err := state.Config.Set(newCfg); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "保存设置失败"})
 			return
 		}
 		if newCfg.FeishuAppID != prev.FeishuAppID || newCfg.FeishuAppSecret != prev.FeishuAppSecret || newCfg.FeishuDomain != prev.FeishuDomain {
@@ -164,7 +164,7 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if newCfg.TgToken != "" && newCfg.TgChatID != "" {
 			changed := newCfg.TgToken != prev.TgToken || newCfg.TgChatID != prev.TgChatID
 			if changed || prev.TgToken == "" || prev.TgChatID == "" {
-				state.Logger.Info("Telegram Token或Chat ID已更新/设置。尝试发送Telegram测试消息到 Chat ID: "+newCfg.TgChatID, "")
+				state.Logger.Info("Telegram Token 或 Chat ID 已更新/设置，尝试发送测试消息", "telegram")
 				if telegram.SendMessage(state, "OVH 控制台: Telegram 通知已成功配置 (来自 Go 后端测试)", nil) {
 					state.Logger.Info("Telegram 测试消息发送成功。", "")
 				} else {
@@ -191,7 +191,7 @@ func VerifyAuth(state *app.State) gin.HandlerFunc {
 		}
 		var me map[string]interface{}
 		if err := client.Get("/me", &me); err != nil {
-			state.Logger.Error("Authentication verification failed: "+err.Error(), "system")
+			state.Logger.Error("Authentication verification failed", "system")
 			c.JSON(http.StatusOK, gin.H{"valid": false})
 			return
 		}

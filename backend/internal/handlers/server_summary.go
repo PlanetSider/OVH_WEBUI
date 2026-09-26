@@ -19,7 +19,7 @@ func GetServerSummary(state *app.State) gin.HandlerFunc {
 		}
 		var info, serviceInfo, hardware map[string]interface{}
 		if err := client.Get("/dedicated/server/"+serviceName, &info); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "获取服务器摘要失败"})
 			return
 		}
 		_ = client.Get("/dedicated/server/"+serviceName+"/serviceInfos", &serviceInfo)

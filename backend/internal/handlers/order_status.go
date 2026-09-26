@@ -61,7 +61,7 @@ func RefreshPurchaseHistoryStatus(loop *purchase.OrderStatusLoop) gin.HandlerFun
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
 				"status":  "error",
-				"error":   err.Error(),
+				"error":   "订单状态刷新失败",
 			})
 			return
 		}

@@ -92,7 +92,7 @@ func GetRealtimeAvailability(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取实时可用性快照失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取实时可用性快照失败"})
 			return
 		}
 
@@ -139,7 +139,7 @@ func GetPreaddedServers(state *app.State) gin.HandlerFunc {
 		}
 		rows, err := state.DB.ListPreaddedServerResults(region, dbSearch)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取预增服务器失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取预增服务器失败"})
 			return
 		}
 		items := make([]db.PreaddedServerPageItem, 0, len(rows))
@@ -188,7 +188,7 @@ func GetPreaddedServers(state *app.State) gin.HandlerFunc {
 
 		comparisons, err := state.DB.ListPreaddedServerComparisons(region)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取预增服务器比对时间失败: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取预增服务器比对时间失败"})
 			return
 		}
 		comparisonTimes := gin.H{}
@@ -235,7 +235,7 @@ func positiveQueryInt(raw string, fallback, min, max int) int {
 func RefreshRealtimeAvailabilityOnce(state *app.State) {
 	for _, region := range []string{"eu", "ca"} {
 		if err := refreshRealtimeAvailabilityRegion(context.Background(), state, region); err != nil {
-			state.Logger.Warn("实时可用性整点刷新失败 "+region+": "+err.Error(), "availability")
+			state.Logger.Warn("实时可用性整点刷新失败 "+region, "availability")
 		}
 	}
 }
@@ -288,12 +288,8 @@ func fetchRealtimeAvailabilityItems(ctx context.Context, state *app.State, regio
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		detail := strings.TrimSpace(string(body))
-		if detail == "" {
-			detail = http.StatusText(resp.StatusCode)
-		}
-		return nil, fmt.Errorf("OVH availability API returned HTTP %d: %s", resp.StatusCode, detail)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("OVH availability API returned HTTP %d", resp.StatusCode)
 	}
 	var items []map[string]interface{}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, realtimeAvailabilityMaxBody)).Decode(&items); err != nil {
@@ -324,12 +320,8 @@ func loadComparisonPlanCodes(ctx context.Context, state *app.State, region strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		detail := strings.TrimSpace(string(body))
-		if detail == "" {
-			detail = http.StatusText(resp.StatusCode)
-		}
-		return nil, comparison.Label, fmt.Errorf("OVH catalog API returned HTTP %d: %s", resp.StatusCode, detail)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, comparison.Label, fmt.Errorf("OVH catalog API returned HTTP %d", resp.StatusCode)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, realtimeAvailabilityMaxBody))
 	if err != nil {
@@ -340,7 +332,7 @@ func loadComparisonPlanCodes(ctx context.Context, state *app.State, region strin
 		return nil, comparison.Label, err
 	}
 	if saveErr := state.DB.UpsertCatalog(comparison.Subsidiary, string(raw)); saveErr != nil {
-		state.Logger.Warn("保存 "+comparison.Label+" 对比目录失败: "+saveErr.Error(), "availability")
+		state.Logger.Warn("保存 "+comparison.Label+" 对比目录失败", "availability")
 	}
 	return planCodes, comparison.Label, nil
 }

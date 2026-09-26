@@ -30,6 +30,8 @@ type FeishuLongConnectionManager struct {
 	configKey string
 	version   uint64
 	stopped   bool
+	runWG     sync.WaitGroup
+	runCancel context.CancelFunc
 }
 
 // NewFeishuLongConnectionManager 创建管理器并按当前配置决定是否启动连接。
@@ -60,12 +62,18 @@ func (m *FeishuLongConnectionManager) Reconfigure() {
 	}
 	if !want {
 		old := m.client
+		cancel := m.runCancel
 		m.client = nil
+		m.runCancel = nil
 		m.configKey = ""
 		m.version++
 		m.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 		if old != nil {
 			old.Close()
+			m.runWG.Wait()
 			m.state.Logger.Info("飞书长连接已停止（当前为 Webhook 或配置未完成）", "feishu")
 		}
 		return
@@ -76,22 +84,27 @@ func (m *FeishuLongConnectionManager) Reconfigure() {
 		return
 	}
 	old := m.client
+	cancel := m.runCancel
 	m.client = nil
+	m.runCancel = nil
 	m.configKey = configKey
 	m.version++
 	version := m.version
 	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if old != nil {
 		old.Close()
+		m.runWG.Wait()
 		m.state.Logger.Info("飞书长连接配置已变化，正在重建连接", "feishu")
 	}
 
 	m.start(cfg.FeishuAppID, cfg.FeishuAppSecret, cfg.FeishuDomain, version)
 }
 
-// Stop 关闭当前连接。SDK Start 的主循环不会因 context 取消而返回，但
-// Close 会立即关闭底层 WebSocket 并停止自动重连；退出时只保留一个无网络
-// 的 SDK goroutine，不影响进程结束。
+// Stop 关闭当前连接并等待 SDK Start 循环退出。SDK Close 负责中断底层
+// WebSocket 和自动重连，WaitGroup 负责向调用方提供明确的生命周期边界。
 func (m *FeishuLongConnectionManager) Stop() {
 	if m == nil {
 		return
@@ -99,11 +112,19 @@ func (m *FeishuLongConnectionManager) Stop() {
 	m.mu.Lock()
 	m.stopped = true
 	old := m.client
+	cancel := m.runCancel
 	m.client = nil
+	m.runCancel = nil
 	m.version++
 	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if old != nil {
 		old.Close()
+	}
+	m.runWG.Wait()
+	if old != nil {
 		m.state.Logger.Info("飞书长连接已关闭", "feishu")
 	}
 }
@@ -127,7 +148,11 @@ func (m *FeishuLongConnectionManager) start(appID, appSecret, domain string, ver
 		if !m.acceptLongConnectionPayload(payload) {
 			return fmt.Errorf("飞书长连接事件 app_id 与当前配置不一致")
 		}
-		if !claimFeishuEvent(m.state, payload) {
+		claimed, claimErr := claimFeishuEvent(m.state, payload)
+		if claimErr != nil {
+			return claimErr
+		}
+		if !claimed {
 			return nil
 		}
 		processFeishuMessage(m.state, m.mon, payload)
@@ -145,7 +170,11 @@ func (m *FeishuLongConnectionManager) start(appID, appSecret, domain string, ver
 		if !m.acceptLongConnectionPayload(payload) {
 			return nil, fmt.Errorf("飞书长连接卡片 app_id 与当前配置不一致")
 		}
-		if !claimFeishuEvent(m.state, payload) {
+		claimed, claimErr := claimFeishuEvent(m.state, payload)
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		if !claimed {
 			return &callback.CardActionTriggerResponse{
 				Toast: &callback.Toast{Type: "success", Content: "操作已处理"},
 			}, nil
@@ -170,7 +199,7 @@ func (m *FeishuLongConnectionManager) start(appID, appSecret, domain string, ver
 			m.state.Logger.Info("飞书长连接已就绪", "feishu")
 		}),
 		larkws.WithOnError(func(err error) {
-			m.state.Logger.Warn("飞书长连接错误: "+err.Error(), "feishu")
+			m.state.Logger.Warn("飞书长连接错误", "feishu")
 		}),
 		larkws.WithOnReconnecting(func() {
 			m.state.Logger.Warn("飞书长连接断开，正在自动重连", "feishu")
@@ -189,19 +218,24 @@ func (m *FeishuLongConnectionManager) start(appID, appSecret, domain string, ver
 		client.Close()
 		return
 	}
+	runCtx, runCancel := context.WithCancel(context.Background())
 	m.client = client
+	m.runCancel = runCancel
+	m.runWG.Add(1)
 	m.mu.Unlock()
 
 	m.state.Logger.Info("正在启动飞书长连接: "+wsDomain, "feishu")
 	go func() {
-		err := client.Start(context.Background())
+		defer m.runWG.Done()
+		err := client.Start(runCtx)
 		m.mu.Lock()
 		if m.client == client {
 			m.client = nil
+			m.runCancel = nil
 		}
 		m.mu.Unlock()
 		if err != nil {
-			m.state.Logger.Error("飞书长连接启动失败: "+err.Error(), "feishu")
+			m.state.Logger.Error("飞书长连接启动失败", "feishu")
 		}
 	}()
 }

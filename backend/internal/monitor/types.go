@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -28,6 +29,7 @@ type Monitor struct {
 	checkInterval int  // 全局固定 5 秒
 	thread        *sync.WaitGroup
 	stopCh        chan struct{}
+	monitorCancel context.CancelFunc
 	maxWorkers    int
 
 	// Options 缓存（旧机制，兼容性保留）

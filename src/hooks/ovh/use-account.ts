@@ -1,5 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/http";
+import { useAccountQuery, useScopedAccountApi } from "@/hooks/ovh/use-account-scope";
 import { qk } from "@/lib/query";
 
 export interface AccountInfo {
@@ -34,7 +33,8 @@ export interface EmailHistoryEntry {
 
 /** OVH 账户信息（后端直接返回 OVH /me 字段） */
 export function useAccountInfo() {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery<AccountInfo>(api.accountId, {
     queryKey: qk.account.info(),
     queryFn: async () => (await api.get<AccountInfo>("/ovh/account/info")).data,
   });
@@ -42,7 +42,8 @@ export function useAccountInfo() {
 
 /** 退款记录（后端直接返回数组） */
 export function useRefunds() {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery<RefundRecord[]>(api.accountId, {
     queryKey: qk.account.refunds(),
     queryFn: async () => (await api.get<RefundRecord[]>("/ovh/account/refunds")).data,
   });
@@ -50,7 +51,8 @@ export function useRefunds() {
 
 /** 邮件历史（后端直接返回数组） */
 export function useEmails() {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery<EmailHistoryEntry[]>(api.accountId, {
     queryKey: qk.account.emails(),
     queryFn: async () => (await api.get<EmailHistoryEntry[]>("/ovh/account/email-history")).data,
   });
@@ -70,7 +72,8 @@ export interface OrderRecord {
 
 /** OVH 订单列表 GET /me/order 详情 */
 export function useOrders(limit = 30) {
-  return useQuery({
+  const api = useScopedAccountApi();
+  return useAccountQuery<OrderRecord[]>(api.accountId, {
     queryKey: [...qk.account.info(), "orders", limit] as const,
     queryFn: async () => {
       const res = await api.get<OrderRecord[] | { orders?: OrderRecord[] }>(

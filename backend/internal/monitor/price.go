@@ -45,35 +45,42 @@ func optionsFromConfig(configInfo map[string]interface{}) []string {
 
 // verifyPriceAvailable 完成一次购物车价格校验，并返回可直接用于通知的价格文案。
 // 返回值依次为：价格文案、价格校验是否通过、失败原因。
-func (m *Monitor) verifyPriceAvailable(accountID, planCode, datacenter string, configInfo map[string]interface{}) (string, bool, string) {
+func (m *Monitor) verifyPriceAvailable(ctx context.Context, accountID, planCode, datacenter string, configInfo map[string]interface{}) (string, bool, string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	options := optionsFromConfig(configInfo)
-	result := price.GetInternal(m.state, accountID, planCode, datacenter, options)
+	result := price.GetInternalWithContext(ctx, m.state, accountID, planCode, datacenter, options)
+	if err := ctx.Err(); err != nil {
+		return "", false, "价格校验已取消"
+	}
 	if !result.Success {
 		errMsg := result.Error
 		if errMsg == "" {
 			errMsg = "未知错误"
 		}
 		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
-		return m.getCatalogPriceInfoText(accountID, planCode, options), false, errMsg
+		return m.getCatalogPriceInfoTextWithContext(ctx, accountID, planCode, options), false, errMsg
 	}
 	if result.Price == nil {
 		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - price字段缺失", planCode, datacenter), "monitor")
-		return m.getCatalogPriceInfoText(accountID, planCode, options), false, "price字段缺失"
+		return m.getCatalogPriceInfoTextWithContext(ctx, accountID, planCode, options), false, "price字段缺失"
 	}
 	withTax := result.Price.Prices["withTax"]
 	if withTax == nil {
 		errMsg := "withTax无效(<nil>)"
 		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
-		return m.getCatalogPriceInfoText(accountID, planCode, options), false, errMsg
+		return m.getCatalogPriceInfoTextWithContext(ctx, accountID, planCode, options), false, errMsg
 	}
 	if v, ok := numconv.ToFloat64(withTax); ok && v == 0 {
-		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - withTax无效(0)", planCode, datacenter), "monitor")
-		return m.getCatalogPriceInfoText(accountID, planCode, options), false, "withTax无效(0)"
+		errMsg := "withTax无效(0)"
+		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
+		return m.getCatalogPriceInfoTextWithContext(ctx, accountID, planCode, options), false, errMsg
 	}
 	display, displayErr := price.GetDisplayFromResult(m.state, accountID, planCode, options, result)
 	priceText := ""
 	if displayErr != nil {
-		m.state.Logger.Warn("价格目录拆分失败: "+displayErr.Error(), "monitor")
+		m.state.Logger.Warn("价格目录拆分失败", "monitor")
 	}
 	if display.TotalKnown || display.BreakdownKnown {
 		priceText = formatNotificationPrice(display)
@@ -85,9 +92,13 @@ func (m *Monitor) verifyPriceAvailable(accountID, planCode, datacenter string, c
 // getCatalogPriceInfoText 与服务器列表使用相同的公开 catalog 价格口径。
 // 购物车失败时仍可显示月费和安装费，但不伪造首月实际总价。
 func (m *Monitor) getCatalogPriceInfoText(accountID, planCode string, options []string) string {
-	display, err := price.GetCatalogDisplay(m.state, accountID, planCode, options)
+	return m.getCatalogPriceInfoTextWithContext(context.Background(), accountID, planCode, options)
+}
+
+func (m *Monitor) getCatalogPriceInfoTextWithContext(ctx context.Context, accountID, planCode string, options []string) string {
+	display, err := price.GetCatalogDisplayWithContext(ctx, m.state, accountID, planCode, options)
 	if err != nil {
-		m.state.Logger.Warn("价格目录获取失败: "+err.Error(), "monitor")
+		m.state.Logger.Warn("价格目录获取失败", "monitor")
 		return ""
 	}
 	if !display.BreakdownKnown {
@@ -113,7 +124,7 @@ func (m *Monitor) getPriceInfoTextWithContext(ctx context.Context, accountID, pl
 
 	display, err := price.GetDisplayWithContext(ctx, m.state, accountID, planCode, datacenter, options)
 	if err != nil {
-		m.state.Logger.Warn("价格拆分失败: "+err.Error(), "monitor")
+		m.state.Logger.Warn("价格拆分失败", "monitor")
 	}
 	if !display.TotalKnown && !display.BreakdownKnown {
 		return ""
@@ -206,7 +217,14 @@ func currencySymbol(currency string) string {
 
 // getPriceWithTimeout 带超时的询价
 func (m *Monitor) getPriceWithTimeout(accountID, planCode, datacenter string, configInfo map[string]interface{}, timeout time.Duration) (string, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return m.getPriceWithTimeoutContext(context.Background(), accountID, planCode, datacenter, configInfo, timeout)
+}
+
+func (m *Monitor) getPriceWithTimeoutContext(parent context.Context, accountID, planCode, datacenter string, configInfo map[string]interface{}, timeout time.Duration) (string, string) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	type result struct {
 		text string
@@ -221,6 +239,9 @@ func (m *Monitor) getPriceWithTimeout(accountID, planCode, datacenter string, co
 		if result.text == "" {
 			elapsed := time.Since(start).Seconds()
 			if ctx.Err() != nil {
+				if parent.Err() != nil {
+					return "", "价格接口已取消"
+				}
 				return "", fmt.Sprintf("价格接口超时（等待%.1f秒）", elapsed)
 			}
 			return "", fmt.Sprintf("价格接口未返回结果（耗时%.1f秒）", elapsed)
@@ -228,6 +249,9 @@ func (m *Monitor) getPriceWithTimeout(accountID, planCode, datacenter string, co
 		return result.text, ""
 	case <-ctx.Done():
 		elapsed := time.Since(start).Seconds()
+		if parent.Err() != nil {
+			return "", "价格接口已取消"
+		}
 		m.state.Logger.Warn("价格获取超时，已请求取消后台请求，发送不带价格的通知。", "monitor")
 		return "", fmt.Sprintf("价格接口超时（等待%.1f秒）", elapsed)
 	}

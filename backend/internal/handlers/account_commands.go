@@ -93,7 +93,7 @@ func switchDefaultAccount(state *app.State, accountID string) (types.OVHAccount,
 func sendTelegramAccountMenu(state *app.State, chatID interface{}, replyToMessageID int64) {
 	accounts, err := listAccountChoices(state)
 	if err != nil {
-		telegram.SendReply(state, chatID, "❌ 无法读取 OVH 账户："+err.Error(), replyToMessageID)
+		telegram.SendReply(state, chatID, "❌ 无法读取 OVH 账户，请稍后重试", replyToMessageID)
 		return
 	}
 	if len(accounts) == 0 {
@@ -123,7 +123,7 @@ func sendTelegramAccountMenu(state *app.State, chatID interface{}, replyToMessag
 func sendFeishuAccountMenu(state *app.State, openID string) error {
 	accounts, err := listAccountChoices(state)
 	if err != nil {
-		return monitor.FeishuSendText(state, openID, "❌ 无法读取 OVH 账户："+err.Error())
+		return monitor.FeishuSendText(state, openID, "❌ 无法读取 OVH 账户，请稍后重试")
 	}
 	if len(accounts) == 0 {
 		return monitor.FeishuSendText(state, openID, "❌ 当前没有配置 OVH 账户")

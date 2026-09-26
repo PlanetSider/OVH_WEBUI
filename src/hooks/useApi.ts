@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import api from "@/lib/api";
 import type {
   Stats,
@@ -19,23 +19,39 @@ export function useApiQuery<T>(queryFn: () => Promise<T>, deps: unknown[] = []) 
   const [data, setData] = useState<T | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const requestId = useRef(0);
+  const isMounted = useRef(false);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (): Promise<boolean> => {
+    if (!isMounted.current) return false;
+    const id = ++requestId.current;
     setIsLoading(true);
     setError(null);
     try {
       const result = await queryFn();
+      if (id !== requestId.current || !isMounted.current) return false;
       setData(result);
+      return true;
     } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
+      if (id === requestId.current && isMounted.current) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+      }
+      return false;
     } finally {
-      setIsLoading(false);
+      if (id === requestId.current && isMounted.current) setIsLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
   useEffect(() => {
+    isMounted.current = true;
     void refetch();
+    return () => {
+      // These refs track request lifecycle, not DOM nodes.
+      isMounted.current = false;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      ++requestId.current;
+    };
   }, [refetch]);
 
   return { data, isLoading, error, refetch };

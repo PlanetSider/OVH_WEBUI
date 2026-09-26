@@ -67,7 +67,7 @@ func newManager(state *app.State, store *Store, client *Client, handler TextHand
 		loginSessions: make(map[string]*loginSession),
 	}
 	if credentials, ok, err := store.LoadCredentials(); err != nil {
-		state.Logger.Error("加载微信 iLink 凭据失败: "+err.Error(), "weixin")
+		state.Logger.Error("加载微信 iLink 凭据失败", "weixin")
 	} else if ok {
 		manager.credentials = credentials
 	}
@@ -120,12 +120,19 @@ func (m *Manager) restart() {
 }
 
 func (m *Manager) SendDefault(message string) bool {
+	return m.SendDefaultWithContext(context.Background(), message)
+}
+
+func (m *Manager) SendDefaultWithContext(ctx context.Context, message string) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	credentials := m.currentCredentials()
 	if credentials.UserID == "" {
 		return false
 	}
-	if err := m.SendTo(context.Background(), credentials.UserID, message); err != nil {
-		m.state.Logger.Warn("微信通知发送失败: "+err.Error(), "weixin")
+	if err := m.SendTo(ctx, credentials.UserID, message); err != nil {
+		m.state.Logger.Warn("微信通知发送失败", "weixin")
 		return false
 	}
 	return true
@@ -143,7 +150,40 @@ func (m *Manager) SendTest(ctx context.Context) error {
 		"🔔 微信 iLink Bot 测试通知\n\n时间: "+time.Now().Format("2006-01-02 15:04:05")+"\n\n✅ 通知配置正常！")
 }
 
+func (m *Manager) lockSendContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if m.sendMu.TryLock() {
+			if err := ctx.Err(); err != nil {
+				m.sendMu.Unlock()
+				return err
+			}
+			return nil
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func (m *Manager) SendTo(ctx context.Context, userID, message string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	credentials := m.currentCredentials()
 	if credentials.Token == "" || strings.TrimSpace(userID) == "" {
 		return fmt.Errorf("微信 iLink Bot 尚未连接")
@@ -152,11 +192,13 @@ func (m *Manager) SendTo(ctx context.Context, userID, message string) error {
 	if len(chunks) == 0 {
 		return fmt.Errorf("消息内容为空")
 	}
-	m.sendMu.Lock()
+	if err := m.lockSendContext(ctx); err != nil {
+		return err
+	}
 	defer m.sendMu.Unlock()
 	contextToken, err := m.store.ContextToken(credentials.AccountID, userID)
 	if err != nil {
-		m.state.Logger.Warn("读取微信 context_token 失败: "+err.Error(), "weixin")
+		m.state.Logger.Warn("读取微信 context_token 失败", "weixin")
 		contextToken = ""
 	}
 	for index, chunk := range chunks {
@@ -316,7 +358,7 @@ func (m *Manager) PollLogin(ctx context.Context, sessionID string) (LoginStatus,
 		m.credentialsMu.Unlock()
 		if token := strings.TrimSpace(response.ContextToken); token != "" {
 			if err := m.store.SaveContextToken(credentials.AccountID, credentials.UserID, token); err != nil {
-				m.state.Logger.Warn("保存扫码返回的微信 context_token 失败: "+err.Error(), "weixin")
+				m.state.Logger.Warn("保存扫码返回的微信 context_token 失败", "weixin")
 			}
 		}
 		result := LoginStatus{
@@ -327,7 +369,7 @@ func (m *Manager) PollLogin(ctx context.Context, sessionID string) (LoginStatus,
 		m.restart()
 		return result, nil
 	default:
-		return LoginStatus{Status: "error", Error: "未知扫码状态: " + response.Status}, nil
+		return LoginStatus{Status: "error", Error: "扫码状态异常，请重新尝试"}, nil
 	}
 }
 
@@ -443,7 +485,7 @@ func (m *Manager) pollLoop(ctx context.Context, done chan struct{}) {
 		if response.SyncBuf != "" && response.SyncBuf != syncBuf {
 			syncBuf = response.SyncBuf
 			if err := m.store.SaveSyncBuf(credentials.AccountID, syncBuf); err != nil {
-				m.state.Logger.Warn("保存微信同步游标失败: "+err.Error(), "weixin")
+				m.state.Logger.Warn("保存微信同步游标失败", "weixin")
 			}
 		}
 		for _, message := range response.Messages {
@@ -469,7 +511,7 @@ func (m *Manager) processInbound(credentials Credentials, message InboundMessage
 	}
 	if token := strings.TrimSpace(message.ContextToken); token != "" {
 		if err := m.store.SaveContextToken(credentials.AccountID, senderID, token); err != nil {
-			m.state.Logger.Warn("保存微信 context_token 失败: "+err.Error(), "weixin")
+			m.state.Logger.Warn("保存微信 context_token 失败", "weixin")
 		}
 	}
 	text := extractText(message.ItemList)
@@ -491,15 +533,17 @@ func (m *Manager) processInbound(credentials Credentials, message InboundMessage
 	if m.handler == nil {
 		return
 	}
-	go func() {
+	if !m.state.GoBackground(func(ctx context.Context) {
 		reply := strings.TrimSpace(m.handler(senderID, text))
 		if reply == "" {
 			return
 		}
-		if err := m.SendTo(context.Background(), senderID, reply); err != nil {
-			m.state.Logger.Warn("发送微信命令回复失败: "+err.Error(), "weixin")
+		if err := m.SendTo(ctx, senderID, reply); err != nil {
+			m.state.Logger.Warn("发送微信命令回复失败", "weixin")
 		}
-	}()
+	}) {
+		return
+	}
 }
 
 func (m *Manager) currentCredentials() Credentials {
@@ -511,9 +555,9 @@ func (m *Manager) currentCredentials() Credentials {
 func (m *Manager) setPollError(err error) {
 	m.statusMu.Lock()
 	m.connected = false
-	m.lastError = err.Error()
+	m.lastError = "微信长轮询暂时不可用"
 	m.statusMu.Unlock()
-	m.state.Logger.Warn("微信长轮询异常: "+err.Error(), "weixin")
+	m.state.Logger.Warn("微信长轮询异常", "weixin")
 }
 
 func (m *Manager) setLoginResult(sessionID string, result LoginStatus) {

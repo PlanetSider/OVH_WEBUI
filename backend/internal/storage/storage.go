@@ -17,9 +17,10 @@ type Paths struct {
 
 // DefaultPaths 从环境变量读取，否则用当前工作目录下的相对路径。
 // 默认全部落在 ./data 下：
-//   data/         SQLite (sniper.db)
-//   data/cache/   OVH catalog 等缓存文件
-//   data/logs/    运行日志
+//
+//	data/         SQLite (sniper.db)
+//	data/cache/   OVH catalog 等缓存文件
+//	data/logs/    运行日志
 //
 // 行为：在哪儿执行命令，data/ 就出现在哪儿（Windows / Linux / macOS 一致）。
 // 想固定到别的位置就设 DATA_DIR / CACHE_DIR / LOGS_DIR 环境变量。
@@ -64,19 +65,53 @@ func (p Paths) LogFile(name string) string {
 	return filepath.Join(p.LogsDir, name)
 }
 
-// 文件级互斥：避免多 goroutine 同时写同一文件
-var fileLocks sync.Map
+// 文件级互斥：避免多 goroutine 同时写同一文件。
+type fileLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
 
-func lockFor(path string) *sync.Mutex {
-	v, _ := fileLocks.LoadOrStore(path, &sync.Mutex{})
-	return v.(*sync.Mutex)
+type fileLockLease struct {
+	path  string
+	entry *fileLockEntry
+}
+
+var (
+	fileLocksMu sync.Mutex
+	fileLocks   = map[string]*fileLockEntry{}
+)
+
+func acquireFileLock(path string) *fileLockLease {
+	fileLocksMu.Lock()
+	entry := fileLocks[path]
+	if entry == nil {
+		entry = &fileLockEntry{}
+		fileLocks[path] = entry
+	}
+	entry.refs++
+	fileLocksMu.Unlock()
+
+	entry.mu.Lock()
+	return &fileLockLease{path: path, entry: entry}
+}
+
+func (l *fileLockLease) Unlock() {
+	if l == nil || l.entry == nil {
+		return
+	}
+	l.entry.mu.Unlock()
+	fileLocksMu.Lock()
+	l.entry.refs--
+	if l.entry.refs == 0 {
+		delete(fileLocks, l.path)
+	}
+	fileLocksMu.Unlock()
 }
 
 // ReadJSON 读 JSON 文件到 v；文件不存在或为空时不报错且不修改 v
 func ReadJSON(path string, v interface{}) error {
-	m := lockFor(path)
-	m.Lock()
-	defer m.Unlock()
+	lease := acquireFileLock(path)
+	defer lease.Unlock()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -93,9 +128,8 @@ func ReadJSON(path string, v interface{}) error {
 
 // WriteJSON 原子写 JSON 文件（先写 tmp 再 rename，避免崩溃半写）
 func WriteJSON(path string, v interface{}) error {
-	m := lockFor(path)
-	m.Lock()
-	defer m.Unlock()
+	lease := acquireFileLock(path)
+	defer lease.Unlock()
 
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -108,10 +142,16 @@ func WriteJSON(path string, v interface{}) error {
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 // FileExists 是否存在

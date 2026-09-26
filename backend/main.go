@@ -42,35 +42,35 @@ func main() {
 
 	paths := storage.DefaultPaths()
 	if err := paths.EnsureDirs(); err != nil {
-		console.Error("create dirs", "err", err)
+		console.Error("create dirs failed")
 		os.Exit(1)
 	}
 
 	sqliteDB, err := db.Open(paths.DataDir)
 	if err != nil {
-		console.Error("open sqlite", "err", err)
+		console.Error("open sqlite failed")
 		os.Exit(1)
 	}
 	defer sqliteDB.Close()
 
 	lg := logger.New(paths.LogFile("app.log.json"), console)
-	dbCipher, keyInfo, keyErr := secret.LoadKey(paths.DataDir)
+	dbCipher, _, keyErr := secret.LoadKey(paths.DataDir)
 	if keyErr != nil {
-		console.Error("load database encryption key", "err", keyErr, "source", keyInfo.Source, "path", keyInfo.Path)
+		console.Error("load database encryption key failed")
 		os.Exit(1)
 	}
 	sqliteDB.SetSecretCipher(dbCipher)
 	if err := sqliteDB.MigrateAccountSecrets(); err != nil {
-		console.Error("migrate encrypted account credentials", "err", err)
+		console.Error("migrate encrypted account credentials failed")
 		os.Exit(1)
 	}
 	if err := weixin.NewStore(sqliteDB).MigrateSecrets(); err != nil {
-		console.Error("migrate encrypted Weixin tokens", "err", err)
+		console.Error("migrate encrypted Weixin tokens failed")
 		os.Exit(1)
 	}
 	cfgStore, configErr := config.NewWithCipher(sqliteDB, dbCipher)
 	if configErr != nil {
-		console.Error("load encrypted configuration", "err", configErr)
+		console.Error("load encrypted configuration failed")
 		os.Exit(1)
 	}
 	state := app.NewState(paths, cfgStore, lg, sqliteDB)
@@ -93,7 +93,9 @@ func main() {
 	}
 	state.LoadAll()
 	// 公开目录较大，后台预热避免首个监控/下单请求承担整份目录的延迟。
-	go catalog.WarmRegionCache(state)
+	state.GoBackground(func(ctx context.Context) {
+		catalog.WarmRegionCache(ctx, state)
+	})
 
 	// 监控器
 	mon := monitor.New(state)
@@ -108,12 +110,12 @@ func main() {
 		entry, err := monitor.NewProxyGuardNotification(action, monitor.NotificationTargetChannels(state))
 		if err != nil {
 			if state.Logger != nil {
-				state.Logger.Error("创建代理熔断通知失败: "+err.Error(), "proxyguard")
+				state.Logger.Error("创建代理熔断通知失败", "proxyguard")
 			}
 			return
 		}
 		if err := state.DB.EnqueueNotification(*entry); err != nil && state.Logger != nil {
-			state.Logger.Error("写入代理熔断通知 outbox 失败: "+err.Error(), "proxyguard")
+			state.Logger.Error("写入代理熔断通知 outbox 失败", "proxyguard")
 		}
 	})
 	state.RestoreProxyGuardGates()
@@ -163,13 +165,19 @@ func main() {
 	// 不信任任意反向代理头，避免 X-Forwarded-For 伪造 ClientIP
 	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
-	r.Use(cors.New(cors.Config{
-		AllowAllOrigins:  true,
+	allowedOrigins := strings.Fields(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	corsConfig := cors.Config{
+		AllowOrigins:     allowedOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowHeaders:     []string{"Content-Type", "Authorization", "X-API-Key", "X-Request-Time"},
 		ExposeHeaders:    []string{"X-Cache-Warning"},
 		AllowCredentials: false,
-	}))
+	}
+	if len(allowedOrigins) == 0 {
+		// CORS 库要求显式指定来源或函数；默认拒绝所有跨域，同源不受影响。
+		corsConfig.AllowOriginFunc = func(string) bool { return false }
+	}
+	r.Use(cors.New(corsConfig))
 
 	enableAuth := !strings.EqualFold(os.Getenv("ENABLE_API_KEY_AUTH"), "false")
 	r.Use(auth.Middleware(auth.Config{
@@ -549,8 +557,8 @@ func main() {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	select {
-	case err := <-errCh:
-		console.Error("server run", "err", err)
+	case <-errCh:
+		console.Error("server run failed")
 		os.Exit(1)
 	case sig := <-sigCh:
 		console.Info("shutdown signal", "sig", sig.String())
@@ -560,7 +568,7 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		console.Error("server shutdown", "err", err)
+		console.Error("server shutdown failed")
 		_ = srv.Close()
 	}
 	cancelQueue()
@@ -578,6 +586,9 @@ func main() {
 	queueWG.Wait()
 	outboxWG.Wait()
 	orderStatusWG.Wait()
+	if err := state.StopBackground(shutdownCtx); err != nil {
+		console.Error("background task shutdown failed")
+	}
 	state.SaveAll()
 	state.Logger.Flush()
 	console.Info("server stopped cleanly")

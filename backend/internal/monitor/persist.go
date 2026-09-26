@@ -145,7 +145,7 @@ func (m *Monitor) loadFromDBLocked() error {
 	subs, err := m.state.DB.ListMonitorSubscriptions()
 	if err != nil {
 		m.state.MarkLoadFailed("monitor_subscriptions", err)
-		m.state.Logger.Error("加载监控订阅失败（不会写回空列表，也不会启动监控）: "+err.Error(), "monitor")
+		m.state.Logger.Error("加载监控订阅失败（不会写回空列表，也不会启动监控）", "monitor")
 		m.subsMu.Lock()
 		m.subscriptions = []*Subscription{}
 		m.knownServers = map[string]struct{}{}
@@ -158,7 +158,7 @@ func (m *Monitor) loadFromDBLocked() error {
 	knownInitialized, err := m.state.DB.GetKV("monitor_known_servers", &known)
 	if err != nil {
 		m.state.MarkLoadFailed("monitor_known_servers", err)
-		m.state.Logger.Error("加载已知服务器失败（不会启动监控）: "+err.Error(), "monitor")
+		m.state.Logger.Error("加载已知服务器失败（不会启动监控）", "monitor")
 		m.subsMu.Lock()
 		m.subscriptions = []*Subscription{}
 		m.knownServers = map[string]struct{}{}
@@ -235,7 +235,7 @@ func (m *Monitor) SaveToDB() error {
 		err = m.state.DB.ReplaceMonitorSubscriptions(subs)
 	}
 	if err != nil {
-		m.state.Logger.Error("原子保存监控订阅失败: "+err.Error(), "monitor")
+		m.state.Logger.Error("原子保存监控订阅失败", "monitor")
 		return err
 	}
 	m.state.Logger.Info(fmt.Sprintf("订阅数据已保存: %d 条（检查间隔固定为5秒）", n), "monitor")

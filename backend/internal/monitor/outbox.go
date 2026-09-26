@@ -98,6 +98,20 @@ func NewOrderStatusNotification(entry types.PurchaseHistoryEntry, oldStatus stri
 	}, nil
 }
 
+func publicProxyGuardError(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return "代理探测失败"
+}
+
+func publicProxyGuardIssue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return "代理状态变更失败"
+}
+
 func NewProxyGuardNotification(action app.ProxyGuardAction, channels []string) (*types.NotificationOutboxEntry, error) {
 	accountID := strings.TrimSpace(action.AccountID)
 	if accountID == "" || action.Event.Kind == "" {
@@ -109,12 +123,12 @@ func NewProxyGuardNotification(action app.ProxyGuardAction, channels []string) (
 	channels = canonicalNotificationChannels(channels)
 	sanitizedErrors := make([]string, len(action.Errors))
 	for i, issue := range action.Errors {
-		sanitizedErrors[i] = ovh.ScrubProxyText(issue)
+		sanitizedErrors[i] = publicProxyGuardIssue(issue)
 	}
 	payload := proxyGuardPayload{
 		EventKind: string(action.Event.Kind), AccountID: accountID,
 		AccountName: action.AccountName, AccountZone: action.AccountZone,
-		ProxyURL: ovh.ScrubProxyURL(action.ProxyURL), LastError: ovh.ScrubProxyText(action.Event.Status.LastError),
+		ProxyURL: ovh.ScrubProxyURL(action.ProxyURL), LastError: publicProxyGuardError(action.Event.Status.LastError),
 		ConsecutiveFailures: action.Event.Status.ConsecutiveFailures,
 		PausedQueue:         action.PausedQueue, DisabledMonitorAutoOrder: action.DisabledMonitorAutoOrder,
 		DisabledVPSAutoOrder: action.DisabledVPSAutoOrder, RestoredQueue: action.RestoredQueue,
@@ -221,6 +235,16 @@ func proxyGuardMessage(payload proxyGuardPayload) (string, string, string) {
 }
 
 func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (NotificationDeliveryResult, error) {
+	return m.dispatchOutboxEntryWithContext(context.Background(), entry)
+}
+
+func (m *Monitor) dispatchOutboxEntryWithContext(ctx context.Context, entry types.NotificationOutboxEntry) (NotificationDeliveryResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return NotificationDeliveryResult{}, err
+	}
 	result := NotificationDeliveryResult{}
 	switch entry.Kind {
 	case NotificationKindNewServer:
@@ -231,7 +255,7 @@ func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (Noti
 		if len(server) == 0 {
 			return result, fmt.Errorf("解析新服务器通知失败: payload 为空对象")
 		}
-		return m.SendNewServerAlert(server, entry.Channels), nil
+		return m.SendNewServerAlertWithContext(ctx, server, entry.Channels), nil
 	case NotificationKindOrderStatus:
 		var payload orderStatusPayload
 		if err := json.Unmarshal([]byte(entry.Payload), &payload); err != nil {
@@ -242,13 +266,13 @@ func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (Noti
 		}
 		msg := orderStatusMessage(payload)
 		if notificationChannelSelected(entry.Channels, NotificationChannelTelegram) {
-			result[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
+			result[NotificationChannelTelegram] = telegram.SendMessageWithContext(ctx, m.state, msg, nil)
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
-			result[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "📦 OVH 订单状态更新", msg, "blue", nil)
+			result[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, "📦 OVH 订单状态更新", msg, "blue", nil)
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
-			result[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)
+			result[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
 		}
 		return result, nil
 	case NotificationKindPurchaseSuccess:
@@ -261,13 +285,13 @@ func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (Noti
 		}
 		msg := purchaseSuccessMessage(payload)
 		if notificationChannelSelected(entry.Channels, NotificationChannelTelegram) {
-			result[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
+			result[NotificationChannelTelegram] = telegram.SendMessageWithContext(ctx, m.state, msg, nil)
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
-			result[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, "🎉 OVH 服务器抢购成功", msg, "green", nil)
+			result[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, "🎉 OVH 服务器抢购成功", msg, "green", nil)
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
-			result[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)
+			result[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
 		}
 		return result, nil
 	case NotificationKindCatalogStatus:
@@ -280,13 +304,13 @@ func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (Noti
 		}
 		title, msg, template := catalogStatusMessage(payload)
 		if notificationChannelSelected(entry.Channels, NotificationChannelTelegram) {
-			result[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
+			result[NotificationChannelTelegram] = telegram.SendMessageWithContext(ctx, m.state, msg, nil)
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
-			result[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, title, msg, template, nil)
+			result[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, title, msg, template, nil)
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
-			result[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)
+			result[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
 		}
 		return result, nil
 	case NotificationKindProxyGuard:
@@ -301,19 +325,19 @@ func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (Noti
 			return result, fmt.Errorf("解析代理熔断通知失败: eventKind 无效")
 		}
 		payload.ProxyURL = ovh.ScrubProxyURL(payload.ProxyURL)
-		payload.LastError = ovh.ScrubProxyText(payload.LastError)
-		for i, issue := range payload.Errors {
-			payload.Errors[i] = ovh.ScrubProxyText(issue)
+		payload.LastError = publicProxyGuardError(payload.LastError)
+		for i := range payload.Errors {
+			payload.Errors[i] = publicProxyGuardIssue(payload.Errors[i])
 		}
 		title, msg, template := proxyGuardMessage(payload)
 		if notificationChannelSelected(entry.Channels, NotificationChannelTelegram) {
-			result[NotificationChannelTelegram] = telegram.SendMessage(m.state, msg, nil)
+			result[NotificationChannelTelegram] = telegram.SendMessageWithContext(ctx, m.state, msg, nil)
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
-			result[NotificationChannelFeishu] = FeishuSendDefaultNotification(m.state, title, msg, template, nil)
+			result[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, title, msg, template, nil)
 		}
 		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
-			result[NotificationChannelWeixin] = SendWeixinNotification(m.state, msg)
+			result[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
 		}
 		return result, nil
 	default:
@@ -324,7 +348,7 @@ func (m *Monitor) dispatchOutboxEntry(entry types.NotificationOutboxEntry) (Noti
 func (m *Monitor) quarantineOutboxEntry(entry types.NotificationOutboxEntry, reason string) {
 	ok, err := m.state.DB.QuarantineNotification(entry.ID, reason)
 	if err != nil {
-		m.state.Logger.Error("隔离损坏通知失败: "+err.Error(), "monitor")
+		m.state.Logger.Error("隔离损坏通知失败", "monitor")
 		m.state.SetNotificationOutboxRetry(entry.ID, time.Now().Add(15*time.Second))
 		return
 	}
@@ -337,24 +361,39 @@ func (m *Monitor) quarantineOutboxEntry(entry types.NotificationOutboxEntry, rea
 // DispatchNotificationOutbox 串行重试待通知事件。调用方可在监控轮次和抢购成功后调用；
 // 网络发送期间不持有订阅、队列或数据库事务锁。
 func (m *Monitor) DispatchNotificationOutbox() {
+	m.DispatchNotificationOutboxWithContext(context.Background())
+}
+
+func (m *Monitor) DispatchNotificationOutboxWithContext(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if m == nil || m.state == nil || m.state.DB == nil {
 		return
 	}
 	// 锁和节流状态属于共享 app.State：主监控、独立后台循环以及抢购成功
 	// 后创建的临时 Monitor 都必须经过同一个发送临界区，避免重复发送。
-	m.state.LockNotificationOutbox()
+	if err := m.state.LockNotificationOutboxContext(ctx); err != nil {
+		return
+	}
 	defer m.state.UnlockNotificationOutbox()
+	if ctx.Err() != nil {
+		return
+	}
 	entries, err := m.state.DB.ListNotificationOutbox(100)
 	if err != nil {
-		m.state.Logger.Warn("读取通知 outbox 失败: "+err.Error(), "monitor")
+		m.state.Logger.Warn("读取通知 outbox 失败", "monitor")
 		return
 	}
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
 		if !m.state.NotificationOutboxRetryDue(entry.ID, time.Now()) {
 			continue
 		}
 		if entry.DecodeError != "" {
-			m.quarantineOutboxEntry(entry, entry.DecodeError)
+			m.quarantineOutboxEntry(entry, "通知渠道数据损坏")
 			continue
 		}
 		if entry.AwaitingChannels {
@@ -377,7 +416,7 @@ func (m *Monitor) DispatchNotificationOutbox() {
 			// 暂时失效的渠道将永久漏收。
 			assigned, err := m.state.DB.AssignNotificationChannels(entry.ID, pending)
 			if err != nil {
-				m.state.Logger.Warn("分配通知接收渠道失败: "+err.Error(), "monitor")
+				m.state.Logger.Warn("分配通知接收渠道失败", "monitor")
 				m.state.SetNotificationOutboxRetry(entry.ID, time.Now().Add(15*time.Second))
 				continue
 			}
@@ -398,9 +437,12 @@ func (m *Monitor) DispatchNotificationOutbox() {
 			continue
 		}
 		entry.Channels = remaining
-		delivered, dispatchErr := m.dispatchOutboxEntry(entry)
+		delivered, dispatchErr := m.dispatchOutboxEntryWithContext(ctx, entry)
 		if dispatchErr != nil {
-			m.quarantineOutboxEntry(entry, dispatchErr.Error())
+			if ctx.Err() != nil {
+				return
+			}
+			m.quarantineOutboxEntry(entry, "通知发送失败")
 			continue
 		}
 		remaining = remainingNotificationChannels(remaining, delivered)
@@ -410,7 +452,7 @@ func (m *Monitor) DispatchNotificationOutbox() {
 			m.state.ClearNotificationOutboxRetry(entry.ID)
 		}
 		if ok, err := m.state.DB.UpdateNotificationChannels(entry.ID, expected, remaining); err != nil {
-			m.state.Logger.Warn("保存通知 outbox 进度失败: "+err.Error(), "monitor")
+			m.state.Logger.Warn("保存通知 outbox 进度失败", "monitor")
 		} else if !ok {
 			m.state.Logger.Debug("通知 outbox 已被其它发送流程更新: "+entry.EventKey, "monitor")
 		}
@@ -423,7 +465,10 @@ func (m *Monitor) RunNotificationOutboxLoop(ctx context.Context) {
 	if m == nil || m.state == nil {
 		return
 	}
-	m.DispatchNotificationOutbox()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.DispatchNotificationOutboxWithContext(ctx)
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -431,7 +476,7 @@ func (m *Monitor) RunNotificationOutboxLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.DispatchNotificationOutbox()
+			m.DispatchNotificationOutboxWithContext(ctx)
 		}
 	}
 }

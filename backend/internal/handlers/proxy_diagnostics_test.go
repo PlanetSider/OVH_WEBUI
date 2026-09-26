@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,7 +40,32 @@ func TestProxyStatusReturnsProfilesAndDoesNotLeakProxyCredentials(t *testing.T) 
 	}
 }
 
-func TestProxyDiagnosticsMissingAccountDoNotRunBusinessAction(t *testing.T) {
+func TestProxyStatusDoesNotExposeGuardError(t *testing.T) {
+	state := &app.State{
+		Accounts:   []types.OVHAccount{{ID: "account-1", Name: "main"}},
+		ProxyGuard: proxyguard.New(1),
+	}
+	state.ProxyGuard.ReportFailure("account-1", errors.New("proxyconnect http://alice:secret@proxy.example:8080 failed"))
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/accounts/account-1/proxy-status", nil)
+	context.Params = gin.Params{{Key: "id", Value: "account-1"}}
+	AccountProxyStatus(state)(context)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "代理连接失败") {
+		t.Fatalf("generic proxy error missing: %s", body)
+	}
+	if strings.Contains(body, "proxyconnect") || strings.Contains(body, "secret") || strings.Contains(body, "alice") {
+		t.Fatalf("guard error leaked: %s", body)
+	}
+}
+
+func TestProxyEndpointsHandleMissingAccount(t *testing.T) {
 	state := &app.State{}
 	for name, handler := range map[string]gin.HandlerFunc{
 		"test":  TestAccountProxy(state),

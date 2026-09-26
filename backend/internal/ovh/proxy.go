@@ -362,7 +362,7 @@ func EgressIP(proxyURL, fingerprint string, timeout time.Duration) (string, erro
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("通过该代理访问外网失败: %s", ScrubProxyText(err.Error()))
+		return "", fmt.Errorf("通过该代理访问外网失败")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -405,7 +405,7 @@ func ProbeProxyTarget(proxyURL, fingerprint string, timeout time.Duration, spec 
 	}
 	client, err := BuildHTTPClient(proxyURL, fingerprint, timeout)
 	if err != nil {
-		result.Error = ScrubProxyText(err.Error())
+		result.Error = "代理客户端创建失败"
 		return result
 	}
 	var total time.Duration
@@ -414,7 +414,7 @@ func ProbeProxyTarget(proxyURL, fingerprint string, timeout time.Duration, spec 
 	for i := 0; i < proxyProbeSamples; i++ {
 		request, requestErr := http.NewRequest(http.MethodGet, spec.URL, nil)
 		if requestErr != nil {
-			result.Error = ScrubProxyText(requestErr.Error())
+			result.Error = "代理探测请求构造失败"
 			return result
 		}
 		started := time.Now()
@@ -422,7 +422,7 @@ func ProbeProxyTarget(proxyURL, fingerprint string, timeout time.Duration, spec 
 		elapsed := time.Since(started)
 		if requestErr != nil {
 			if result.Error == "" {
-				result.Error = ScrubProxyText(requestErr.Error())
+				result.Error = "代理探测请求失败"
 			}
 			continue
 		}

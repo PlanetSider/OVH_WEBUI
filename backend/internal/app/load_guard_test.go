@@ -17,8 +17,8 @@ func TestSaveBlockedTracksAndClearsTableFailure(t *testing.T) {
 		t.Fatalf("SaveBlocked(queue) = %v, want a queue guard error", err)
 	}
 	failures := state.LoadFailures()
-	if failures["queue"] != loadErr.Error() {
-		t.Fatalf("LoadFailures()[queue] = %q, want %q", failures["queue"], loadErr.Error())
+	if failures["queue"] != "读取持久化表失败" {
+		t.Fatalf("LoadFailures()[queue] = %q, want sanitized load failure", failures["queue"])
 	}
 
 	state.ClearLoadFailure("queue")

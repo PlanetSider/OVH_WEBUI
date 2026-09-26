@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestClassifyPlanDistinguishesCatalogAndProbeVerdicts(t *testing.T) {
 		probeRegionHasPlan = oldProbe
 	}()
 	state := &app.State{Accounts: []types.OVHAccount{{ID: "a", Name: "US account", Endpoint: "ovh-us", Zone: "US"}}}
-	fetchSubsidiaryCatalog = func(_ *app.State, _ string) (*subsidiaryCatalog, error) {
+	fetchSubsidiaryCatalog = func(_ context.Context, _ *app.State, _ string) (*subsidiaryCatalog, error) {
 		return &subsidiaryCatalog{plans: map[string]planConfig{"eco-plan": {addonFamilies: map[string][]string{"memory": {"ram-64g"}}}}, fetchedAt: time.Now()}, nil
 	}
 	probeRegionHasPlan = func(region, plan string) (bool, error) {

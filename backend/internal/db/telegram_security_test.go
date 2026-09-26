@@ -88,6 +88,21 @@ func TestUnclaimTelegramButtonAllowsRetry(t *testing.T) {
 	}
 }
 
+func TestEventClaimsRejectMissingIdentifiers(t *testing.T) {
+	database, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	if claimed, err := database.TryClaimTelegramUpdate(0); err == nil || claimed {
+		t.Fatalf("telegram missing update_id claimed=%v err=%v, want false and error", claimed, err)
+	}
+	if claimed, err := database.TryClaimFeishuEvent(" "); err == nil || claimed {
+		t.Fatalf("feishu missing event_id claimed=%v err=%v, want false and error", claimed, err)
+	}
+}
+
 func TestFeishuEventClaimIsSharedAcrossTransports(t *testing.T) {
 	database, err := Open(t.TempDir())
 	if err != nil {

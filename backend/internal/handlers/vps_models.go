@@ -21,7 +21,7 @@ func GetVPSModels(state *app.State) gin.HandlerFunc {
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{
 				"status":  "error",
-				"message": err.Error(),
+				"message": "获取 VPS 型号失败",
 				"models":  []vps.Model{},
 			})
 			return

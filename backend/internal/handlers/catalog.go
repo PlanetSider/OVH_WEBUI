@@ -14,8 +14,10 @@ import (
 	"github.com/ovh-webui/server/internal/ovh"
 )
 
-// catalogTTL OVH 公开 catalog 缓存时长，与前端 useOvhCatalog 的 staleTime 对齐
-const catalogTTL = 2 * time.Hour
+const (
+	catalogTTL          = 2 * time.Hour
+	maxCatalogBodyBytes = 16 << 20
+)
 
 // GetCatalog GET /api/catalog?subsidiary=IE[&forceRefresh=true]
 // 返回 OVH 公开 eco catalog 的原始 JSON。优先走 SQLite 缓存（2 小时 TTL），
@@ -56,8 +58,8 @@ func GetCatalog(state *app.State) gin.HandlerFunc {
 				c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(raw))
 				return
 			}
-			state.Logger.Error("catalog 公共代理不可用 "+sub+": "+err.Error(), "catalog")
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			state.Logger.Error("catalog 公共代理不可用 "+sub, "catalog")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "目录服务暂不可用"})
 			return
 		}
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
@@ -71,16 +73,21 @@ func GetCatalog(state *app.State) gin.HandlerFunc {
 				c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(raw))
 				return
 			}
-			state.Logger.Error("catalog 拉取失败 "+sub+": "+err.Error(), "catalog")
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			state.Logger.Error("catalog 拉取失败 "+sub, "catalog")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "目录服务暂不可用"})
 			return
 		}
 		defer resp.Body.Close()
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxCatalogBodyBytes+1))
 		if err != nil {
-			state.Logger.Error("catalog 读取响应失败 "+sub+": "+err.Error(), "catalog")
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			state.Logger.Error("catalog 读取响应失败 "+sub, "catalog")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "目录服务响应不可用"})
+			return
+		}
+		if len(body) > maxCatalogBodyBytes {
+			state.Logger.Error("catalog 响应超过大小限制 "+sub, "catalog")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "目录服务响应过大"})
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
@@ -91,7 +98,7 @@ func GetCatalog(state *app.State) gin.HandlerFunc {
 
 		// 3. 落 SQLite + 回写响应
 		if err := state.DB.UpsertCatalog(sub, string(body)); err != nil {
-			state.Logger.Warn("catalog 写库失败 "+sub+": "+err.Error(), "catalog")
+			state.Logger.Warn("catalog 写库失败 "+sub, "catalog")
 		} else {
 			state.Logger.Info(fmt.Sprintf("catalog %s 已缓存 (%d KB)", sub, len(body)/1024), "catalog")
 		}

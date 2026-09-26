@@ -23,20 +23,19 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 
 const ContactChangePage = () => {
-  const { data, isLoading, refetch } = useContactChangeRequests();
+  const { data, isLoading, error, refetch } = useContactChangeRequests();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [processingId, setProcessingId] = useState<number | null>(null);
   const [processingAction, setProcessingAction] = useState<string | null>(null);
 
-  const requests = data?.requests || [];
+  const requests = data?.requests ?? [];
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
-      await refetch();
-      toast.success("数据刷新成功");
-    } catch (error: any) {
-      toast.error(`刷新失败: ${error.message}`);
+      const ok = await refetch();
+      if (ok) toast.success("数据刷新成功");
+      else toast.error("数据刷新失败，请重试");
     } finally {
       setIsRefreshing(false);
     }
@@ -56,7 +55,7 @@ const ContactChangePage = () => {
       const result = await api.acceptContactChange(id, token.trim());
       if (result.success) {
         toast.success(result.message || "已接受联系人变更请求");
-        refetch();
+        void refetch();
       } else {
         toast.error(result.error || "操作失败");
       }
@@ -81,7 +80,7 @@ const ContactChangePage = () => {
       const result = await api.refuseContactChange(id, token.trim());
       if (result.success) {
         toast.success(result.message || "已拒绝联系人变更请求");
-        refetch();
+        void refetch();
       } else {
         toast.error(result.error || "操作失败");
       }
@@ -159,12 +158,12 @@ const ContactChangePage = () => {
                 <span className="cursor-blink">_</span>
               </h1>
               <p className="text-sm text-muted-foreground mt-1">
-                共 {requests.length} 条记录，{pendingCount} 条待处理
+                {data ? `共 ${requests.length} 条记录，${pendingCount} 条待处理` : isLoading ? "加载中…" : "请求加载失败"}
               </p>
             </div>
             
-            <Button variant="terminal" onClick={handleRefresh} disabled={isRefreshing}>
-              <RefreshCw className={cn("h-4 w-4 mr-2", isRefreshing && "animate-spin")} />
+            <Button variant="terminal" onClick={handleRefresh} disabled={isRefreshing || isLoading}>
+              <RefreshCw className={cn("h-4 w-4 mr-2", (isRefreshing || isLoading) && "animate-spin")} />
               刷新数据
             </Button>
           </div>
@@ -176,14 +175,14 @@ const ContactChangePage = () => {
                 <UserCog className="h-4 w-4" />
                 <span className="text-xs uppercase">总请求数</span>
               </div>
-              <p className="text-lg font-bold">{requests.length}</p>
+              <p className="text-lg font-bold">{data ? requests.length : "—"}</p>
             </div>
             <div className="terminal-card p-4 border-warning/30">
               <div className="flex items-center gap-2 mb-1 text-warning">
                 <Clock className="h-4 w-4" />
                 <span className="text-xs uppercase">待处理</span>
               </div>
-              <p className="text-lg font-bold text-warning">{pendingCount}</p>
+              <p className="text-lg font-bold text-warning">{data ? pendingCount : "—"}</p>
             </div>
             <div className="terminal-card p-4 border-accent/30">
               <div className="flex items-center gap-2 mb-1 text-accent">
@@ -191,7 +190,7 @@ const ContactChangePage = () => {
                 <span className="text-xs uppercase">已完成</span>
               </div>
               <p className="text-lg font-bold text-accent">
-                {requests.filter(r => r.state === 'done').length}
+                {data ? requests.filter(r => r.state === 'done').length : "—"}
               </p>
             </div>
             <div className="terminal-card p-4 border-destructive/30">
@@ -200,7 +199,7 @@ const ContactChangePage = () => {
                 <span className="text-xs uppercase">已拒绝</span>
               </div>
               <p className="text-lg font-bold text-destructive">
-                {requests.filter(r => r.state === 'refused').length}
+                {data ? requests.filter(r => r.state === 'refused').length : "—"}
               </p>
             </div>
           </div>
@@ -210,9 +209,22 @@ const ContactChangePage = () => {
             title="变更请求列表"
             icon={<UserCog className="h-4 w-4" />}
           >
-            {isLoading ? (
+            {error && data && (
+              <div role="alert" className="mx-4 mt-4 flex flex-wrap items-center gap-3 text-sm text-destructive">
+                <AlertCircle className="h-4 w-4" />
+                <span>刷新失败，当前显示上次成功加载的数据</span>
+                <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing || isLoading}>重试</Button>
+              </div>
+            )}
+            {isLoading && !data ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              </div>
+            ) : error && !data ? (
+              <div role="alert" className="flex flex-col items-center gap-3 py-12 text-sm text-destructive">
+                <AlertCircle className="h-8 w-8" />
+                <p>联系人变更请求加载失败</p>
+                <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing || isLoading}>重试</Button>
               </div>
             ) : requests.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">

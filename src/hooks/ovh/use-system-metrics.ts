@@ -56,7 +56,7 @@ export interface SystemMetrics {
 export function useSystemMetrics() {
   return useQuery({
     queryKey: ["system", "metrics"],
-    queryFn: async () => (await api.get<SystemMetrics>("/system/metrics")).data,
+    queryFn: async ({ signal }) => (await api.get<SystemMetrics>("/system/metrics", { signal })).data,
     refetchInterval: 2000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,

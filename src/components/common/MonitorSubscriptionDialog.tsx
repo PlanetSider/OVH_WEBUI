@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Bell, MapPin, ShoppingCart } from "lucide-react";
 import { toast } from "sonner";
 import { AccountSelect } from "@/components/common/AccountSelect";
@@ -75,8 +75,13 @@ export function MonitorSubscriptionDialog({
   const monitorList = useMonitorList();
   const create = useCreateMonitorSubscription();
   const update = useUpdateMonitorSubscription();
-  const resolvedSubscription = subscription || monitorList.data?.find((item) => item.planCode === initialPlanCode);
-  const editing = !!resolvedSubscription;
+  const requestedKey = subscription?.planCode || initialPlanCode;
+  const awaitingLookup = open && !!initialPlanCode && !subscription && !monitorList.data && !monitorList.isSuccess;
+  // 同一目标在一次打开期间只取一次快照；列表 refetch 不重填用户草稿。
+  const initialized = useRef<{ key: string; editing: boolean } | null>(null);
+  const [session, setSession] = useState<{ key: string; editing: boolean } | null>(null);
+  const sessionReady = open && session?.key === requestedKey;
+  const editing = !!(sessionReady && session?.editing);
   const [planCode, setPlanCode] = useState("");
   const [datacenters, setDatacenters] = useState<string[]>([]);
   const [memories, setMemories] = useState<string[]>([]);
@@ -89,18 +94,27 @@ export function MonitorSubscriptionDialog({
   const [autoOrderAccountId, setAutoOrderAccountId] = useState("");
 
   useEffect(() => {
-    if (!open) return;
-    setPlanCode(resolvedSubscription?.planCode || initialPlanCode);
-    setDatacenters((resolvedSubscription?.datacenters || []).map(displayDatacenterCode));
-    setMemories((resolvedSubscription?.memories || []).filter(Boolean).slice(0, 1));
-    setStorages((resolvedSubscription?.storages || []).filter(Boolean).slice(0, 1));
-    setNetworks((resolvedSubscription?.networks || []).filter(Boolean).slice(0, 1));
-    setNotifyAvailable(resolvedSubscription?.notifyAvailable ?? true);
-    setNotifyUnavailable(resolvedSubscription?.notifyUnavailable ?? false);
-    setAutoOrder(resolvedSubscription?.autoOrder ?? false);
-    setQuantity(Math.max(1, resolvedSubscription?.quantity || 1));
-    setAutoOrderAccountId(resolvedSubscription?.autoOrderAccountId || "");
-  }, [open, resolvedSubscription, initialPlanCode]);
+    if (!open) {
+      initialized.current = null;
+      setSession(null);
+      return;
+    }
+    if (initialized.current?.key === requestedKey || awaitingLookup) return;
+    const resolved = subscription || monitorList.data?.find((item) => item.planCode === initialPlanCode);
+    const next = { key: requestedKey, editing: !!resolved };
+    initialized.current = next;
+    setSession(next);
+    setPlanCode(resolved?.planCode || initialPlanCode);
+    setDatacenters((resolved?.datacenters || []).map(displayDatacenterCode));
+    setMemories((resolved?.memories || []).filter(Boolean).slice(0, 1));
+    setStorages((resolved?.storages || []).filter(Boolean).slice(0, 1));
+    setNetworks((resolved?.networks || []).filter(Boolean).slice(0, 1));
+    setNotifyAvailable(resolved?.notifyAvailable ?? true);
+    setNotifyUnavailable(resolved?.notifyUnavailable ?? false);
+    setAutoOrder(resolved?.autoOrder ?? false);
+    setQuantity(Math.max(1, resolved?.quantity || 1));
+    setAutoOrderAccountId(resolved?.autoOrderAccountId || "");
+  }, [open, requestedKey, subscription, initialPlanCode, awaitingLookup, monitorList.data]);
 
   const server = useMemo(
     () => (servers.data || []).find((item) => item.planCode === planCode),
@@ -203,6 +217,7 @@ export function MonitorSubscriptionDialog({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (!sessionReady || create.isPending || update.isPending) return;
     const code = planCode.trim();
     if (!code) {
       toast.error("请选择服务器型号");
@@ -242,9 +257,22 @@ export function MonitorSubscriptionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[95vw] sm:max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle>{editing ? "修改监控任务" : "创建监控任务"}</DialogTitle>
+          <DialogTitle>{!sessionReady ? "加载监控任务" : editing ? "修改监控任务" : "创建监控任务"}</DialogTitle>
           <DialogDescription>按配置组合与数据中心监控库存；每个配置组可选择一项，未选择表示不限。</DialogDescription>
         </DialogHeader>
+        {!sessionReady ? (
+          <div className="flex flex-1 flex-col justify-between gap-5" role="status">
+            <div className="text-sm text-muted-foreground">
+              {awaitingLookup && monitorList.isError ? "加载订阅失败，请重试。" : "正在加载监控任务…"}
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+              {awaitingLookup && monitorList.isError && (
+                <Button type="button" onClick={() => void monitorList.refetch()}>重试</Button>
+              )}
+            </DialogFooter>
+          </div>
+        ) : (
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
           <div className="space-y-5 overflow-y-auto pr-1">
             <div>
@@ -401,6 +429,7 @@ export function MonitorSubscriptionDialog({
             </Button>
           </DialogFooter>
         </form>
+        )}
       </DialogContent>
     </Dialog>
   );

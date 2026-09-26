@@ -13,6 +13,7 @@ import (
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/numconv"
+	"github.com/ovh-webui/server/internal/ovh"
 )
 
 // GetHardwareInfo GET /api/server-control/:service_name/hardware
@@ -26,8 +27,8 @@ func GetHardwareInfo(state *app.State) gin.HandlerFunc {
 		}
 		var hardware map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/specifications/hardware", &hardware); err != nil {
-			state.Logger.Error("获取服务器 "+svc+" 硬件信息失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("获取服务器 "+svc+" 硬件信息失败: "+ovh.ErrorSummary(err), "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		// 1:1 对应 Python app.py:6150-6167：缺字段补 N/A / 0 / {} / []，
@@ -66,7 +67,7 @@ func GetNetworkSpecs(state *app.State) gin.HandlerFunc {
 		}
 		var network map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/specifications/network", &network); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{
@@ -117,7 +118,7 @@ func GetServerIPs(state *app.State) gin.HandlerFunc {
 		}
 		var list []string
 		if err := client.Get("/dedicated/server/"+svc+"/ips", &list); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 
@@ -158,8 +159,7 @@ func GetServerIPs(state *app.State) gin.HandlerFunc {
 				family, typ := inferIPMeta(r.block)
 				if r.err != nil {
 					state.Logger.Warn(
-						fmt.Sprintf("[IPs] %s 详情失败 block=%s: %s → 推断 type=%s family=%s",
-							svc, r.block, r.err.Error(), typ, family),
+						fmt.Sprintf("[IPs] %s 详情失败 block=%s → 推断 type=%s family=%s", svc, r.block, typ, family),
 						"server_control",
 					)
 				}
@@ -220,7 +220,7 @@ func GetReverseDNS(state *app.State) gin.HandlerFunc {
 		}
 		var ipBlocks []string
 		if err := client.Get("/dedicated/server/"+svc+"/ips", &ipBlocks); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		// 1) 每个 IP 块并发拉 reverse 列表(块下哪些具体 IP 配了反向)
@@ -304,7 +304,9 @@ func SetReverseDNS(state *app.State) gin.HandlerFunc {
 			IP      string `json:"ip"`
 			Reverse string `json:"reverse"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.IP == "" || body.Reverse == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "IP地址和反向DNS不能为空"})
 			return
@@ -312,7 +314,7 @@ func SetReverseDNS(state *app.State) gin.HandlerFunc {
 		// 找该 IP 所在的服务器 IP 块
 		block, err := findIPBlockForServer(client, svc, body.IP)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无法定位 IP 所属地址块"})
 			return
 		}
 		encoded := strings.ReplaceAll(block, "/", "%2F")
@@ -320,7 +322,7 @@ func SetReverseDNS(state *app.State) gin.HandlerFunc {
 			"ipReverse": body.IP,
 			"reverse":   body.Reverse,
 		}, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		state.Logger.Info("服务器 "+svc+" IP "+body.IP+" 反向DNS已设置为 "+body.Reverse, "server_control")
@@ -341,12 +343,12 @@ func DeleteReverseDNS(state *app.State) gin.HandlerFunc {
 		}
 		block, err := findIPBlockForServer(client, svc, ip)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无法定位 IP 所属地址块"})
 			return
 		}
 		encoded := strings.ReplaceAll(block, "/", "%2F")
 		if err := client.Delete("/ip/"+encoded+"/reverse/"+ip, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		state.Logger.Info("服务器 "+svc+" IP "+ip+" 反向DNS已删除", "server_control")
@@ -399,8 +401,8 @@ func GetServiceInfo(state *app.State) gin.HandlerFunc {
 		}
 		var info map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/serviceInfos", &info); err != nil {
-			state.Logger.Error("获取服务器 "+svc+" 服务信息失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("获取服务器 "+svc+" 服务信息失败", "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		renew, _ := info["renew"].(map[string]interface{})
@@ -468,11 +470,12 @@ func UpdateServiceRenewal(state *app.State) gin.HandlerFunc {
 			Mode   string `json:"mode"`   // "auto" / "manual" / "delete"
 			Period int    `json:"period"` // 月数,0 表示不改
 		}
-		_ = c.ShouldBindJSON(&body)
-
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		var info map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/serviceInfos", &info); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		renew, _ := info["renew"].(map[string]interface{})
@@ -511,8 +514,8 @@ func UpdateServiceRenewal(state *app.State) gin.HandlerFunc {
 
 		// PUT 整对象回去(OVH 这个端点要求完整 services.Service)
 		if err := client.Put("/dedicated/server/"+svc+"/serviceInfos", info, nil); err != nil {
-			state.Logger.Error("修改服务器 "+svc+" 续费策略失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("修改服务器 "+svc+" 续费策略失败", "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		state.Logger.Info("服务器 "+svc+" 续费策略已更新: mode="+body.Mode, "server_control")
@@ -530,7 +533,9 @@ func ChangeContact(state *app.State) gin.HandlerFunc {
 			return
 		}
 		var body map[string]interface{}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		params := map[string]interface{}{}
 		if v, ok := body["contactAdmin"].(string); ok && v != "" {
 			params["contactAdmin"] = v
@@ -548,8 +553,8 @@ func ChangeContact(state *app.State) gin.HandlerFunc {
 		// OVH 这个接口返回 long[](任务 ID 数组),不是 map
 		var taskIDs []int64
 		if err := client.Post("/dedicated/server/"+svc+"/changeContact", params, &taskIDs); err != nil {
-			state.Logger.Error("变更服务器 "+svc+" 联系人失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("变更服务器 "+svc+" 联系人失败", "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("服务器 %s 联系人变更请求已提交: %v, tasks=%v", svc, params, taskIDs), "server_control")
@@ -572,7 +577,7 @@ func GetInterventions(state *app.State) gin.HandlerFunc {
 		}
 		var ids []interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/intervention", &ids); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		// 并发拉详情
@@ -601,7 +606,7 @@ func GetInterventionDetail(state *app.State) gin.HandlerFunc {
 		}
 		var d map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/intervention/"+id, &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "intervention": d})
@@ -619,7 +624,7 @@ func GetPlannedInterventions(state *app.State) gin.HandlerFunc {
 		}
 		var ids []interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/plannedIntervention", &ids); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		// 并发拉详情
@@ -648,7 +653,7 @@ func GetPlannedInterventionDetail(state *app.State) gin.HandlerFunc {
 		}
 		var d map[string]interface{}
 		if err := client.Get(fmt.Sprintf("/dedicated/server/%s/plannedIntervention/%s", svc, id), &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "plannedIntervention": d})
@@ -665,7 +670,9 @@ func HardwareReplace(state *app.State) gin.HandlerFunc {
 			return
 		}
 		var body map[string]interface{}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		componentType, _ := body["componentType"].(string)
 		comment, _ := body["comment"].(string)
 		if componentType == "" {
@@ -715,7 +722,7 @@ func HardwareReplace(state *app.State) gin.HandlerFunc {
 		}
 		if err2 != nil {
 			errMsg := err2.Error()
-			state.Logger.Error("硬件更换失败: "+svc+" - "+componentType+" - "+errMsg, "server_control")
+			state.Logger.Error("硬件更换失败: "+svc+" - "+componentType+" - "+ovh.ErrorSummary(err2), "server_control")
 			if strings.Contains(errMsg, "Action pending") {
 				ticketID := "未知"
 				if m := regexp.MustCompile(`ticketId[:\s]+(\d+)`).FindStringSubmatch(errMsg); m != nil {
@@ -729,7 +736,7 @@ func HardwareReplace(state *app.State) gin.HandlerFunc {
 				})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": errMsg})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "硬件更换请求失败"})
 			return
 		}
 		state.Logger.Info("硬件更换请求已发送: "+svc+" - "+componentType, "server_control")
@@ -758,7 +765,7 @@ func GetHardwareRaidProfiles(state *app.State) gin.HandlerFunc {
 				})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "profiles": profiles, "supported": true})
@@ -776,7 +783,7 @@ func GetHardwareDiskInfo(state *app.State) gin.HandlerFunc {
 		}
 		var hardware map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/specifications/hardware", &hardware); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		diskGroups := map[string]interface{}{}
@@ -842,7 +849,7 @@ func GetPartitionSchemes(state *app.State) gin.HandlerFunc {
 		encodedTpl := url.PathEscape(templateName)
 		var schemes []string
 		if err := client.Get("/dedicated/installationTemplate/"+encodedTpl+"/partitionScheme", &schemes); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器硬件请求失败"})
 			return
 		}
 		// 双层嵌套并发：先并发拉每个 scheme 的 info + partition list，

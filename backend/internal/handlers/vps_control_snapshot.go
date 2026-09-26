@@ -31,7 +31,7 @@ func GetVpsSnapshot(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusOK, gin.H{"success": true, "snapshot": nil})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 快照操作失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "snapshot": snap})
@@ -55,7 +55,9 @@ func CreateVpsSnapshot(state *app.State) gin.HandlerFunc {
 		var body struct {
 			Description string `json:"description"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		params := map[string]interface{}{}
 		if body.Description != "" {
 			params["description"] = body.Description
@@ -70,7 +72,7 @@ func CreateVpsSnapshot(state *app.State) gin.HandlerFunc {
 				})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 快照操作失败"})
 			return
 		}
 		state.Logger.Info("VPS "+svc+" 创建快照任务已提交", "vps_control")
@@ -92,16 +94,18 @@ func UpdateVpsSnapshotDescription(state *app.State) gin.HandlerFunc {
 		var body struct {
 			Description string `json:"description"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		// 先 GET 拿完整对象再 merge,跟 PUT serviceInfos 同款 read-modify-write
 		var snap map[string]interface{}
 		if err := client.Get("/vps/"+svc+"/snapshot", &snap); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 快照操作失败"})
 			return
 		}
 		snap["description"] = body.Description
 		if err := client.Put("/vps/"+svc+"/snapshot", snap, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 快照操作失败"})
 			return
 		}
 		state.Logger.Info("VPS "+svc+" 快照描述已更新", "vps_control")
@@ -123,7 +127,7 @@ func RevertVpsSnapshot(state *app.State) gin.HandlerFunc {
 		}
 		var task map[string]interface{}
 		if err := client.Post("/vps/"+svc+"/snapshot/revert", map[string]interface{}{}, &task); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 快照操作失败"})
 			return
 		}
 		state.Logger.Warn("VPS "+svc+" 已触发快照回滚 (destructive)", "vps_control")
@@ -144,7 +148,7 @@ func DeleteVpsSnapshot(state *app.State) gin.HandlerFunc {
 		}
 		var task map[string]interface{}
 		if err := client.Delete("/vps/"+svc+"/snapshot", &task); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 快照操作失败"})
 			return
 		}
 		state.Logger.Info("VPS "+svc+" 快照已删除", "vps_control")

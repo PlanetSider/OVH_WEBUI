@@ -41,11 +41,11 @@ func PurchaseVPS(state *app.State, sub types.VPSSubscription, dcCode string) Out
 	}
 	client, err := state.OVH.ClientFor(sub.AutoOrderAccountID)
 	if err != nil {
-		return Outcome{Fatal: true, Reason: fmt.Sprintf("账户 %s 不可用: %s", sub.AutoOrderAccountID, err)}
+		return Outcome{Fatal: true, Reason: "下单账户不可用，请检查账户配置"}
 	}
 	acc, ok := state.FindAccount(sub.AutoOrderAccountID)
 	if !ok {
-		return Outcome{Fatal: true, Reason: "下单账户不存在: " + sub.AutoOrderAccountID}
+		return Outcome{Fatal: true, Reason: "下单账户不存在"}
 	}
 	subsidiary := NormalizeSubsidiary(sub.OvhSubsidiary)
 	if subsidiary == "" {
@@ -73,11 +73,11 @@ func PurchaseVPS(state *app.State, sub types.VPSSubscription, dcCode string) Out
 	state.Logger.Info(fmt.Sprintf("[VPS下单] 开始: %s @ %s (子公司 %s, 账户 %s, %d 台)", sub.PlanCode, dcCode, subsidiary, acc.Name, quantity), "vps_purchase")
 	var cartResult map[string]interface{}
 	if err := client.Post("/order/cart", map[string]interface{}{"ovhSubsidiary": subsidiary}, &cartResult); err != nil {
-		return Outcome{Reason: "创建购物车失败: " + err.Error()}
+		return Outcome{Reason: "创建购物车失败，请稍后重试"}
 	}
 	cartID, _ := cartResult["cartId"].(string)
 	if cartID == "" {
-		return Outcome{Reason: fmt.Sprintf("购物车响应里没有 cartId: %v", cartResult)}
+		return Outcome{Reason: "创建购物车成功但响应缺少 cartId"}
 	}
 	checkoutStarted := false
 	defer func() {
@@ -85,12 +85,12 @@ func PurchaseVPS(state *app.State, sub types.VPSSubscription, dcCode string) Out
 			return
 		}
 		if cleanupErr := client.Delete("/order/cart/"+cartID, nil); cleanupErr != nil {
-			state.Logger.Debug("[VPS下单] 清理失败 cart "+cartID+": "+cleanupErr.Error(), "vps_purchase")
+			state.Logger.Debug("[VPS下单] 清理失败 cart "+cartID+": "+ovh.ErrorSummary(cleanupErr), "vps_purchase")
 		}
 	}()
 
 	if err := client.Post("/order/cart/"+cartID+"/assign", nil, nil); err != nil {
-		return Outcome{Reason: "绑定购物车失败: " + err.Error()}
+		return Outcome{Reason: "绑定购物车失败，请稍后重试"}
 	}
 	duration, pricingMode := lookupVPSPricing(state, client, cartID, sub.PlanCode)
 	if duration == "" {
@@ -103,18 +103,18 @@ func PurchaseVPS(state *app.State, sub types.VPSSubscription, dcCode string) Out
 	}, &itemResult); err != nil {
 		message := err.Error()
 		if strings.Contains(strings.ToLower(message), "not found") || strings.Contains(strings.ToLower(message), "invalid plancode") {
-			return Outcome{Fatal: true, Reason: fmt.Sprintf("加购 %s 失败(%s)：型号可能已经停售", sub.PlanCode, message)}
+			return Outcome{Fatal: true, Reason: fmt.Sprintf("加购 %s 失败：型号可能已经停售", sub.PlanCode)}
 		}
-		return Outcome{Reason: fmt.Sprintf("加购 %s 失败: %s", sub.PlanCode, message)}
+		return Outcome{Reason: "加购 VPS 配置失败，请稍后重试"}
 	}
 	itemID, _ := numconv.ToInt64(itemResult["itemId"])
 	if itemID == 0 {
-		return Outcome{Reason: fmt.Sprintf("加购响应里没有 itemId: %v", itemResult)}
+		return Outcome{Reason: "加购成功但响应缺少 itemId"}
 	}
 
 	required, err := fetchRequiredConfig(client, cartID, itemID)
 	if err != nil {
-		return Outcome{Reason: "拉必需配置失败: " + err.Error()}
+		return Outcome{Reason: "读取 VPS 必需配置失败，请稍后重试"}
 	}
 	configs := buildVPSConfig(required, dcCode, sub.OS)
 	hasDC := false
@@ -146,7 +146,7 @@ func PurchaseVPS(state *app.State, sub types.VPSSubscription, dcCode string) Out
 		if err := client.Post(fmt.Sprintf("/order/cart/%s/item/%d/configuration", cartID, itemID), map[string]interface{}{
 			"label": config.label, "value": config.value,
 		}, nil); err != nil {
-			return Outcome{Fatal: true, Reason: fmt.Sprintf("设置 %s=%s 失败: %s", config.label, config.value, err.Error())}
+			return Outcome{Fatal: true, Reason: "设置 VPS 配置失败，请稍后重试"}
 		}
 	}
 
@@ -158,7 +158,7 @@ func PurchaseVPS(state *app.State, sub types.VPSSubscription, dcCode string) Out
 		"autoPayWithPreferredPaymentMethod": autoPay,
 		"waiveRetractationPeriod":           true,
 	}, &checkoutResult); err != nil {
-		return Outcome{Reason: "结账失败: " + err.Error()}
+		return Outcome{Reason: "结账失败，请稍后重试"}
 	}
 	orderID := numconv.ToString(checkoutResult["orderId"])
 	orderURL, _ := checkoutResult["url"].(string)
@@ -236,7 +236,7 @@ func lookupVPSPricing(state *app.State, client *ovhsdk.Client, cartID, planCode 
 	}
 	if err := client.Get("/order/cart/"+cartID+"/vps", &definitions); err != nil {
 		if state != nil && state.Logger != nil {
-			state.Logger.Debug("[VPS下单] 拉计价失败: "+err.Error(), "vps_purchase")
+			state.Logger.Debug("[VPS下单] 拉计价失败: "+ovh.ErrorSummary(err), "vps_purchase")
 		}
 		return "", ""
 	}
@@ -280,7 +280,7 @@ func recordVPSPurchase(state *app.State, sub types.VPSSubscription, dcCode strin
 	if err := state.MutateHistory(func(history []types.PurchaseHistoryEntry) ([]types.PurchaseHistoryEntry, error) {
 		return append(history, entry), nil
 	}); err != nil {
-		state.Logger.Warn("保存 VPS 自动下单历史失败: "+err.Error(), "vps_purchase")
+		state.Logger.Warn("保存 VPS 自动下单历史失败", "vps_purchase")
 	}
 }
 

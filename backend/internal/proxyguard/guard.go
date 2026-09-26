@@ -1,8 +1,6 @@
 package proxyguard
 
 import (
-	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -210,16 +208,6 @@ func (g *Guard) Snapshot() []Status {
 	return out
 }
 
-var credentialURLPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
-
-func sanitizeError(err error) string {
-	if err == nil {
-		return "proxy request failed"
-	}
-	message := strings.TrimSpace(err.Error())
-	message = credentialURLPattern.ReplaceAllString(message, `${1}[redacted]@`)
-	if len(message) > 240 {
-		message = message[:240]
-	}
-	return fmt.Sprintf("%s", message)
+func sanitizeError(_ error) string {
+	return "代理探测失败"
 }

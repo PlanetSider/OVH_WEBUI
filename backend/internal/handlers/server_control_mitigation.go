@@ -17,7 +17,8 @@ import (
 // 但是从 /dedicated/server/{svc}/ips 拿到的就是 IP 块格式,直接拼。
 //
 // 返回结构:
-//   ips: [{ ipBlock, mitigations: [{ ipOnMitigation, state, auto, permanent }] }]
+//
+//	ips: [{ ipBlock, mitigations: [{ ipOnMitigation, state, auto, permanent }] }]
 func GetMitigation(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
@@ -28,7 +29,7 @@ func GetMitigation(state *app.State) gin.HandlerFunc {
 		}
 		var ipBlocks []string
 		if err := client.Get("/dedicated/server/"+svc+"/ips", &ipBlocks); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器防护请求失败"})
 			return
 		}
 		type ipResult struct {
@@ -69,7 +70,7 @@ func GetMitigation(state *app.State) gin.HandlerFunc {
 		for _, r := range results {
 			row := gin.H{"ipBlock": r.block, "mitigations": r.mitigations}
 			if r.err != nil {
-				row["error"] = r.err.Error()
+				row["error"] = "获取防护状态失败"
 			}
 			if r.mitigations == nil {
 				row["mitigations"] = []interface{}{}
@@ -107,7 +108,7 @@ func EnableMitigation(state *app.State) gin.HandlerFunc {
 		var result map[string]interface{}
 		if err := client.Post("/ip/"+encoded+"/mitigation",
 			map[string]interface{}{"ipOnMitigation": ip}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器防护请求失败"})
 			return
 		}
 		state.Logger.Info("启用 IP "+ip+" 的永久 DDoS 缓解", "server_control")
@@ -136,7 +137,7 @@ func DisableMitigation(state *app.State) gin.HandlerFunc {
 		}
 		encoded := strings.ReplaceAll(ipBlock, "/", "%2F")
 		if err := client.Delete("/ip/"+encoded+"/mitigation/"+ip, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器防护请求失败"})
 			return
 		}
 		state.Logger.Info("关闭 IP "+ip+" 的永久 DDoS 缓解", "server_control")

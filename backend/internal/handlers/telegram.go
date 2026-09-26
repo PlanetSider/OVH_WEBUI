@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,13 +17,42 @@ import (
 	"github.com/ovh-webui/server/internal/telegram"
 )
 
+const telegramUpdateCleanupInterval = time.Hour
+
+var telegramUpdateCleanup = struct {
+	sync.Mutex
+	last time.Time
+}{}
+
+func maybeCleanupTelegramUpdates(state *app.State) {
+	if state == nil || state.DB == nil {
+		return
+	}
+	telegramUpdateCleanup.Lock()
+	defer telegramUpdateCleanup.Unlock()
+	now := time.Now()
+	if !telegramUpdateCleanup.last.IsZero() && now.Sub(telegramUpdateCleanup.last) < telegramUpdateCleanupInterval {
+		return
+	}
+	before := float64(now.Add(-time.Duration(telegram.UpdateIDRetentionDays) * 24 * time.Hour).Unix())
+	if _, err := state.DB.CleanupTelegramUpdates(before); err != nil {
+		if state.Logger != nil {
+			state.Logger.Warn("清理 Telegram update_id 记录失败", "telegram")
+		}
+		return
+	}
+	telegramUpdateCleanup.last = now
+}
+
 // SetTelegramWebhook POST /api/telegram/set-webhook
 func SetTelegramWebhook(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
 			WebhookURL string `json:"webhook_url"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.WebhookURL == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 webhook_url 参数"})
 			return
@@ -74,34 +104,43 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		}
 		var data map[string]interface{}
 		if err := json.Unmarshal(raw, &data); err != nil {
-			c.JSON(http.StatusOK, gin.H{"ok": true})
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "invalid_json"})
 			return
 		}
 
-		// 3) update_id 幂等（重放直接 200 吞掉）
+		// 3) update_id 幂等。缺少 ID 或幂等存储不可用时不得执行副作用。
 		var updateID int64
 		switch v := data["update_id"].(type) {
 		case float64:
 			updateID = int64(v)
 		case json.Number:
-			n, _ := v.Int64()
-			updateID = n
-		}
-		if state.DB != nil && updateID > 0 {
-			claimed, err := state.DB.TryClaimTelegramUpdate(updateID)
-			if err != nil {
-				state.Logger.Warn("update_id 幂等写入失败: "+err.Error(), "telegram")
-			} else if !claimed {
-				state.Logger.Info(fmt.Sprintf("忽略重复 update_id=%d", updateID), "telegram")
-				c.JSON(http.StatusOK, gin.H{"ok": true, "duplicate": true})
-				return
-			}
-			// 偶发清理 7 天前记录
-			if updateID%50 == 0 {
-				before := float64(time.Now().Add(-time.Duration(telegram.UpdateIDRetentionDays) * 24 * time.Hour).Unix())
-				_, _ = state.DB.CleanupTelegramUpdates(before)
+			n, parseErr := v.Int64()
+			if parseErr == nil {
+				updateID = n
 			}
 		}
+		if updateID <= 0 {
+			state.Logger.Warn("拒绝缺少有效 update_id 的 Telegram webhook", "telegram")
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_update_id"})
+			return
+		}
+		if state.DB == nil {
+			state.Logger.Error("Telegram webhook 幂等存储不可用", "telegram")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "idempotency_unavailable"})
+			return
+		}
+		claimed, err := state.DB.TryClaimTelegramUpdate(updateID)
+		if err != nil {
+			state.Logger.Error("update_id 幂等写入失败", "telegram")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "idempotency_unavailable"})
+			return
+		}
+		if !claimed {
+			state.Logger.Info(fmt.Sprintf("忽略重复 update_id=%d", updateID), "telegram")
+			c.JSON(http.StatusOK, gin.H{"ok": true, "duplicate": true})
+			return
+		}
+		maybeCleanupTelegramUpdates(state)
 
 		// 处理 callback_query
 		if cb, ok := data["callback_query"].(map[string]interface{}); ok {
@@ -208,8 +247,8 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 		accountID, _ := callbackObj["i"].(string)
 		account, err := switchDefaultAccount(state, accountID)
 		if err != nil {
-			state.Logger.Warn("Telegram 切换默认账户失败: "+err.Error(), "telegram")
-			telegram.AnswerCallback(state, cbID, "切换失败："+err.Error(), true)
+			state.Logger.Warn("Telegram 切换默认账户失败", "telegram")
+			telegram.AnswerCallback(state, cbID, "切换失败，请稍后重试", true)
 			c.JSON(http.StatusOK, gin.H{"ok": true, "error": "account_switch_failed"})
 			return
 		}
@@ -263,7 +302,7 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 
 	row, claimed, err := state.DB.ClaimTelegramButton(messageUUID)
 	if err != nil {
-		state.Logger.Warn("原子认领 TG 按钮失败: "+err.Error(), "telegram")
+		state.Logger.Warn("原子认领 TG 按钮失败", "telegram")
 		telegram.AnswerCallback(state, cbID, "按钮服务暂不可用", true)
 		c.JSON(http.StatusOK, gin.H{"ok": true, "error": "button_claim_failed"})
 		return
@@ -331,7 +370,7 @@ func rollbackTelegramButton(state *app.State, messageUUID, reason string) bool {
 	}
 	if err := state.DB.UnclaimTelegramButton(messageUUID); err != nil {
 		if state.Logger != nil {
-			state.Logger.Error(fmt.Sprintf("回滚一键下单按钮失败: uuid=%s, reason=%s, error=%v", messageUUID, reason, err), "button_security")
+			state.Logger.Error(fmt.Sprintf("回滚一键下单按钮失败: uuid=%s, reason=%s", messageUUID, reason), "button_security")
 		}
 		return false
 	}

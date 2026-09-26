@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -19,6 +20,13 @@ const tgRecheckInterval = 5 * time.Minute
 // checkNotifications 节流验证通知渠道。渠道临时失效只记录警告，监控保持运行，
 // 待发送状态会在渠道恢复后自动重试。
 func (m *Monitor) checkNotifications() {
+	m.checkNotificationsWithContext(context.Background())
+}
+
+func (m *Monitor) checkNotificationsWithContext(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.tgCheckMu.Lock()
 	due := time.Since(m.lastTGCheck) >= tgRecheckInterval
 	m.tgCheckMu.Unlock()
@@ -29,7 +37,10 @@ func (m *Monitor) checkNotifications() {
 	if FeishuEnabled(m.state) {
 		_, feishuOK = FeishuDefaultBinding(m.state)
 	}
-	tgOK, tgReason := telegram.VerifyConfig(m.state)
+	tgOK, tgReason := telegram.VerifyConfigWithContext(ctx, m.state)
+	if ctx.Err() != nil {
+		return
+	}
 	m.tgCheckMu.Lock()
 	m.lastTGCheck = time.Now()
 	m.tgCheckMu.Unlock()
@@ -60,7 +71,7 @@ func (m *Monitor) CheckNewServers(currentServerList []map[string]interface{}) {
 	if !m.knownServersInitialized {
 		m.subsMu.Unlock()
 		if err := m.state.DB.SaveKnownServersAndNotifications(sortedKnownServers(current), nil); err != nil {
-			m.state.Logger.Warn("初始化已知服务器列表失败，下次继续重试: "+err.Error(), "monitor")
+			m.state.Logger.Warn("初始化已知服务器列表失败，下次继续重试", "monitor")
 			m.persistMu.Unlock()
 			return
 		}
@@ -101,7 +112,7 @@ func (m *Monitor) CheckNewServers(currentServerList []map[string]interface{}) {
 		planCode, _ := server["planCode"].(string)
 		payload, err := json.Marshal(server)
 		if err != nil {
-			m.state.Logger.Warn("序列化新服务器通知失败: "+err.Error(), "monitor")
+			m.state.Logger.Warn("序列化新服务器通知失败", "monitor")
 			m.persistMu.Unlock()
 			return
 		}
@@ -115,7 +126,7 @@ func (m *Monitor) CheckNewServers(currentServerList []map[string]interface{}) {
 		})
 	}
 	if err := m.state.DB.SaveKnownServersAndNotifications(sortedKnownServers(current), entries); err != nil {
-		m.state.Logger.Warn("保存新服务器基线与通知失败，下次继续重试: "+err.Error(), "monitor")
+		m.state.Logger.Warn("保存新服务器基线与通知失败，下次继续重试", "monitor")
 		m.persistMu.Unlock()
 		return
 	}
@@ -141,7 +152,13 @@ func sortedKnownServers(known map[string]struct{}) []string {
 }
 
 // runSubscriptionCheck 对应 Python: _run_subscription_check
-func (m *Monitor) runSubscriptionCheck(sub *Subscription, traceID string) {
+func (m *Monitor) runSubscriptionCheck(ctx context.Context, sub *Subscription, traceID string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
 	planCode := sub.PlanCode
 	m.state.Logger.Info("开始处理订阅: "+planCode, "monitor")
 	// CheckAvailabilityChange 使用工作副本执行网络请求，并在短暂的状态提交
@@ -151,13 +168,16 @@ func (m *Monitor) runSubscriptionCheck(sub *Subscription, traceID string) {
 		m.state.Logger.Debug(fmt.Sprintf("[trace:%s] 订阅 %s 已在等待期间被删除或替换，跳过旧快照", traceID, planCode), "monitor")
 		return
 	}
-	m.CheckAvailabilityChange(sub, traceID)
+	m.CheckAvailabilityChangeWithContext(ctx, sub, traceID)
 	m.state.Logger.Info("完成处理订阅: "+planCode, "monitor")
 }
 
 // monitorLoop 对应 Python: monitor_loop
-func (m *Monitor) monitorLoop(stop <-chan struct{}, done *sync.WaitGroup) {
+func (m *Monitor) monitorLoop(ctx context.Context, stop <-chan struct{}, done *sync.WaitGroup) {
 	defer done.Done()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.state.Logger.Info("监控循环已启动", "monitor")
 	for {
 		// 使用本次启动专属的 stop channel，避免 Stop 等待期间新的 Start
@@ -166,17 +186,29 @@ func (m *Monitor) monitorLoop(stop <-chan struct{}, done *sync.WaitGroup) {
 		case <-stop:
 			m.state.Logger.Info("监控循环收到停止信号", "monitor")
 			return
+		case <-ctx.Done():
+			m.state.Logger.Info("监控循环 context 已取消", "monitor")
+			return
 		default:
 		}
 		m.subsMu.Lock()
 		running := m.running
 		m.subsMu.Unlock()
-		if !running {
+		if !running || ctx.Err() != nil {
 			break
 		}
 
-		m.checkNotifications()
-		m.DispatchNotificationOutbox()
+		if ctx.Err() != nil {
+			return
+		}
+		m.checkNotificationsWithContext(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		m.DispatchNotificationOutboxWithContext(ctx)
+		if ctx.Err() != nil {
+			return
+		}
 
 		m.cleanupExpiredCaches()
 
@@ -198,11 +230,15 @@ func (m *Monitor) monitorLoop(stop <-chan struct{}, done *sync.WaitGroup) {
 			}
 			sem := make(chan struct{}, workers)
 			var wg sync.WaitGroup
+		subscriptionLoop:
 			for _, sub := range subsCopy {
+				if ctx.Err() != nil {
+					break
+				}
 				m.subsMu.Lock()
 				running := m.running
 				m.subsMu.Unlock()
-				if !running {
+				if !running || ctx.Err() != nil {
 					break
 				}
 				if !m.stillInSubscriptions(sub) {
@@ -215,23 +251,29 @@ func (m *Monitor) monitorLoop(stop <-chan struct{}, done *sync.WaitGroup) {
 				}
 				traceID := uuid.NewString()
 				wg.Add(1)
-				sem <- struct{}{}
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					wg.Done()
+					break subscriptionLoop
+				}
 				go func(s *Subscription, tid string) {
 					defer wg.Done()
 					defer func() { <-sem }()
 					defer func() {
 						if r := recover(); r != nil {
-							m.state.Logger.Error(fmt.Sprintf("[trace:%s] 并发检查订阅 %s 时异常: %v",
-								tid, s.PlanCode, r), "monitor")
+							m.state.Logger.Error(fmt.Sprintf("[trace:%s] 并发检查订阅 %s 时异常", tid, s.PlanCode), "monitor")
 						}
 					}()
-					m.runSubscriptionCheck(s, tid)
+					m.runSubscriptionCheck(ctx, s, tid)
 				}(sub, traceID)
 			}
 			wg.Wait()
-			// 持久化 LastStatus / History，避免重启后空基线触发误下单
-			if err := m.SaveToDB(); err != nil {
-				m.state.Logger.Warn("监控状态本轮未持久化，下轮将继续重试: "+err.Error(), "monitor")
+			if ctx.Err() == nil {
+				// 持久化 LastStatus / History，避免重启后空基线触发误下单
+				if err := m.SaveToDB(); err != nil {
+					m.state.Logger.Warn("监控状态本轮未持久化，下轮将继续重试", "monitor")
+				}
 			}
 		} else {
 			m.state.Logger.Info("当前无订阅，跳过检查", "monitor")
@@ -247,6 +289,13 @@ func (m *Monitor) monitorLoop(stop <-chan struct{}, done *sync.WaitGroup) {
 			select {
 			case <-timer.C:
 			case <-stop:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			case <-ctx.Done():
 				if !timer.Stop() {
 					select {
 					case <-timer.C:
@@ -304,6 +353,8 @@ func (m *Monitor) Start() bool {
 	}
 	m.running = true
 	m.stopCh = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	m.monitorCancel = cancel
 	interval := m.checkInterval
 	done := &sync.WaitGroup{}
 	done.Add(1)
@@ -314,7 +365,7 @@ func (m *Monitor) Start() bool {
 	m.tgCheckMu.Lock()
 	m.lastTGCheck = time.Time{}
 	m.tgCheckMu.Unlock()
-	go m.monitorLoop(stop, done)
+	go m.monitorLoop(ctx, stop, done)
 	m.state.Logger.Info(fmt.Sprintf("服务器监控已启动 (检查间隔: %d秒)", interval), "monitor")
 	return true
 }
@@ -332,8 +383,13 @@ func (m *Monitor) Stop() bool {
 	m.running = false
 	stop := m.stopCh
 	done := m.thread
+	cancel := m.monitorCancel
 	m.stopCh = nil
+	m.monitorCancel = nil
 	m.subsMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if stop != nil {
 		close(stop)
 	}
@@ -423,7 +479,7 @@ func (m *Monitor) batchOrder(target, sub *Subscription, configInfo map[string]in
 		return false
 	}
 	if err := m.state.EnqueueMonitorOrders(toDBSub(persisted), items); err != nil {
-		m.state.Logger.Warn(fmt.Sprintf("[monitor->order] 批量入队失败，保留全部 %d 个待办下轮重试: %s", totalOrders, err), "monitor")
+		m.state.Logger.Warn(fmt.Sprintf("[monitor->order] 批量入队失败，保留全部 %d 个待办下轮重试", totalOrders), "monitor")
 		return false
 	}
 	sub.PendingOrder = cloneIntMap(persisted.PendingOrder)

@@ -380,7 +380,15 @@ func (db *DB) RemoveCheckoutAttempt(taskID string) error {
 	return nil
 }
 
-// RecoverCheckoutAttempts 把遗留的不可判定 checkout 任务从运行队列中移除。
+// HasCheckoutAttempt 检查任务是否仍有 checkout 恢复记录。
+func (db *DB) HasCheckoutAttempt(taskID string) (bool, error) {
+	var count int
+	if err := db.Get(&count, `SELECT COUNT(*) FROM checkout_attempts WHERE task_id = ?`, taskID); err != nil {
+		return false, fmt.Errorf("check checkout attempt %s: %w", taskID, err)
+	}
+	return count > 0, nil
+}
+
 // 已拿到 order_id 的记录同时恢复为成功历史；未拿到的记录保留在表中供日志提示和人工核对。
 func (db *DB) RecoverCheckoutAttempts(notificationChannels []string) (recoveredSuccess, quarantined int64, err error) {
 	tx, err := db.Beginx()

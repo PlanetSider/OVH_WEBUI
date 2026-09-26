@@ -67,7 +67,12 @@ func GetDisplayWithContext(ctx context.Context, state *app.State, accountID, pla
 // GetCatalogDisplay 只读取公开 catalog，计算与服务器列表相同口径的月费和
 // 安装费。它不创建购物车，因此可在实时询价失败时继续为通知提供目录价格。
 func GetCatalogDisplay(state *app.State, accountID, planCode string, options []string) (DisplayPrice, error) {
-	return getDisplayFromCatalog(context.Background(), state, accountID, planCode, options, DisplayPrice{})
+	return GetCatalogDisplayWithContext(context.Background(), state, accountID, planCode, options)
+}
+
+// GetCatalogDisplayWithContext 是 GetCatalogDisplay 的可取消版本。
+func GetCatalogDisplayWithContext(ctx context.Context, state *app.State, accountID, planCode string, options []string) (DisplayPrice, error) {
+	return getDisplayFromCatalog(ctx, state, accountID, planCode, options, DisplayPrice{})
 }
 
 // GetDisplayFromResult 复用已经完成的购物车询价结果，再从公开 catalog
@@ -197,7 +202,7 @@ func loadPublicCatalog(ctx context.Context, state *app.State, client *ovhsdk.Cli
 	if state.DB != nil {
 		if err := state.DB.UpsertCatalog(subsidiary, string(body)); err != nil {
 			if state.Logger != nil {
-				state.Logger.Warn("写入价格 catalog 缓存失败: "+err.Error(), "price")
+				state.Logger.Warn("写入价格 catalog 缓存失败", "price")
 			}
 		}
 	}

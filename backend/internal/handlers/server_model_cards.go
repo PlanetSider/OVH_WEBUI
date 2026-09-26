@@ -20,8 +20,8 @@ import (
 
 const (
 	telegramPlanCardMaxRunes = 900
-	feishuPlanCardMaxRunes  = 1800
-	serverModelRefreshDelay = 5 * time.Minute
+	feishuPlanCardMaxRunes   = 1800
+	serverModelRefreshDelay  = 5 * time.Minute
 )
 
 var (
@@ -159,7 +159,7 @@ func refreshServerPlansForModelQuery(state *app.State) {
 	}
 	serverModelLastRefresh = time.Now()
 	if _, err := refreshServerCatalog(state); err != nil {
-		state.Logger.Warn("型号查询刷新服务器目录失败: "+err.Error(), "")
+		state.Logger.Warn("型号查询刷新服务器目录失败", "")
 	}
 }
 

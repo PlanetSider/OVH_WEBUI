@@ -91,21 +91,27 @@ func CheckUpdate(state *app.State) gin.HandlerFunc {
 
 		resp, err := client.Do(req)
 		if err != nil {
-			state.Logger.Warn("update check 拉取失败: "+err.Error(), "version")
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "current": Version})
+			state.Logger.Warn("update check 拉取失败", "version")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "更新服务暂不可用", "current": Version})
 			return
 		}
 		defer resp.Body.Close()
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "current": Version})
+			state.Logger.Warn("update check 读取响应失败", "version")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "更新服务响应不可用", "current": Version})
+			return
+		}
+		if len(body) > 1<<20 {
+			state.Logger.Warn("update check 响应过大", "version")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "更新服务响应过大", "current": Version})
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
-			c.JSON(resp.StatusCode, gin.H{
-				"error":   "upstream returned " + strconv.Itoa(resp.StatusCode),
-				"detail":  strings.TrimSpace(string(body)),
+			state.Logger.Warn("update check 上游返回 HTTP "+strconv.Itoa(resp.StatusCode), "version")
+			c.JSON(http.StatusBadGateway, gin.H{
+				"error":   "更新服务暂不可用",
 				"current": Version,
 			})
 			return
@@ -113,7 +119,8 @@ func CheckUpdate(state *app.State) gin.HandlerFunc {
 
 		var rel githubRelease
 		if err := json.Unmarshal(body, &rel); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "current": Version})
+			state.Logger.Warn("update check 解析响应失败", "version")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "更新服务响应格式错误", "current": Version})
 			return
 		}
 

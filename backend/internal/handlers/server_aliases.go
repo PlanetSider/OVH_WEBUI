@@ -21,8 +21,8 @@ func ListServerAliases(state *app.State) gin.HandlerFunc {
 		}
 		m, err := state.DB.ListAliasesByAccount(acc.ID)
 		if err != nil {
-			state.Logger.Error("list aliases: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			state.Logger.Error("list aliases 失败", "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取服务器别名失败"})
 			return
 		}
 		if m == nil {
@@ -49,11 +49,13 @@ func SetServerAlias(state *app.State) gin.HandlerFunc {
 		var body struct {
 			Alias string `json:"alias"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		alias := strings.TrimSpace(body.Alias)
 		if err := state.DB.UpsertAlias(acc.ID, svc, alias); err != nil {
-			state.Logger.Error("set alias: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			state.Logger.Error("set alias 失败", "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取服务器别名失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "success", "service_name": svc, "alias": alias})
@@ -74,8 +76,8 @@ func DeleteServerAlias(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := state.DB.DeleteAlias(acc.ID, svc); err != nil {
-			state.Logger.Error("delete alias: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			state.Logger.Error("delete alias 失败", "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取服务器别名失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "success"})

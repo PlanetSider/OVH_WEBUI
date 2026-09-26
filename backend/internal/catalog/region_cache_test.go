@@ -1,7 +1,9 @@
 package catalog
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -31,7 +33,7 @@ func TestLoadSubsidiaryCatalogSingleflightAndNormalization(t *testing.T) {
 	defer func() { fetchSubsidiaryCatalog = original }()
 	var calls int32
 	release := make(chan struct{})
-	fetchSubsidiaryCatalog = func(_ *app.State, subsidiary string) (*subsidiaryCatalog, error) {
+	fetchSubsidiaryCatalog = func(_ context.Context, _ *app.State, subsidiary string) (*subsidiaryCatalog, error) {
 		if subsidiary != "IE" {
 			t.Errorf("subsidiary = %q, want IE", subsidiary)
 		}
@@ -68,6 +70,37 @@ func TestLoadSubsidiaryCatalogSingleflightAndNormalization(t *testing.T) {
 	}
 }
 
+func TestLoadSubsidiaryCatalogWaiterHonorsContextCancellation(t *testing.T) {
+	resetCatalogTestCaches()
+	defer resetCatalogTestCaches()
+	original := fetchSubsidiaryCatalog
+	defer func() { fetchSubsidiaryCatalog = original }()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	fetchSubsidiaryCatalog = func(_ context.Context, _ *app.State, _ string) (*subsidiaryCatalog, error) {
+		close(started)
+		<-release
+		return &subsidiaryCatalog{plans: map[string]planConfig{}, fetchedAt: time.Now()}, nil
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		_, _ = loadSubsidiaryCatalogContext(context.Background(), &app.State{}, "IE")
+		close(firstDone)
+	}()
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := loadSubsidiaryCatalogContext(ctx, &app.State{}, "IE"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled waiter error = %v, want context.Canceled", err)
+	}
+	close(release)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("singleflight owner did not finish")
+	}
+}
+
 func TestLoadSubsidiaryCatalogNegativeCacheAndStaleFallback(t *testing.T) {
 	resetCatalogTestCaches()
 	defer resetCatalogTestCaches()
@@ -75,7 +108,7 @@ func TestLoadSubsidiaryCatalogNegativeCacheAndStaleFallback(t *testing.T) {
 	defer func() { fetchSubsidiaryCatalog = original }()
 	wantErr := errors.New("upstream unavailable")
 	var calls int32
-	fetchSubsidiaryCatalog = func(_ *app.State, _ string) (*subsidiaryCatalog, error) {
+	fetchSubsidiaryCatalog = func(_ context.Context, _ *app.State, _ string) (*subsidiaryCatalog, error) {
 		atomic.AddInt32(&calls, 1)
 		return nil, wantErr
 	}
@@ -129,6 +162,27 @@ func TestRegionProbeSingleflightByPlanAndRegion(t *testing.T) {
 		if !result {
 			t.Fatal("probe result was false")
 		}
+	}
+}
+
+func TestAvailProbeCachePrunesExpiredAndCaps(t *testing.T) {
+	resetCatalogTestCaches()
+	defer resetCatalogTestCaches()
+	now := time.Now()
+	availProbeMu.Lock()
+	availProbeCache["expired"] = availProbeEntry{has: true, at: now.Add(-availProbeTTL - time.Second)}
+	for i := 0; i < maxAvailProbeEntries+10; i++ {
+		availProbeCache[fmt.Sprintf("key-%d", i)] = availProbeEntry{has: i%2 == 0, at: now.Add(-time.Duration(i+1) * time.Millisecond)}
+	}
+	pruneAvailProbeLocked(now)
+	got := len(availProbeCache) + len(availProbeFail)
+	_, expiredPresent := availProbeCache["expired"]
+	availProbeMu.Unlock()
+	if expiredPresent {
+		t.Fatal("expired availability entry was not pruned")
+	}
+	if got > maxAvailProbeEntries {
+		t.Fatalf("availability cache entries = %d, want <= %d", got, maxAvailProbeEntries)
 	}
 }
 

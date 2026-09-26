@@ -78,7 +78,7 @@ func FlushLogs(state *app.State) gin.HandlerFunc {
 func ClearLogs(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := state.Logger.Clear(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "清理日志失败"})
 			return
 		}
 		state.Logger.Info("Logs cleared", "system")

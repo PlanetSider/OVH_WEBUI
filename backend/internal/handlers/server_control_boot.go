@@ -23,7 +23,7 @@ func GetBootConfig(state *app.State) gin.HandlerFunc {
 		}
 		var info map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc, &info); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器启动配置请求失败"})
 			return
 		}
 		bootID := info["bootId"]
@@ -87,8 +87,8 @@ func SetBootConfig(state *app.State) gin.HandlerFunc {
 		if err := client.Put("/dedicated/server/"+svc, map[string]interface{}{
 			"bootId": bootID,
 		}, nil); err != nil {
-			state.Logger.Error("设置服务器 "+svc+" 启动模式失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("设置服务器 "+svc+" 启动模式失败", "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器启动配置请求失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("服务器 %s 启动模式已设置为 %d", svc, bootID), "server_control")
@@ -107,7 +107,7 @@ func GetMonitoringStatus(state *app.State) gin.HandlerFunc {
 		}
 		var info map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc, &info); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器启动配置请求失败"})
 			return
 		}
 		// 1:1 对应 Python app.py:6111：缺失时默认 false
@@ -131,11 +131,13 @@ func SetMonitoringStatus(state *app.State) gin.HandlerFunc {
 		var body struct {
 			Enabled bool `json:"enabled"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if err := client.Put("/dedicated/server/"+svc, map[string]interface{}{
 			"monitoring": body.Enabled,
 		}, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器启动配置请求失败"})
 			return
 		}
 		statusText := "开启"
@@ -158,7 +160,7 @@ func GetBootModes(state *app.State) gin.HandlerFunc {
 		}
 		var info map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc, &info); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器启动配置请求失败"})
 			return
 		}
 		currentBootID := info["bootId"]
@@ -219,7 +221,9 @@ func ChangeBootMode(state *app.State) gin.HandlerFunc {
 		var body struct {
 			BootID int64 `json:"bootId"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.BootID == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少bootId参数"})
 			return
@@ -228,7 +232,7 @@ func ChangeBootMode(state *app.State) gin.HandlerFunc {
 		if err := client.Put("/dedicated/server/"+svc, map[string]interface{}{
 			"bootId": body.BootID,
 		}, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器启动配置请求失败"})
 			return
 		}
 		state.Logger.Info("[Boot] 启动模式切换成功，需要重启服务器生效", "server_control")

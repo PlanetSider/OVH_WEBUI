@@ -56,16 +56,21 @@ func GetOrderMapping(state *app.State) gin.HandlerFunc {
 			details := parallelGetStringKeys(client, serverList, func(sn string) string {
 				return "/dedicated/server/" + sn + "/serviceInfos"
 			}, 10)
+			missingDetails := 0
 			for _, svcInfo := range details {
 				if svcInfo == nil {
+					missingDetails++
 					continue
 				}
 				if cd, ok := svcInfo["creation"].(string); ok && cd != "" {
 					creationDates = append(creationDates, cd)
 				}
 			}
+			if missingDetails > 0 {
+				state.Logger.Warn(fmt.Sprintf("获取服务器 serviceInfos 失败 %d/%d 次，将继续使用可用创建时间", missingDetails, len(serverList)), "server_control")
+			}
 		} else {
-			state.Logger.Warn("获取服务器创建时间失败: "+err.Error()+", 将获取最近30天的订单", "server_control")
+			state.Logger.Warn("获取服务器创建时间失败，将获取最近30天的订单", "server_control")
 		}
 
 		var dateFrom, dateTo time.Time
@@ -106,8 +111,8 @@ func GetOrderMapping(state *app.State) gin.HandlerFunc {
 		var allOrderIDs []int64
 		path := "/me/order?date.from=" + dateFromEnc + "&date.to=" + dateToEnc
 		if err := client.Get(path, &allOrderIDs); err != nil {
-			state.Logger.Error("获取订单列表失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "获取订单列表失败: " + err.Error()})
+			state.Logger.Error("获取订单列表失败", "server_control")
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取订单列表失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("时间范围内获取到 %d 个订单", len(allOrderIDs)), "server_control")
@@ -116,6 +121,7 @@ func GetOrderMapping(state *app.State) gin.HandlerFunc {
 		validIDs := []int64{}
 		skipped := 0
 		statusCounts := map[string]int{}
+		statusErrorCount := 0
 		var muVal sync.Mutex
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 5)
@@ -129,7 +135,9 @@ func GetOrderMapping(state *app.State) gin.HandlerFunc {
 				if err := client.Get(fmt.Sprintf("/me/order/%d/status", id), &status); err != nil {
 					muVal.Lock()
 					skipped++
+					statusErrorCount++
 					muVal.Unlock()
+					state.Logger.Warn(fmt.Sprintf("获取订单 %d 状态失败", id), "server_control")
 					return
 				}
 				lower := strings.ToLower(status)
@@ -151,7 +159,7 @@ func GetOrderMapping(state *app.State) gin.HandlerFunc {
 			}
 			state.Logger.Info("订单状态统计: "+strings.Join(parts, ", "), "server_control")
 		}
-		state.Logger.Info(fmt.Sprintf("过滤后得到 %d 个有效订单（跳过 %d 个已取消订单）", len(validIDs), skipped), "server_control")
+		state.Logger.Info(fmt.Sprintf("过滤后得到 %d 个有效订单（跳过 %d 个已取消订单，状态查询失败 %d 个）", len(validIDs), skipped-statusErrorCount, statusErrorCount), "server_control")
 
 		// 处理订单详情（10 并发）
 		mapping := map[string]map[string]interface{}{}
@@ -171,17 +179,29 @@ func GetOrderMapping(state *app.State) gin.HandlerFunc {
 					muMap.Lock()
 					errorCount++
 					muMap.Unlock()
+					state.Logger.Warn(fmt.Sprintf("获取订单 %d 明细列表失败", id), "server_control")
 					return
 				}
 				var orderInfo map[string]interface{}
-				_ = client.Get(fmt.Sprintf("/me/order/%d", id), &orderInfo)
+				if err := client.Get(fmt.Sprintf("/me/order/%d", id), &orderInfo); err != nil {
+					muMap.Lock()
+					errorCount++
+					muMap.Unlock()
+					state.Logger.Warn(fmt.Sprintf("获取订单 %d 详情失败", id), "server_control")
+				}
 				orderDate := ""
 				if v, ok := orderInfo["date"].(string); ok {
 					orderDate = v
 				}
 				orderURL := fmt.Sprintf("https://www.ovh.com/manager/dedicated/#/billing/order?orderId=%d", id)
 				var orderStatus string
-				_ = client.Get(fmt.Sprintf("/me/order/%d/status", id), &orderStatus)
+				if err := client.Get(fmt.Sprintf("/me/order/%d/status", id), &orderStatus); err != nil {
+					muMap.Lock()
+					errorCount++
+					muMap.Unlock()
+					state.Logger.Warn(fmt.Sprintf("获取订单 %d 状态失败", id), "server_control")
+					orderStatus = "unknown"
+				}
 				if orderStatus == "" {
 					orderStatus = "unknown"
 				}
@@ -189,6 +209,10 @@ func GetOrderMapping(state *app.State) gin.HandlerFunc {
 				for _, did := range detailIDs {
 					var d map[string]interface{}
 					if err := client.Get(fmt.Sprintf("/me/order/%d/details/%d", id, did), &d); err != nil {
+						muMap.Lock()
+						errorCount++
+						muMap.Unlock()
+						state.Logger.Warn(fmt.Sprintf("获取订单 %d 明细 %d 失败", id, did), "server_control")
 						continue
 					}
 					serviceName, _ := d["domain"].(string)

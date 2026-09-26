@@ -49,7 +49,7 @@ func GetServers(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			} else {
 				refreshMessage := "OVH API 返回空服务器目录"
 				if refreshErr != nil {
-					refreshMessage = refreshErr.Error()
+					refreshMessage = "OVH API 请求失败"
 				}
 				state.Logger.Warn("从OVH API加载服务器列表失败: "+refreshMessage, "")
 				if len(cached) > 0 {
@@ -157,7 +157,9 @@ func GetAvailability(state *app.State) gin.HandlerFunc {
 			var body struct {
 				Options interface{} `json:"options"`
 			}
-			_ = c.ShouldBindJSON(&body)
+			if !bindJSONOrBadRequest(c, &body) {
+				return
+			}
 			switch v := body.Options.(type) {
 			case []interface{}:
 				for _, o := range v {
@@ -211,7 +213,9 @@ func GetServerPrice(state *app.State) gin.HandlerFunc {
 			Datacenter string   `json:"datacenter"`
 			Options    []string `json:"options"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.Datacenter == "" {
 			body.Datacenter = "gra"
 		}
@@ -220,12 +224,13 @@ func GetServerPrice(state *app.State) gin.HandlerFunc {
 		if acc == "" {
 			acc = c.Query("account")
 		}
-		result := price.GetInternal(state, acc, planCode, body.Datacenter, body.Options)
+		result := price.GetInternalWithContext(c.Request.Context(), state, acc, planCode, body.Datacenter, body.Options)
 		if !result.Success {
 			status := http.StatusInternalServerError
 			if result.Error != "" && (containsCI(result.Error, "未配置") || containsCI(result.Error, "no default") || containsCI(result.Error, "missing")) {
 				status = http.StatusUnauthorized
 			}
+			result = publicPriceResult(result)
 			c.JSON(status, result)
 			return
 		}
@@ -247,7 +252,9 @@ func MonitorPrice(state *app.State) gin.HandlerFunc {
 			Datacenter string   `json:"datacenter"`
 			Options    []string `json:"options"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.PlanCode == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 plan_code 参数"})
 			return
@@ -255,9 +262,17 @@ func MonitorPrice(state *app.State) gin.HandlerFunc {
 		if body.Datacenter == "" {
 			body.Datacenter = "gra"
 		}
-		result := price.GetInternal(state, body.AccountID, body.PlanCode, body.Datacenter, body.Options)
-		c.JSON(http.StatusOK, result)
+		result := price.GetInternalWithContext(c.Request.Context(), state, body.AccountID, body.PlanCode, body.Datacenter, body.Options)
+		c.JSON(http.StatusOK, publicPriceResult(result))
 	}
+}
+
+// publicPriceResult keeps internal pricing diagnostics out of HTTP responses.
+func publicPriceResult(result price.Result) price.Result {
+	if !result.Success {
+		result.Error = "询价失败，请稍后重试"
+	}
+	return result
 }
 
 // CacheInfo GET /api/cache/info
@@ -299,16 +314,20 @@ func CacheInfo(state *app.State) gin.HandlerFunc {
 
 // ClearCache POST /api/cache/clear
 // type:
-//   "memory" → 只清进程内存（ServerCache + ServerPlans），下次刷新若有 SQLite 缓存仍会用
-//   "sqlite" → 只清 SQLite servers 表（重启后不会回灌旧目录），内存里如果还有照常用
-//   "all"    → 内存 + SQLite 都清
+//
+//	"memory" → 只清进程内存（ServerCache + ServerPlans），下次刷新若有 SQLite 缓存仍会用
+//	"sqlite" → 只清 SQLite servers 表（重启后不会回灌旧目录），内存里如果还有照常用
+//	"all"    → 内存 + SQLite 都清
+//
 // 注意：queue / history / monitor / vps / sniper 这些是业务数据，不算"缓存"，不在清理范围内。
 func ClearCache(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
 			Type string `json:"type"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		cacheType := body.Type
 		if cacheType == "" {
 			cacheType = "all"
@@ -326,13 +345,13 @@ func ClearCache(state *app.State) gin.HandlerFunc {
 
 		if cacheType == "all" || cacheType == "sqlite" {
 			if err := state.DB.ClearServers(); err != nil {
-				state.Logger.Error("清除 SQLite 服务器缓存失败: "+err.Error(), "")
+				state.Logger.Error("清除 SQLite 服务器缓存失败", "")
 			} else {
 				cleared = append(cleared, "sqlite_servers")
 				state.Logger.Info("已清除 SQLite 服务器缓存", "")
 			}
 			if err := state.DB.ClearCatalogs(); err != nil {
-				state.Logger.Error("清除 SQLite catalog 缓存失败: "+err.Error(), "")
+				state.Logger.Error("清除 SQLite catalog 缓存失败", "")
 			} else {
 				cleared = append(cleared, "sqlite_catalogs")
 				state.Logger.Info("已清除 SQLite catalog 缓存", "")

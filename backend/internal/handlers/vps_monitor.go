@@ -48,7 +48,7 @@ func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 			AutoOrderAccountID string   `json:"autoOrderAccountId"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求参数无效"})
 			return
 		}
 		if body.PlanCode == "" {
@@ -78,7 +78,7 @@ func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 		accountID := strings.TrimSpace(body.AutoOrderAccountID)
 		if autoOrder {
 			if err := vps.ValidateAutoOrderAccount(state, body.OvhSubsidiary, accountID); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求参数无效"})
 				return
 			}
 		}
@@ -118,9 +118,9 @@ func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 			return append(subscriptions, sub), nil
 		}); err != nil {
 			if errors.Is(err, duplicate) {
-				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "该VPS套餐已订阅"})
 			} else {
-				state.Logger.Error("保存VPS订阅失败: "+err.Error(), "vps_monitor")
+				state.Logger.Error("保存VPS订阅失败", "vps_monitor")
 				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "保存订阅失败"})
 			}
 			return
@@ -152,7 +152,7 @@ func UpdateVPSSubscription(state *app.State) gin.HandlerFunc {
 			AutoOrderAccountID *string   `json:"autoOrderAccountId"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求参数无效"})
 			return
 		}
 		if body.AutoPay != nil && *body.AutoPay {
@@ -240,11 +240,11 @@ func UpdateVPSSubscription(state *app.State) gin.HandlerFunc {
 			return nil, notFound
 		}); err != nil {
 			if errors.Is(err, notFound) {
-				c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": err.Error()})
+				c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "订阅不存在"})
 			} else if errors.Is(err, errInvalidVPSAutoOrder) {
-				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "自动下单账户配置无效"})
 			} else {
-				state.Logger.Error("保存VPS订阅更新失败: "+err.Error(), "vps_monitor")
+				state.Logger.Error("保存VPS订阅更新失败", "vps_monitor")
 				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "保存订阅失败"})
 			}
 			return
@@ -277,9 +277,9 @@ func RemoveVPSSubscription(state *app.State) gin.HandlerFunc {
 			return kept, nil
 		}); err != nil {
 			if errors.Is(err, notFound) {
-				c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": err.Error()})
+				c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "订阅不存在"})
 			} else {
-				state.Logger.Error("删除VPS订阅失败: "+err.Error(), "vps_monitor")
+				state.Logger.Error("删除VPS订阅失败", "vps_monitor")
 				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "删除订阅失败"})
 			}
 			return
@@ -301,7 +301,7 @@ func ClearVPSSubscriptions(state *app.State) gin.HandlerFunc {
 			count = len(subscriptions)
 			return []types.VPSSubscription{}, nil
 		}); err != nil {
-			state.Logger.Error("清空VPS订阅失败: "+err.Error(), "vps_monitor")
+			state.Logger.Error("清空VPS订阅失败", "vps_monitor")
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "清空订阅失败"})
 			return
 		}
@@ -388,7 +388,7 @@ func SetVPSMonitorInterval(state *app.State) gin.HandlerFunc {
 			Interval int `json:"interval"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求参数无效"})
 			return
 		}
 		if body.Interval < 60 {
@@ -396,7 +396,7 @@ func SetVPSMonitorInterval(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := state.SetVPSCheckInterval(body.Interval); err != nil {
-			state.Logger.Error("保存VPS检查间隔失败: "+err.Error(), "vps_monitor")
+			state.Logger.Error("保存VPS检查间隔失败", "vps_monitor")
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "保存检查间隔失败"})
 			return
 		}
@@ -412,7 +412,9 @@ func ManualCheckVPS(state *app.State) gin.HandlerFunc {
 		var body struct {
 			OvhSubsidiary string `json:"ovhSubsidiary"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.OvhSubsidiary == "" {
 			body.OvhSubsidiary = "IE"
 		}

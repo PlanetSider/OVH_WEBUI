@@ -38,6 +38,8 @@ import { ReinstallDialog } from "@/components/server-control/ReinstallDialog";
 import { EngagementDialog } from "@/components/server-control/EngagementDialog";
 import { toast } from "sonner";
 
+const EMPTY_SERVERS: OwnedServer[] = [];
+
 /** 服务器控制中心：顶部下拉切换服务器 + 4 tab 详情 */
 function ServerControlPage() {
   const q = useOwnedServers();
@@ -45,7 +47,7 @@ function ServerControlPage() {
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [activeAccount, setActiveAccount] = useActiveServerControlAccount();
   const { data: accounts } = useAccounts();
-  const servers = q.data || [];
+  const servers = q.data ?? EMPTY_SERVERS;
 
   // 首次没选过账户 → 自动选默认账户
   useEffect(() => {
@@ -59,7 +61,6 @@ function ServerControlPage() {
   // 切换账户时,选中的 service 也清空(不同账户的服务器不一样)
   useEffect(() => {
     setSelectedName(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAccount]);
 
   // 自动选中第一台（首次加载或切换列表后）
@@ -118,8 +119,19 @@ function ServerControlPage() {
         }
       />
 
+      {q.isError && q.data && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border border-destructive/40 p-3 text-sm">
+          <span>服务器列表刷新失败，正在显示上次数据</span>
+          <Button variant="outline" size="sm" onClick={() => void q.refetch()} disabled={q.isFetching}>重试</Button>
+        </div>
+      )}
       {q.isPending ? (
         <Skeleton className="h-[500px] rounded-2xl" />
+      ) : q.isError && !q.data ? (
+        <div role="alert" className="space-y-3 py-8 text-center">
+          <p>服务器列表加载失败</p>
+          <Button variant="outline" onClick={() => void q.refetch()}>重试</Button>
+        </div>
       ) : servers.length === 0 ? (
         <Card>
           <EmptyState
@@ -155,7 +167,7 @@ function ServerControlPage() {
             </div>
 
             {/* Tabs */}
-            {selected && <ServerTabs server={selected} />}
+            {selected && <ServerTabs key={`${activeAccount}:${selected.serviceName}`} server={selected} />}
           </CardContent>
         </Card>
       )}
@@ -367,10 +379,13 @@ function ServerTabs({ server }: { server: OwnedServer }) {
   const [reinstallOpen, setReinstallOpen] = useState(false);
   const [engagementOpen, setEngagementOpen] = useState(false);
 
+  const monitoringReady = monitoring.isSuccess && !monitoring.isFetching;
   const handleToggleMonitoring = async () => {
+    if (!monitoringReady || toggleMon.isPending) return;
+    const enabled = !monitoring.data;
     try {
-      await toggleMon.mutateAsync({ serviceName: server.serviceName, enabled: !monitoring.data });
-      toast.success(monitoring.data ? "OVH 监控已关闭" : "OVH 监控已开启");
+      await toggleMon.mutateAsync({ serviceName: server.serviceName, enabled });
+      toast.success(enabled ? "OVH 监控已开启" : "OVH 监控已关闭");
     } catch (e: any) {
       toast.error(e?.response?.data?.error || "操作失败");
     }
@@ -431,14 +446,19 @@ function ServerTabs({ server }: { server: OwnedServer }) {
                     size="sm"
                     className="h-7 rounded-full"
                     onClick={handleToggleMonitoring}
-                    disabled={toggleMon.isPending}
+                    disabled={!monitoringReady || toggleMon.isPending}
                   >
                     <Activity className={`w-3.5 h-3.5 mr-1 ${monitoring.data ? "text-success" : "text-muted-foreground"}`} />
-                    {monitoring.data ? "监控 已开" : "监控 已关"}
+                    {monitoring.isError ? "监控状态读取失败" : !monitoringReady ? "读取中" : monitoring.data ? "监控 已开" : "监控 已关"}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>OVH 自动监控（异常会邮件通知）</TooltipContent>
               </Tooltip>
+              {monitoring.isError && (
+                <Button variant="outline" size="sm" onClick={() => void monitoring.refetch()} disabled={monitoring.isFetching}>
+                  <RefreshCw className="w-3.5 h-3.5 mr-1" />重试监控状态
+                </Button>
+              )}
 
               <Tooltip>
                 <TooltipTrigger asChild>

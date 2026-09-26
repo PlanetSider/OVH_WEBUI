@@ -23,8 +23,8 @@ func ListVps(state *app.State) gin.HandlerFunc {
 		}
 		var names []string
 		if err := client.Get("/vps", &names); err != nil {
-			state.Logger.Error("获取 VPS 列表失败: "+err.Error(), "vps_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("获取 VPS 列表失败", "vps_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		state.Logger.Info("获取 VPS 列表成功", "vps_control")
@@ -138,7 +138,7 @@ func GetVpsInfo(state *app.State) gin.HandlerFunc {
 		}
 		var info map[string]interface{}
 		if err := client.Get("/vps/"+svc, &info); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "info": info})
@@ -159,7 +159,7 @@ func GetVpsServiceStatus(state *app.State) gin.HandlerFunc {
 		}
 		var status map[string]interface{}
 		if err := client.Get("/vps/"+svc+"/status", &status); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "status": status})
@@ -178,7 +178,7 @@ func GetVpsServiceInfo(state *app.State) gin.HandlerFunc {
 		}
 		var info map[string]interface{}
 		if err := client.Get("/vps/"+svc+"/serviceInfos", &info); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		renew, _ := info["renew"].(map[string]interface{})
@@ -238,11 +238,12 @@ func UpdateVpsRenewal(state *app.State) gin.HandlerFunc {
 			Mode   string `json:"mode"`
 			Period int    `json:"period"`
 		}
-		_ = c.ShouldBindJSON(&body)
-
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		var info map[string]interface{}
 		if err := client.Get("/vps/"+svc+"/serviceInfos", &info); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		renew, _ := info["renew"].(map[string]interface{})
@@ -275,7 +276,7 @@ func UpdateVpsRenewal(state *app.State) gin.HandlerFunc {
 		}
 		info["renew"] = renew
 		if err := client.Put("/vps/"+svc+"/serviceInfos", info, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		state.Logger.Info("VPS "+svc+" 续费策略已更新: "+body.Mode, "vps_control")
@@ -295,7 +296,7 @@ func GetVpsIps(state *app.State) gin.HandlerFunc {
 		}
 		var ips []string
 		if err := client.Get("/vps/"+svc+"/ips", &ips); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		details := parallelGetStringKeys(client, ips, func(ip string) string {
@@ -338,15 +339,17 @@ func SetVpsIpReverse(state *app.State) gin.HandlerFunc {
 		var body struct {
 			Reverse string `json:"reverse"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		var current map[string]interface{}
 		if err := client.Get("/vps/"+svc+"/ips/"+ip, &current); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		current["reverse"] = body.Reverse
 		if err := client.Put("/vps/"+svc+"/ips/"+ip, current, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		state.Logger.Info("VPS "+svc+" IP "+ip+" 反向 DNS 设为 "+body.Reverse, "vps_control")
@@ -365,7 +368,7 @@ func GetVpsDatacenter(state *app.State) gin.HandlerFunc {
 		}
 		var dc map[string]interface{}
 		if err := client.Get("/vps/"+svc+"/datacenter", &dc); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "VPS 请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "datacenter": dc})

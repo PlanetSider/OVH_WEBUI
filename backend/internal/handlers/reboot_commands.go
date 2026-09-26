@@ -32,13 +32,13 @@ type rebootAccountChoice struct {
 }
 
 type rebootServerChoice struct {
-	AccountID   string `json:"accountId"`
-	AccountName string `json:"accountName"`
-	ServiceName    string `json:"serviceName"`
-	DisplayName    string `json:"displayName"`
+	AccountID       string `json:"accountId"`
+	AccountName     string `json:"accountName"`
+	ServiceName     string `json:"serviceName"`
+	DisplayName     string `json:"displayName"`
 	CommercialRange string `json:"commercialRange,omitempty"`
-	Datacenter     string `json:"datacenter"`
-	State       string `json:"state,omitempty"`
+	Datacenter      string `json:"datacenter"`
+	State           string `json:"state,omitempty"`
 }
 
 type rebootFlowPayload struct {
@@ -145,7 +145,7 @@ func loadRebootServers(state *app.State, account types.OVHAccount) ([]rebootServ
 	for i, serviceName := range serviceNames {
 		info := details[i].info
 		if details[i].err != nil && state.Logger != nil {
-			state.Logger.Warn("读取待重启服务器详情失败: "+details[i].err.Error(), "server_control")
+			state.Logger.Warn("读取待重启服务器详情失败", "server_control")
 		}
 		name := mapString(info, "name")
 		commercialRange := mapString(info, "commercialRange")
@@ -261,7 +261,7 @@ func sendTelegramRebootMenu(state *app.State, chatID, userID interface{}, replyT
 	actorKey := telegram.ChatIDString(userID)
 	menu, err := prepareRebootFlow(state, "telegram", actorKey, chatKey)
 	if err != nil {
-		telegram.SendReply(state, chatID, "❌ "+err.Error(), replyToMessageID)
+		telegram.SendReply(state, chatID, "❌ 重启操作失败，请稍后重试", replyToMessageID)
 		return
 	}
 	if menu.Stage == rebootStageAccount {
@@ -363,11 +363,11 @@ func finishRebootFlow(state *app.State, flowID, channel, actorID, chatID string,
 		if err == nil {
 			err = fmt.Errorf("重启确认数据无效，请重新发送 /reboot")
 		}
-		return "❌ " + err.Error(), false
+		return "❌ 重启操作失败，请稍后重试", false
 	}
 	if ok, err := transitionRebootFlow(state, row, rebootStageConfirm, rebootStageDone, payload); err != nil || !ok {
 		if err != nil {
-			return "❌ 确认重启失败: " + err.Error(), false
+			return "❌ 重启操作失败，请稍后重试", false
 		}
 		return "❌ 该确认操作已处理或已过期，请重新发送 /reboot", false
 	}
@@ -377,15 +377,14 @@ func finishRebootFlow(state *app.State, flowID, channel, actorID, chatID string,
 	server := *payload.Selected
 	client, err := state.OVH.ClientFor(server.AccountID)
 	if err != nil {
-		return "❌ 无法连接所选 OVH 账户: " + err.Error(), false
+		return "❌ 重启操作失败，请稍后重试", false
 	}
 	var result map[string]interface{}
 	if err := client.Post("/dedicated/server/"+server.ServiceName+"/reboot", map[string]interface{}{}, &result); err != nil {
 		if state.Logger != nil {
-			state.Logger.Error("机器人重启服务器失败: "+err.Error(), "server_control")
+			state.Logger.Error("机器人重启服务器失败", "server_control")
 		}
-		publicError := strings.ReplaceAll(err.Error(), server.ServiceName, "所选服务器")
-		return "❌ 重启命令发送失败: " + publicError, false
+		return "❌ 重启操作失败，请稍后重试", false
 	}
 	if state.Logger != nil {
 		state.Logger.Info("机器人已发送服务器重启命令: account="+server.AccountID+" service="+server.ServiceName, "server_control")
@@ -435,7 +434,7 @@ func handleTelegramRebootCallback(state *app.State, action string, values map[st
 		telegram.AnswerCallback(state, cbID, "正在读取服务器", false)
 		payload, err := selectRebootAccount(state, flowID, "telegram", actorKey, chatKey, index)
 		if err != nil {
-			telegram.SendReply(state, chatID, "❌ "+err.Error(), messageID)
+			telegram.SendReply(state, chatID, "❌ 重启操作失败，请稍后重试", messageID)
 			return true
 		}
 		telegram.SendReplyWithMarkup(state, chatID, "已选择账户："+payload.AccountName+"\n\n请选择要重启的服务器：", messageID,
@@ -448,7 +447,7 @@ func handleTelegramRebootCallback(state *app.State, action string, values map[st
 		}
 		server, err := selectRebootServer(state, flowID, "telegram", actorKey, chatKey, index)
 		if err != nil {
-			telegram.AnswerCallback(state, cbID, err.Error(), true)
+			telegram.AnswerCallback(state, cbID, "重启操作失败，请稍后重试", true)
 			return true
 		}
 		telegram.AnswerCallback(state, cbID, "请确认是否重启", false)
@@ -500,7 +499,7 @@ func feishuRebootActions(menu rebootPreparedMenu) []interface{} {
 func sendFeishuRebootMenu(state *app.State, openID string) error {
 	menu, err := prepareRebootFlow(state, "feishu", openID, openID)
 	if err != nil {
-		return monitor.FeishuSendText(state, openID, "❌ "+err.Error())
+		return monitor.FeishuSendText(state, openID, "❌ 重启操作失败，请稍后重试")
 	}
 	if menu.Stage == rebootStageAccount {
 		return monitor.FeishuSendCard(state, openID, monitor.FeishuTextCard(
@@ -521,12 +520,12 @@ func processFeishuRebootAction(state *app.State, openID, action string, values m
 		}
 		payload, err := selectRebootAccount(state, flowID, "feishu", openID, openID, index)
 		if err != nil {
-			return err.Error(), false
+			return "重启操作失败，请稍后重试", false
 		}
 		menu := rebootPreparedMenu{FlowID: flowID, Stage: rebootStageServer, Payload: payload}
 		if err := monitor.FeishuSendCard(state, openID, monitor.FeishuTextCard(
 			"选择要重启的服务器", "已选择账户："+payload.AccountName+"\n\n请选择要重启的服务器：", "blue", feishuRebootActions(menu))); err != nil {
-			return "服务器卡片发送失败: " + err.Error(), false
+			return "卡片发送失败，请稍后重试", false
 		}
 		return "请选择服务器", false
 	case "reboot_select_server":
@@ -536,7 +535,7 @@ func processFeishuRebootAction(state *app.State, openID, action string, values m
 		}
 		server, err := selectRebootServer(state, flowID, "feishu", openID, openID, index)
 		if err != nil {
-			return err.Error(), false
+			return "重启操作失败，请稍后重试", false
 		}
 		actions := []interface{}{
 			map[string]interface{}{
@@ -550,7 +549,7 @@ func processFeishuRebootAction(state *app.State, openID, action string, values m
 		}
 		if err := monitor.FeishuSendCard(state, openID, monitor.FeishuTextCard(
 			"确认重启服务器", rebootConfirmationText(server), "red", actions)); err != nil {
-			return "确认卡片发送失败: " + err.Error(), false
+			return "卡片发送失败，请稍后重试", false
 		}
 		return "请确认是否重启", false
 	case "reboot_confirm":

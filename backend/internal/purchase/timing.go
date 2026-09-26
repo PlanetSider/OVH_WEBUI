@@ -152,6 +152,6 @@ func recordTimingToHistory(state *app.State, taskID string, t *timeline) {
 		}
 		return history, nil
 	}); err != nil && state.Logger != nil {
-		state.Logger.Warn(fmt.Sprintf("保存任务 %s 的采购耗时失败: %s", taskID, err), "purchase")
+		state.Logger.Warn(fmt.Sprintf("保存任务 %s 的采购耗时失败", taskID), "purchase")
 	}
 }

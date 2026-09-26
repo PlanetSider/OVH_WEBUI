@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/ovh"
 )
 
 // Secondary DNS
@@ -20,7 +21,7 @@ func GetSecondaryDNS(state *app.State) gin.HandlerFunc {
 		}
 		var domains []string
 		if err := client.Get("/dedicated/server/"+svc+"/secondaryDnsDomains", &domains); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		details := parallelGetStringKeys(client, domains, func(d string) string {
@@ -50,13 +51,15 @@ func AddSecondaryDNS(state *app.State) gin.HandlerFunc {
 		var body struct {
 			Domain string `json:"domain"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.Domain == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少domain参数"})
 			return
 		}
 		if err := client.Post("/dedicated/server/"+svc+"/secondaryDnsDomains", map[string]interface{}{"domain": body.Domain}, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Info("添加从DNS域名 "+body.Domain+" 成功", "server_control")
@@ -74,7 +77,7 @@ func DeleteSecondaryDNS(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := client.Delete("/dedicated/server/"+svc+"/secondaryDnsDomains/"+domain, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Info("删除从DNS域名 "+domain+" 成功", "server_control")
@@ -93,7 +96,7 @@ func GetVirtualMACList(state *app.State) gin.HandlerFunc {
 		}
 		var macs []string
 		if err := client.Get("/dedicated/server/"+svc+"/virtualMac", &macs); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		details := parallelGetStringKeys(client, macs, func(m string) string {
@@ -125,7 +128,9 @@ func CreateVirtualMAC(state *app.State) gin.HandlerFunc {
 			Type               string `json:"type"`
 			VirtualMachineName string `json:"virtualMachineName"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.IPAddress == "" || body.Type == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少必需参数"})
 			return
@@ -136,7 +141,7 @@ func CreateVirtualMAC(state *app.State) gin.HandlerFunc {
 			"type":               body.Type,
 			"virtualMachineName": body.VirtualMachineName,
 		}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Info("创建虚拟MAC成功: "+body.IPAddress, "server_control")
@@ -155,7 +160,7 @@ func GetVirtualNetworkInterfaces(state *app.State) gin.HandlerFunc {
 		}
 		var uuids []string
 		if err := client.Get("/dedicated/server/"+svc+"/virtualNetworkInterface", &uuids); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		details := parallelGetStringKeys(client, uuids, func(u string) string {
@@ -184,7 +189,7 @@ func EnableVirtualNetworkInterface(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := client.Post("/dedicated/server/"+svc+"/virtualNetworkInterface/"+id+"/enable", map[string]interface{}{}, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Info("启用虚拟网络接口 "+id+" 成功", "server_control")
@@ -202,7 +207,7 @@ func DisableVirtualNetworkInterface(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := client.Post("/dedicated/server/"+svc+"/virtualNetworkInterface/"+id+"/disable", map[string]interface{}{}, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Info("禁用虚拟网络接口 "+id+" 成功", "server_control")
@@ -221,7 +226,7 @@ func GetVRackList(state *app.State) gin.HandlerFunc {
 		}
 		var vracks []string
 		if err := client.Get("/dedicated/server/"+svc+"/vrack", &vracks); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		details := parallelGetStringKeys(client, vracks, func(v string) string {
@@ -250,7 +255,7 @@ func RemoveFromVRack(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := client.Delete("/dedicated/server/"+svc+"/vrack/"+vrack, nil); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Info("从vRack "+vrack+" 移除服务器成功", "server_control")
@@ -269,7 +274,7 @@ func GetOrderableBandwidth(state *app.State) gin.HandlerFunc {
 		}
 		var d interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/orderable/bandwidth", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "orderable": d})
@@ -286,7 +291,7 @@ func GetOrderableTraffic(state *app.State) gin.HandlerFunc {
 		}
 		var d interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/orderable/traffic", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "orderable": d})
@@ -303,7 +308,7 @@ func GetOrderableIP(state *app.State) gin.HandlerFunc {
 		}
 		var d interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/orderable/ip", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "orderable": d})
@@ -321,7 +326,7 @@ func GetServerOptions(state *app.State) gin.HandlerFunc {
 		}
 		var opts []string
 		if err := client.Get("/dedicated/server/"+svc+"/option", &opts); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		details := parallelGetStringKeys(client, opts, func(o string) string {
@@ -351,7 +356,7 @@ func GetIPSpecs(state *app.State) gin.HandlerFunc {
 		}
 		var d interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/specifications/ip", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "ipSpecs": d})
@@ -368,7 +373,7 @@ func GetIPCanBeMovedTo(state *app.State) gin.HandlerFunc {
 		}
 		var d interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/ipCanBeMovedTo", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "targets": d})
@@ -385,7 +390,7 @@ func GetIPCountryAvailable(state *app.State) gin.HandlerFunc {
 		}
 		var d interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/ipCountryAvailable", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "countries": d})
@@ -404,7 +409,9 @@ func MoveIP(state *app.State) gin.HandlerFunc {
 			IP string `json:"ip"`
 			To string `json:"to"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.IP == "" || body.To == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少必需参数"})
 			return
@@ -414,7 +421,7 @@ func MoveIP(state *app.State) gin.HandlerFunc {
 			"ip": body.IP,
 			"to": body.To,
 		}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Info("IP迁移任务已创建: "+body.IP+" -> "+body.To, "server_control")
@@ -433,7 +440,7 @@ func GetOngoingTasks(state *app.State) gin.HandlerFunc {
 		}
 		var d interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/ongoing", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "ongoing": d})
@@ -451,7 +458,7 @@ func GetCompliantWindowsVersions(state *app.State) gin.HandlerFunc {
 		}
 		var d interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/license/compliantWindows", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "versions": d})
@@ -468,7 +475,7 @@ func GetCompliantWindowsSqlVersions(state *app.State) gin.HandlerFunc {
 		}
 		var d interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/license/compliantWindowsSqlServer", &d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "versions": d})
@@ -487,11 +494,11 @@ func TerminateService(state *app.State) gin.HandlerFunc {
 		// OVH /terminate 返回 string(确认 token)而不是对象
 		var token string
 		if err := client.Post("/dedicated/server/"+svc+"/terminate", map[string]interface{}{}, &token); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Warn("服务器 "+svc+" 终止请求已提交, 邮件 token=...", "server_control")
-		c.JSON(http.StatusOK, gin.H{"success": true, "message": "终止请求已提交,请查邮件获取 token", "token": token})
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "终止请求已提交,请查邮件获取 token"})
 	}
 }
 
@@ -506,7 +513,9 @@ func ConfirmTermination(state *app.State) gin.HandlerFunc {
 		var body struct {
 			Token string `json:"token"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.Token == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少token参数"})
 			return
@@ -516,7 +525,7 @@ func ConfirmTermination(state *app.State) gin.HandlerFunc {
 		if err := client.Post("/dedicated/server/"+svc+"/confirmTermination", map[string]interface{}{
 			"token": body.Token,
 		}, &resp); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Warn("服务器 "+svc+" 终止已确认", "server_control")
@@ -535,8 +544,8 @@ func GetSPLAList(state *app.State) gin.HandlerFunc {
 		}
 		var ids []interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/spla", &ids); err != nil {
-			state.Logger.Error("获取SPLA列表失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("获取SPLA列表失败: "+ovh.ErrorSummary(err), "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		details := parallelGetDetails(client, ids, func(k interface{}) string {
@@ -567,7 +576,9 @@ func CreateSPLA(state *app.State) gin.HandlerFunc {
 			Type         string `json:"type"`
 			SerialNumber string `json:"serialNumber"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.Type == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少type参数"})
 			return
@@ -583,8 +594,8 @@ func CreateSPLA(state *app.State) gin.HandlerFunc {
 		// OVH /spla 返回 long(新建 SPLA 的 ID),不是对象
 		var newID int64
 		if err := client.Post("/dedicated/server/"+svc+"/spla", payload, &newID); err != nil {
-			state.Logger.Error("创建SPLA许可证失败: "+err.Error(), "server_control")
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			state.Logger.Error("创建SPLA许可证失败: "+ovh.ErrorSummary(err), "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器控制请求失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("创建SPLA许可证成功: %s, id=%d", body.Type, newID), "server_control")
@@ -606,7 +617,7 @@ func GetBIOSSettings(state *app.State) gin.HandlerFunc {
 		if err := client.Get("/dedicated/server/"+svc+"/biosSettings", &d); err != nil {
 			msg := err.Error()
 			if containsAny(msg, []string{"does not exist", "object", "404", "not found"}) {
-				state.Logger.Warn("[BIOS] 服务器 "+svc+" 不支持 BIOS 设置: "+msg, "server_control")
+				state.Logger.Warn("[BIOS] 服务器 "+svc+" 不支持 BIOS 设置: "+ovh.ErrorSummary(err), "server_control")
 				c.JSON(http.StatusOK, gin.H{
 					"success":      false,
 					"notAvailable": true,
@@ -614,7 +625,7 @@ func GetBIOSSettings(state *app.State) gin.HandlerFunc {
 				})
 				return
 			}
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": msg})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取 BIOS 设置失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "bios": d})
@@ -634,11 +645,11 @@ func GetBIOSSettingsSGX(state *app.State) gin.HandlerFunc {
 		if err := client.Get("/dedicated/server/"+svc+"/biosSettings/sgx", &d); err != nil {
 			msg := err.Error()
 			if containsAny(msg, []string{"does not exist", "object"}) {
-				state.Logger.Warn("[BIOS] 服务器 "+svc+" 不支持 SGX: "+msg, "server_control")
+				state.Logger.Warn("[BIOS] 服务器 "+svc+" 不支持 SGX: "+ovh.ErrorSummary(err), "server_control")
 				c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "SGX 不可用"})
 				return
 			}
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": msg})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取 BIOS 设置失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "sgx": d})

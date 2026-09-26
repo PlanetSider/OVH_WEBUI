@@ -127,7 +127,7 @@ func FeishuQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		reply := dispatchBotCommand(state, mon, cmd, accountID, "feishu")
 		success := !strings.HasPrefix(strings.TrimSpace(reply), "❌")
 		if err := monitor.FeishuSendText(state, binding.OpenID, reply); err != nil {
-			state.Logger.Warn("飞书网页下单结果回传失败: "+err.Error(), "feishu")
+			state.Logger.Warn("飞书网页下单结果回传失败", "feishu")
 		}
 		errField := ""
 		if !success {

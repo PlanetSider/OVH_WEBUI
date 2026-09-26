@@ -1,7 +1,7 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
 import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Unplug, Radar, Network, AlertCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -83,9 +83,18 @@ function SettingsPage() {
   );
   const [form, setForm] = useState<SettingsConfig>({});
   const [apiKey, setApiKey] = useState("");
+  const dirty = useRef(false);
+  const editVersion = useRef(0);
+  const webhookUrlEdited = useRef(false);
+  const savingRef = useRef(false);
 
   useEffect(() => {
-    if (cfg.data) setForm(cfg.data);
+    if (cfg.data && !dirty.current) {
+      setForm((prev) => ({
+        ...cfg.data,
+        ...(webhookUrlEdited.current ? { webhookUrl: prev.webhookUrl } : {}),
+      }));
+    }
   }, [cfg.data]);
 
   useEffect(() => {
@@ -99,27 +108,43 @@ function SettingsPage() {
     }
   }, [searchParams]);
 
-  const set = <K extends keyof SettingsConfig>(k: K, v: SettingsConfig[K]) => setForm((prev) => ({ ...prev, [k]: v }));
+  const set = <K extends keyof SettingsConfig>(k: K, v: SettingsConfig[K]) => {
+    if (k === "webhookUrl") {
+      webhookUrlEdited.current = true;
+    } else {
+      dirty.current = true;
+      editVersion.current += 1;
+    }
+    setForm((prev) => ({ ...prev, [k]: v }));
+  };
 
-  const onSave = async () => {
+  const onSave = async (): Promise<boolean> => {
+    if (savingRef.current || save.isPending) return false;
     if (apiKey) setApiSecretKey(apiKey);
     // 配置未加载完成时禁止整包覆盖，避免抹掉 tgWebhookSecret / 凭据
     if (cfg.isPending || !cfg.data) {
       toast.error("配置尚未加载完成，请稍后再保存");
-      return;
+      return false;
     }
     // 与服务端已有配置合并；webhookUrl 不走 /settings
     const { webhookUrl: _w, ...formRest } = form;
     const base = { ...cfg.data, ...formRest };
     const zone = (base.zone || cfg.data.zone || "IE").trim();
+    const savedVersion = editVersion.current;
+    savingRef.current = true;
     try {
       await save.mutateAsync({
         ...base,
         zone,
         endpoint: base.endpoint || endpointForZone(zone),
       });
+      if (editVersion.current === savedVersion) dirty.current = false;
+      return true;
     } catch {
-      /* toast 已在 hook 里 */
+      // 错误提示由保存 hook 发出，草稿保持待保存状态。
+      return false;
+    } finally {
+      savingRef.current = false;
     }
   };
 
@@ -166,30 +191,34 @@ function SettingsPage() {
         {/* 右内容 */}
         <Card>
           <CardContent className="p-4 sm:p-6">
-            {cfg.isPending ? (
-              <Skeleton className="h-64 rounded-2xl" />
-            ) : active === "password" ? (
-              <Section title="访问密码 / API Secret Key">
-                <Field label="访问密码 *" hint="后端 .env 中的 API_SECRET_KEY，本地仅保存在 localStorage">
-                  <Input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="输入访问密码"
-                  />
-                </Field>
-              </Section>
-            ) : active === "accounts" ? (
-              <AccountsSection />
-            ) : active === "telegram" ? (
-              <TelegramSection form={form} set={set} onSaveToken={onSave} saving={save.isPending} />
-            ) : active === "feishu" ? (
-              <FeishuSection form={form} set={set} onSave={onSave} saving={save.isPending} />
-            ) : active === "weixin" ? (
-              <WeixinSection form={form} set={set} />
-            ) : (
-              <CacheSection />
-            )}
+            <fieldset disabled={save.isPending} className="min-w-0 border-0 p-0">
+              {cfg.isPending ? (
+                <Skeleton className="h-64 rounded-2xl" />
+              ) : active === "password" ? (
+                <Section title="访问密码 / API Secret Key">
+                  <Field label="访问密码 *" hint="后端 .env 中的 API_SECRET_KEY，本地仅保存在 localStorage">
+                    {(id, _labelId, hintId) => <Input
+                      id={id}
+                      aria-describedby={hintId}
+                      type="password"
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder="输入访问密码"
+                    />}
+                  </Field>
+                </Section>
+              ) : active === "accounts" ? (
+                <AccountsSection />
+              ) : active === "telegram" ? (
+                <TelegramSection form={form} set={set} onSaveToken={onSave} saving={save.isPending} webhookUrlEdited={webhookUrlEdited} />
+              ) : active === "feishu" ? (
+                <FeishuSection form={form} set={set} onSave={onSave} saving={save.isPending} />
+              ) : active === "weixin" ? (
+                <WeixinSection form={form} set={set} />
+              ) : (
+                <CacheSection />
+              )}
+            </fieldset>
           </CardContent>
         </Card>
       </div>
@@ -206,12 +235,19 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: {
+  label: string;
+  hint?: string;
+  children: (id: string, labelId: string, hintId?: string) => React.ReactNode;
+}) {
+  const id = useId();
+  const labelId = `${id}-label`;
+  const hintId = hint ? `${id}-hint` : undefined;
   return (
     <div>
-      <label className="block text-[13px] font-medium mb-1.5">{label}</label>
-      {children}
-      {hint && <p className="text-[11px] text-muted-foreground mt-1">{hint}</p>}
+      <label id={labelId} htmlFor={id} className="block text-[13px] font-medium mb-1.5">{label}</label>
+      {children(id, labelId, hintId)}
+      {hint && <p id={hintId} className="text-[11px] text-muted-foreground mt-1">{hint}</p>}
     </div>
   );
 }
@@ -223,14 +259,15 @@ function NotificationStatusSelect({
   enabled?: boolean;
   onChange: (enabled: boolean) => void;
 }) {
+  const labelId = useId();
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="text-muted-foreground whitespace-nowrap">通知状态</span>
+      <span id={labelId} className="text-muted-foreground whitespace-nowrap">通知状态</span>
       <Select
         value={enabled === false ? "disabled" : "enabled"}
         onValueChange={(value) => onChange(value === "enabled")}
       >
-        <SelectTrigger className="w-[104px] h-8">
+        <SelectTrigger aria-labelledby={labelId} className="w-[104px] h-8">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -250,7 +287,7 @@ function FeishuSection({
 }: {
   form: SettingsConfig;
   set: <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => void;
-  onSave: () => Promise<void>;
+  onSave: () => Promise<boolean>;
   saving: boolean;
 }) {
   const binding = useFeishuBinding();
@@ -380,39 +417,41 @@ function FeishuSection({
           {registrationStatus === "complete" && <div className="text-xs text-primary flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />创建成功，App ID 已回填，App Secret 已安全保存；界面不会回显密钥。</div>}
           {registrationStatus === "error" && <div className="text-xs text-destructive">{registrationError}</div>}
         </div>
-        <Field label="App ID"><Input value={form.feishuAppId || ""} onChange={(e) => set("feishuAppId", e.target.value)} placeholder="cli_xxx" /></Field>
+        <Field label="App ID">{(id) => <Input id={id} value={form.feishuAppId || ""} onChange={(e) => set("feishuAppId", e.target.value)} placeholder="cli_xxx" />}</Field>
         <Field
           label="App Secret"
           hint={form.feishuAppSecretConfigured && !form.feishuAppSecret ? "已安全保存（不会回显密钥）；输入新值可替换现有 Secret。" : "仅在替换 Secret 时填写，保存后不会回显。"}
         >
-          <Input
+          {(id, _labelId, hintId) => <Input
+            id={id}
+            aria-describedby={hintId}
             type="password"
             value={form.feishuAppSecret || ""}
             onChange={(e) => set("feishuAppSecret", e.target.value)}
             placeholder={form.feishuAppSecretConfigured && !form.feishuAppSecret ? "已配置，输入新值可替换" : "输入 App Secret"}
             autoComplete="new-password"
-          />
+          />}
         </Field>
         <Field label="开放平台域名" hint="扫码创建时会自动识别；手动填写海外 Lark 凭据时请选择 Lark。">
-          <Select value={form.feishuDomain || "feishu"} onValueChange={(value: "feishu" | "lark") => set("feishuDomain", value)}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+          {(id, labelId, hintId) => <Select value={form.feishuDomain || "feishu"} onValueChange={(value: "feishu" | "lark") => set("feishuDomain", value)}>
+            <SelectTrigger id={id} aria-labelledby={labelId} aria-describedby={hintId}><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="feishu">飞书（open.feishu.cn）</SelectItem>
               <SelectItem value="lark">Lark（open.larksuite.com）</SelectItem>
             </SelectContent>
-          </Select>
+          </Select>}
         </Field>
         <Field label="事件接收模式" hint="默认使用长连接，不需要公网回调地址；如切换为 Webhook，请在飞书开放平台配置事件订阅地址。">
-          <Select value={form.feishuConnectionMode || "long_connection"} onValueChange={(value: "webhook" | "long_connection") => set("feishuConnectionMode", value)}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+          {(id, labelId, hintId) => <Select value={form.feishuConnectionMode || "long_connection"} onValueChange={(value: "webhook" | "long_connection") => set("feishuConnectionMode", value)}>
+            <SelectTrigger id={id} aria-labelledby={labelId} aria-describedby={hintId}><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="webhook">Webhook（HTTP 回调）</SelectItem>
               <SelectItem value="long_connection">长连接（WebSocket）</SelectItem>
             </SelectContent>
-          </Select>
+          </Select>}
         </Field>
-        <Field label="Verification Token（可选）"><Input type="password" value={form.feishuVerificationToken || ""} onChange={(e) => set("feishuVerificationToken", e.target.value)} /></Field>
-        <Field label="Encrypt Key（可选）" hint="仅在飞书事件订阅启用了加密时填写；发送通知不需要此项。"><Input type="password" value={form.feishuEncryptKey || ""} onChange={(e) => set("feishuEncryptKey", e.target.value)} /></Field>
+        <Field label="Verification Token（可选）">{(id) => <Input id={id} type="password" value={form.feishuVerificationToken || ""} onChange={(e) => set("feishuVerificationToken", e.target.value)} />}</Field>
+        <Field label="Encrypt Key（可选）" hint="仅在飞书事件订阅启用了加密时填写；发送通知不需要此项。">{(id, _labelId, hintId) => <Input id={id} aria-describedby={hintId} type="password" value={form.feishuEncryptKey || ""} onChange={(e) => set("feishuEncryptKey", e.target.value)} />}</Field>
         {(form.feishuConnectionMode || "long_connection") === "webhook" ? <>
           <div className="text-[11px] text-muted-foreground">事件订阅 URL：<code className="font-mono">{origin}/api/feishu/events</code></div>
           <div className="text-[11px] text-muted-foreground">卡片回调 URL：<code className="font-mono">{origin}/api/feishu/card-action</code></div>
@@ -595,18 +634,22 @@ function TelegramSection({
   set,
   onSaveToken,
   saving,
+  webhookUrlEdited,
 }: {
   form: SettingsConfig;
   set: <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => void;
-  onSaveToken: () => Promise<void>;
+  onSaveToken: () => Promise<boolean>;
   saving: boolean;
+  webhookUrlEdited: React.RefObject<boolean>;
 }) {
   const webhook = useTelegramWebhookInfo();
   const setWebhook = useSetTelegramWebhook();
+  const [applyingWebhook, setApplyingWebhook] = useState(false);
+  const applyingRef = useRef(false);
 
   // 默认填当前站点源（HTTPS 部署时通常就是正确公网域名）
   useEffect(() => {
-    if (form.webhookUrl) return;
+    if (form.webhookUrl || webhookUrlEdited.current) return;
     try {
       const origin = window.location.origin;
       if (origin.startsWith("https://")) {
@@ -620,7 +663,7 @@ function TelegramSection({
 
   // 从 Telegram 拉回已注册 URL 时回填
   useEffect(() => {
-    if (webhook.data?.url && !form.webhookUrl) {
+    if (webhook.data?.url && !form.webhookUrl && !webhookUrlEdited.current) {
       // 展示完整 URL；设置时后端也会自动补全 /api/telegram/webhook
       set("webhookUrl", webhook.data.url.replace(/\/api\/telegram\/webhook\/?$/, "") || webhook.data.url);
     }
@@ -638,6 +681,7 @@ function TelegramSection({
   };
 
   const onApplyWebhook = async () => {
+    if (saving || setWebhook.isPending || applyingRef.current) return;
     const url = (form.webhookUrl || "").trim();
     if (!url) {
       toast.error("请填写 Webhook 公网地址（如 https://ovh.example.com）");
@@ -647,13 +691,18 @@ function TelegramSection({
       toast.error("请先填写 Bot Token");
       return;
     }
+    applyingRef.current = true;
+    setApplyingWebhook(true);
     // 先落库 Token，再调 Telegram setWebhook（与「Telegram 下单」同一链路）
     try {
-      await onSaveToken();
+      if (!(await onSaveToken())) return;
       await setWebhook.mutateAsync(url);
       void webhook.refetch();
     } catch {
-      /* toast 已处理 */
+      // 错误提示由保存或注册 hook 发出。
+    } finally {
+      applyingRef.current = false;
+      setApplyingWebhook(false);
     }
   };
 
@@ -670,19 +719,22 @@ function TelegramSection({
         />
       </div>
       <Field label="Bot Token" hint={tokenConfigured ? "已保存 Token；留空并保存会保留原值，填写新值可替换" : "保存设置后写入后端；Webhook 需再点下方「注册 Webhook」才会生效"}>
-        <Input
+        {(id, _labelId, hintId) => <Input
+          id={id}
+          aria-describedby={hintId}
           type="password"
           value={form.tgToken || ""}
           onChange={(e) => set("tgToken", e.target.value)}
           placeholder="123456:ABCdef..."
-        />
+        />}
       </Field>
       <Field label="Chat ID">
-        <Input
+        {(id) => <Input
+          id={id}
           value={form.tgChatId || ""}
           onChange={(e) => set("tgChatId", e.target.value)}
           placeholder="-1001234567890"
-        />
+        />}
       </Field>
 
       <div className="rounded-2xl border border-border/80 bg-muted/20 p-4 space-y-3">
@@ -697,21 +749,22 @@ function TelegramSection({
           </p>
         </div>
         <Field label="公网 URL">
-          <Input
+          {(id) => <Input
+            id={id}
             value={form.webhookUrl || ""}
             onChange={(e) => set("webhookUrl", e.target.value)}
             placeholder="https://ovh.example.com"
             className="font-mono text-[13px]"
-          />
+          />}
         </Field>
         <div className="flex flex-wrap gap-2">
           <Button
             type="button"
             onClick={() => void onApplyWebhook()}
-            disabled={setWebhook.isPending || saving}
+            disabled={applyingWebhook || setWebhook.isPending || saving}
           >
             <Webhook className={cn("w-3.5 h-3.5", setWebhook.isPending && "animate-pulse")} />
-            {setWebhook.isPending ? "注册中…" : "保存 Token 并注册 Webhook"}
+            {setWebhook.isPending ? "注册中…" : applyingWebhook || saving ? "保存中…" : "保存 Token 并注册 Webhook"}
           </Button>
           <Button type="button" variant="outline" onClick={onFetch} disabled={webhook.isFetching}>
             {webhook.isFetching ? "查询中…" : "查看当前 Webhook"}
@@ -1149,16 +1202,16 @@ function AccountDialog({ acc, profiles, onClose }: { acc?: OVHAccount; profiles:
         </DialogHeader>
         <div className="space-y-4 py-2 max-h-[65vh] overflow-y-auto pr-2">
           <Field label="账户名称 *">
-            <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="主号 / 小号 A" autoFocus />
+            {(id) => <Input id={id} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="主号 / 小号 A" autoFocus />}
           </Field>
           <Field label="APP KEY *">
-            <Input type="password" value={form.appKey} onChange={(e) => set("appKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+            {(id) => <Input id={id} type="password" value={form.appKey} onChange={(e) => set("appKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />}
           </Field>
           <Field label="APP SECRET *">
-            <Input type="password" value={form.appSecret} onChange={(e) => set("appSecret", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+            {(id) => <Input id={id} type="password" value={form.appSecret} onChange={(e) => set("appSecret", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />}
           </Field>
           <Field label="CONSUMER KEY *">
-            <Input type="password" value={form.consumerKey} onChange={(e) => set("consumerKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+            {(id) => <Input id={id} type="password" value={form.consumerKey} onChange={(e) => set("consumerKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />}
           </Field>
           <Field
             label="出站代理 URL"
@@ -1166,6 +1219,7 @@ function AccountDialog({ acc, profiles, onClose }: { acc?: OVHAccount; profiles:
               ? "支持 http://、https://、socks5:// 或 socks5h://；填写新地址可替换当前代理，留空保持当前设置。"
               : "可选：http://、https://、socks5:// 或 socks5h://；留空表示直连。"}
           >
+            {(id, _labelId, hintId) => <>
             {isEdit && (
               <div className="mb-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
                 <p>
@@ -1179,6 +1233,8 @@ function AccountDialog({ acc, profiles, onClose }: { acc?: OVHAccount; profiles:
               </div>
             )}
             <Input
+              id={id}
+              aria-describedby={hintId}
               value={form.proxyUrl}
               onChange={(e) => set("proxyUrl", e.target.value)}
               placeholder={form.clearProxy
@@ -1203,13 +1259,15 @@ function AccountDialog({ acc, profiles, onClose }: { acc?: OVHAccount; profiles:
             {form.clearProxy && (
               <p className="mt-1 text-[11px] text-warning">保存后此账户会改为直连出口，代理设置将被清除。</p>
             )}
+            </>}
           </Field>
           <Field label="请求指纹" hint="新增配置仅支持后端返回的白名单 profile；旧 ua: 值会保留并提示迁移">
+            {(id, labelId, hintId) => <>
             <Select
               value={profiles.includes(form.fingerprint) ? form.fingerprint : form.fingerprint.startsWith("ua:") ? "__legacy" : "default"}
               onValueChange={(value) => set("fingerprint", value === "default" ? "" : value === "__legacy" ? form.fingerprint : value)}
             >
-              <SelectTrigger className="h-11">
+              <SelectTrigger id={id} aria-labelledby={labelId} aria-describedby={hintId} className="h-11">
                 <SelectValue placeholder="选择 fingerprint profile" />
               </SelectTrigger>
               <SelectContent className="z-[300]">
@@ -1230,13 +1288,14 @@ function AccountDialog({ acc, profiles, onClose }: { acc?: OVHAccount; profiles:
                 清除已保存指纹
               </label>
             )}
+            </>}
           </Field>
           <Field
             label="OVH 子公司 (Zone)"
             hint={`Endpoint ${endpointForZone(form.zone)} · IAM go-ovh-${form.zone.toLowerCase()} 由子公司自动派生`}
           >
-            <Select value={form.zone} onValueChange={(v) => set("zone", v)}>
-              <SelectTrigger className="h-11">
+            {(id, labelId, hintId) => <Select value={form.zone} onValueChange={(v) => set("zone", v)}>
+              <SelectTrigger id={id} aria-labelledby={labelId} aria-describedby={hintId} className="h-11">
                 <SelectValue placeholder="请选择子公司" />
               </SelectTrigger>
               <SelectContent className="z-[300] max-h-[min(20rem,50vh)]">
@@ -1246,7 +1305,7 @@ function AccountDialog({ acc, profiles, onClose }: { acc?: OVHAccount; profiles:
                   </SelectItem>
                 ))}
               </SelectContent>
-            </Select>
+            </Select>}
           </Field>
         </div>
         <DialogFooter>

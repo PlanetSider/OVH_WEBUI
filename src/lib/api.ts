@@ -494,19 +494,10 @@ export const api = {
     return r as { success: boolean; orders: unknown[] };
   },
   getContactChangeRequests: async () => {
-    try {
-      const raw = await apiRequest<unknown>("/api/ovh/contact-change-requests");
-      // Go: { status: "success", data: [...] }
-      const requests = asArray<ContactChangeRequest>(raw, ["requests", "data"]);
-      return { success: true, requests, data: requests };
-    } catch (e) {
-      return {
-        success: false,
-        requests: [] as ContactChangeRequest[],
-        data: [] as ContactChangeRequest[],
-        error: e instanceof Error ? e.message : String(e),
-      };
-    }
+    const raw = await apiRequest<unknown>("/api/ovh/contact-change-requests");
+    // Go: { status: "success", data: [...] }
+    const requests = asArray<ContactChangeRequest>(raw, ["requests", "data"]);
+    return { success: true, requests, data: requests };
   },
   acceptContactChange: async (id: number, token?: string) =>
     normalizeActionResult(

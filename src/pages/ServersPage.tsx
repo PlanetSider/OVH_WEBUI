@@ -4,7 +4,7 @@ import {
   Server, RefreshCw, Search, Bell, ShoppingCart, Cpu, MemoryStick, HardDrive, Wifi,
   Filter, MapPin,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,8 @@ import { useServers, type ServerPlan } from "@/hooks/use-servers";
 import { useAccountInfo } from "@/hooks/use-account";
 import { useCreateQueueItem } from "@/hooks/use-queue";
 import { useCacheInfo } from "@/hooks/use-settings";
-import { useDefaultAccount } from "@/hooks/use-accounts";
+import { useAccounts } from "@/hooks/use-accounts";
+import { isValidQueueBatch, MAX_QUEUE_BATCH_TASKS, subsidiaryForQueueAccount } from "@/lib/purchase-guards";
 import { AccountSelect } from "@/components/common/AccountSelect";
 import { useEffect } from "react";
 import { toast } from "sonner";
@@ -42,6 +43,8 @@ import { OVH_DATACENTERS, lookupDcStatus } from "@/lib/datacenters";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
 import { formatCurrencyAmount, currencyLabel } from "@/lib/currency";
 import { MonitorSubscriptionDialog } from "@/components/common/MonitorSubscriptionDialog";
+
+const EMPTY_SERVER_PLANS: ServerPlan[] = [];
 
 /** 服务器列表：卡片网格 + 详情弹窗 */
 /** localStorage key：用户手动选过的 subsidiary（持久化跨刷新） */
@@ -112,8 +115,9 @@ function ServersPage() {
   const [search, setSearch] = useState("");
   const [onlyAvailable, setOnlyAvailable] = useState(false);
   const [detailPlanCode, setDetailPlanCode] = useState<string | null>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
 
-  const list = q.data || [];
+  const list = q.data ?? EMPTY_SERVER_PLANS;
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
     let out = list;
@@ -231,8 +235,16 @@ function ServersPage() {
         </CardContent>
       </Card>
 
+      {q.isError && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/40 p-3 text-sm">
+          <span>{q.data ? "服务器目录刷新失败，正在显示上次数据" : "服务器目录加载失败"}</span>
+          <Button variant="outline" size="sm" onClick={() => void q.refetch()} disabled={q.isFetching}>
+            <RefreshCw className="w-4 h-4" />重试
+          </Button>
+        </div>
+      )}
       {/* 网格 */}
-      {q.isPending ? (
+      {q.isError && !q.data ? null : q.isPending ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-[260px] rounded-2xl" />
@@ -261,7 +273,7 @@ function ServersPage() {
       )}
 
       {/* 详情弹窗 */}
-      <Dialog open={!!detailServer} onOpenChange={(v) => !v && setDetailPlanCode(null)}>
+      <Dialog open={!!detailServer} onOpenChange={(v) => !v && !detailBusy && setDetailPlanCode(null)}>
         <DialogContent className="w-[95vw] sm:w-full sm:max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
           {detailServer ? (
             <DetailContent
@@ -270,6 +282,12 @@ function ServersPage() {
               variants={variantIndex[detailServer.planCode]}
               defaultPrice={priceMap[detailServer.planCode]}
               catalogIdx={catalogIdx}
+              catalogReady={catalogQ.isSuccess && !catalogQ.isFetching && !!catalogQ.data
+                && (!catalogQ.data.locale?.subsidiary
+                  || catalogQ.data.locale.subsidiary.trim().toUpperCase() === subsidiary.trim().toUpperCase())}
+              catalogError={catalogQ.isError}
+              onRetryCatalog={() => void catalogQ.refetch()}
+              onBusyChange={setDetailBusy}
               subsidiary={subsidiary}
               onClose={() => setDetailPlanCode(null)}
             />
@@ -409,6 +427,10 @@ function DetailContent({
   variants,
   defaultPrice,
   catalogIdx,
+  catalogReady,
+  catalogError,
+  onRetryCatalog,
+  onBusyChange,
   subsidiary,
   onClose,
 }: {
@@ -420,26 +442,38 @@ function DetailContent({
   defaultPrice?: PriceInfo;
   /** 目录索引：用户切配置时实时算价用 */
   catalogIdx: CatalogIndex;
-  /** 仅用于价格展示的 subsidiary（顶部下拉决定）。实际下单 subsidiary 由后端 cfg.Zone 决定，在设置页改 */
+  catalogReady: boolean;
+  catalogError: boolean;
+  onRetryCatalog: () => void;
+  onBusyChange: (busy: boolean) => void;
+  /** 浏览中的价格地区；实际下单由所选账户地区决定。 */
   subsidiary: string;
   onClose: () => void;
 }) {
   const create = useCreateQueueItem();
-  const defaultAcc = useDefaultAccount();
+  const accounts = useAccounts();
+  const defaultAccountId = accounts.data?.find((account) => account.isDefault)?.id || accounts.data?.[0]?.id;
+  const [batchResult, setBatchResult] = useState<Awaited<ReturnType<typeof create.mutateAsync>> | null>(null);
+  const [preflightPending, setPreflightPending] = useState(false);
+  const submitting = useRef(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
 
   // 抢购表单状态：DC 多选 + 数量 + 重试间隔 + 账户
   const [accountId, setAccountId] = useState("");
   useEffect(() => {
-    if (!accountId && defaultAcc) setAccountId(defaultAcc.id);
-  }, [defaultAcc?.id, accountId]);
+    if (!accountId && defaultAccountId) setAccountId(defaultAccountId);
+  }, [defaultAccountId, accountId]);
   const [selectedDCs, setSelectedDCs] = useState<string[]>([]);
   const [quantity, setQuantity] = useState("1");
   const [retryInterval, setRetryInterval] = useState("60");
   const toggleDC = (code: string) =>
     setSelectedDCs((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
-  const qty = Math.max(1, Number(quantity) || 1);
-  const totalTasks = selectedDCs.length * qty;
+  const qty = Number(quantity);
+  const validBatch = quantity.trim() !== "" && isValidQueueBatch(qty, selectedDCs.length);
+  const totalTasks = validBatch ? selectedDCs.length * qty : 0;
+  const selectedAccount = accounts.data?.find((account) => account.id === accountId);
+  const orderRegion = subsidiaryForQueueAccount(selectedAccount);
+  const priceMatchesAccount = !!orderRegion && orderRegion === subsidiary.trim().toUpperCase();
   // 静态可用性兜底：实时还没返回时也能看到目录里的初始数据
   const staticDcMap = useMemo(() => {
     const m: Record<string, string> = {};
@@ -504,8 +538,66 @@ function DetailContent({
   // 跟随选配实时算价：base plan + 选中的各 addon 月费
   const price = useMemo(() => {
     if (selectedValues.length === 0) return defaultPrice;
-    return computePriceFromOptions(server.planCode, selectedValues, catalogIdx) || defaultPrice;
+    return computePriceFromOptions(server.planCode, selectedValues, catalogIdx);
   }, [server.planCode, selectedValues, catalogIdx, defaultPrice]);
+  const allOptionsPriced = selectedValues.every((code) => !!catalogIdx.addonByCode[code]);
+  const canCreate = validBatch && !!selectedAccount && accounts.isSuccess && !accounts.isFetching
+    && priceMatchesAccount && catalogReady && !!price && allOptionsPriced && !batchResult;
+  const quoteKey = JSON.stringify([
+    accountId, subsidiary, catalogReady, price?.price, price?.tax, price?.installPrice,
+    price?.currency, selectedValues, selectedDCs, qty,
+  ]);
+  const latestQuote = useRef(quoteKey);
+  latestQuote.current = quoteKey;
+
+  const handleCreate = async () => {
+    if (submitting.current || create.isPending || preflightPending) return;
+    if (!validBatch) {
+      toast.error(`数量必须为正安全整数，且本批不能超过 ${MAX_QUEUE_BATCH_TASKS} 个任务`);
+      return;
+    }
+    if (!canCreate || !selectedAccount) {
+      toast.error("请确认账户地区与报价地区一致、价格目录已就绪且选配均有报价");
+      return;
+    }
+    submitting.current = true;
+    onBusyChange(true);
+    setPreflightPending(true);
+    let mutationStarted = false;
+    try {
+      const fresh = await accounts.refetch({ throwOnError: true });
+      const freshAccount = fresh.data?.find((account) => account.id === accountId);
+      if (subsidiaryForQueueAccount(freshAccount) !== subsidiary.trim().toUpperCase()
+        || latestQuote.current !== quoteKey) {
+        toast.error("账户或报价已变化，请重新核对地区与价格");
+        return;
+      }
+      if (!window.confirm(`用账户 ${freshAccount?.name}（${subsidiary}）创建 ${totalTasks} 个自动抢购任务？每个成功创建的任务将立即启动。`)) return;
+      mutationStarted = true;
+      const result = await create.mutateAsync({
+        account_id: accountId,
+        planCode: server.planCode,
+        datacenters: selectedDCs,
+        quantity: qty,
+        retryInterval: Number(retryInterval) || 60,
+        options: selectedValues,
+      });
+      if (result.success === result.total) {
+        toast.success(`已创建 ${result.success} 个抢购任务`);
+        onClose();
+      } else {
+        setBatchResult(result);
+        toast.error(`已创建 ${result.success}/${result.total} 个任务，${result.failed} 个失败；请查看明细，不要重复提交整批`);
+      }
+    } catch {
+      if (!mutationStarted) toast.error("账户信息读取失败，请重试");
+      // mutation 本身的错误已经由 hook 显示。
+    } finally {
+      submitting.current = false;
+      onBusyChange(false);
+      setPreflightPending(false);
+    }
+  };
 
   return (
     <>
@@ -534,10 +626,16 @@ function DetailContent({
               </span>
             </div>
             <div className="text-2xl font-bold tabular-nums mt-0.5">
-              {price ? formatPrice(price) : <span className="text-muted-foreground font-normal text-base">— · 价格加载中</span>}
+              {catalogReady && price ? formatPrice(price)
+                : <span className="text-muted-foreground font-normal text-base">— · {catalogError ? "价格目录读取失败" : "价格待确认"}</span>}
             </div>
+            {!catalogReady && catalogError && (
+              <Button variant="outline" size="sm" onClick={onRetryCatalog} className="mt-2">
+                <RefreshCw className="w-4 h-4" />重试价格目录
+              </Button>
+            )}
           </div>
-          {price && (
+          {catalogReady && price && (
             <div className="text-right text-[11px] text-muted-foreground space-y-0.5 tabular-nums">
               {price.installPrice > 0 && (
                 <div>安装费 {fmtMoney(price.installPrice, price.currency)}（一次性）</div>
@@ -641,6 +739,17 @@ function DetailContent({
             <div>
               <label className="block text-[11px] text-muted-foreground mb-1">OVH 账户 *</label>
               <AccountSelect value={accountId} onChange={setAccountId} />
+              {selectedAccount && !priceMatchesAccount && (
+                <p role="alert" className="text-[11px] text-destructive mt-1">
+                  当前价格地区 {subsidiary} 与所选账户下单地区 {orderRegion} 不一致。请切换顶部价格地区后重新取得报价。
+                </p>
+              )}
+              {accounts.isError && (
+                <div role="alert" className="flex flex-wrap items-center gap-2 text-[11px] text-destructive mt-1">
+                  账户信息读取失败，暂不能确认价格地区。
+                  <Button type="button" variant="outline" size="sm" onClick={() => void accounts.refetch()} disabled={accounts.isFetching}>重试账户</Button>
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
@@ -648,9 +757,14 @@ function DetailContent({
                 <Input
                   type="number"
                   min={1}
+                  max={MAX_QUEUE_BATCH_TASKS}
+                  step={1}
                   value={quantity}
                   onChange={(e) => setQuantity(e.target.value)}
                 />
+                {selectedDCs.length > 0 && !validBatch && (
+                  <p role="alert" className="text-[11px] text-destructive mt-1">数量须为正整数，机房数 × 数量不得超过 {MAX_QUEUE_BATCH_TASKS}</p>
+                )}
               </div>
               <div>
                 <label className="block text-[11px] text-muted-foreground mb-1">重试间隔（秒）</label>
@@ -664,15 +778,34 @@ function DetailContent({
             </div>
           </div>
         </div>
+        {!catalogReady && (
+          <p role="status" className="text-[11px] text-destructive">
+            {catalogError ? "价格目录读取失败，请在上方重试" : "价格目录尚未就绪，不能按旧价创建任务"}
+          </p>
+        )}
+        {catalogReady && (!price || !allOptionsPriced) && (
+          <p role="alert" className="text-[11px] text-destructive">当前机型或选配缺少可核对的目录报价，不能创建任务</p>
+        )}
+        {batchResult && (
+          <div role="alert" className="rounded-md border border-destructive/40 p-3 text-sm space-y-2">
+            <p>已创建 {batchResult.success}/{batchResult.total} 个任务，失败 {batchResult.failed} 个。不要重复提交整批。</p>
+            <ul className="list-disc pl-5 max-h-24 overflow-y-auto">
+              {batchResult.failures.map((failure, index) => <li key={`${failure.datacenter}-${index}`}>{failure.datacenter.toUpperCase()}：{failure.reason}</li>)}
+            </ul>
+            <Button type="button" variant="outline" size="sm" onClick={onClose}>关闭并检查队列</Button>
+          </div>
+        )}
       </div>
 
       <DialogFooter className="border-t border-border pt-4 -mx-6 px-6">
         <div className="mr-auto text-[12px] text-muted-foreground">
           {selectedDCs.length > 0
-            ? `将创建 ${totalTasks} 个任务（${selectedDCs.length} DC × ${qty}）${selectedValues.length > 0 ? ` · ${selectedValues.length} 项选配` : ""}`
+            ? validBatch
+              ? `将创建 ${totalTasks} 个任务（${selectedDCs.length} DC × ${qty}）${selectedValues.length > 0 ? ` · ${selectedValues.length} 项选配` : ""}`
+              : `单批最多 ${MAX_QUEUE_BATCH_TASKS} 个任务，请输入正整数数量`
             : "请选数据中心"}
         </div>
-        <Button variant="outline" onClick={onClose} disabled={create.isPending}>
+        <Button variant="outline" onClick={onClose} disabled={create.isPending || preflightPending}>
           关闭
         </Button>
         <Button
@@ -684,37 +817,18 @@ function DetailContent({
           配置监控
         </Button>
         <Button
-          disabled={selectedDCs.length === 0 || create.isPending}
-          onClick={async () => {
-            if (selectedDCs.length === 0) {
-              toast.error("请至少选择一个数据中心");
-              return;
-            }
-            if (!accountId) {
-              toast.error("请选择 OVH 账户");
-              return;
-            }
-            const result = await create.mutateAsync({
-              account_id: accountId,
-              planCode: server.planCode,
-              datacenters: selectedDCs,
-              quantity: qty,
-              retryInterval: Number(retryInterval) || 60,
-              options: selectedValues,
-            });
-            if (result.success > 0) {
-              toast.success(`已创建 ${result.success}/${result.total} 个抢购任务`);
-              onClose();
-            }
-            if (result.failed > 0) {
-              toast.error(`${result.failed} 个任务创建失败`);
-            }
-          }}
+          disabled={!canCreate || create.isPending || preflightPending}
+          onClick={handleCreate}
         >
           {create.isPending ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
               创建中…
+            </>
+          ) : preflightPending ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              核对账户…
             </>
           ) : (
             <>

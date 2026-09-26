@@ -36,7 +36,7 @@ func GetNetworkInterfaces(state *app.State) gin.HandlerFunc {
 				})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器网络请求失败"})
 			return
 		}
 		// 并发拉每张网卡详情
@@ -80,13 +80,13 @@ func GetMRTGData(state *app.State) gin.HandlerFunc {
 
 		var macs []string
 		if err := client.Get("/dedicated/server/"+svc+"/networkInterfaceController", &macs); err != nil {
-			state.Logger.Warn("[MRTG] 无法获取网卡列表，使用旧版API: "+err.Error(), "server_control")
+			state.Logger.Warn("[MRTG] 无法获取网卡列表，使用旧版API", "server_control")
 			var data []map[string]interface{}
 			q := url.Values{}
 			q.Set("period", period)
 			q.Set("type", trafficType)
 			if err := client.Get("/dedicated/server/"+svc+"/mrtg?"+q.Encode(), &data); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "新旧API均失败: " + err.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "网络流量数据请求失败"})
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{
@@ -130,7 +130,7 @@ func GetMRTGData(state *app.State) gin.HandlerFunc {
 		for i, mac := range macs {
 			r := mrtgResults[i]
 			if r.err != nil {
-				all = append(all, gin.H{"mac": mac, "data": []interface{}{}, "error": r.err.Error()})
+				all = append(all, gin.H{"mac": mac, "data": []interface{}{}, "error": "fetch failed"})
 				continue
 			}
 			all = append(all, gin.H{"mac": mac, "data": r.data})
@@ -157,10 +157,12 @@ func ConfigureOLAAggregation(state *app.State) gin.HandlerFunc {
 			return
 		}
 		var body struct {
-			Name                    string   `json:"name"`
+			Name                     string   `json:"name"`
 			VirtualNetworkInterfaces []string `json:"virtualNetworkInterfaces"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.Name == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少聚合名称(name)参数"})
 			return
@@ -175,7 +177,7 @@ func ConfigureOLAAggregation(state *app.State) gin.HandlerFunc {
 			"name":                     body.Name,
 			"virtualNetworkInterfaces": body.VirtualNetworkInterfaces,
 		}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器网络请求失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("[OLA] 网络聚合配置任务已创建: Task#%v", result["taskId"]), "server_control")
@@ -195,7 +197,9 @@ func ResetOLAConfiguration(state *app.State) gin.HandlerFunc {
 		var body struct {
 			VirtualNetworkInterface string `json:"virtualNetworkInterface"`
 		}
-		_ = c.ShouldBindJSON(&body)
+		if !bindJSONOrBadRequest(c, &body) {
+			return
+		}
 		if body.VirtualNetworkInterface == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少虚拟网络接口UUID(virtualNetworkInterface)参数"})
 			return
@@ -205,7 +209,7 @@ func ResetOLAConfiguration(state *app.State) gin.HandlerFunc {
 		if err := client.Post("/dedicated/server/"+svc+"/ola/reset", map[string]interface{}{
 			"virtualNetworkInterface": body.VirtualNetworkInterface,
 		}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器网络请求失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("[OLA] 网络接口重置任务已创建: Task#%v", result["taskId"]), "server_control")
@@ -224,7 +228,7 @@ func OLAGroup(state *app.State) gin.HandlerFunc {
 		}
 		var result map[string]interface{}
 		if err := client.Post("/dedicated/server/"+svc+"/ola/group", map[string]interface{}{}, &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器网络请求失败"})
 			return
 		}
 		state.Logger.Info("创建OLA组成功: "+svc, "server_control")
@@ -244,7 +248,7 @@ func OLAUngroup(state *app.State) gin.HandlerFunc {
 		// OVH /ola/ungroup 返回 Task[](数组),不是单个 Task 对象 —— 跟 group / aggregation 不同!
 		var tasks []map[string]interface{}
 		if err := client.Post("/dedicated/server/"+svc+"/ola/ungroup", map[string]interface{}{}, &tasks); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器网络请求失败"})
 			return
 		}
 		state.Logger.Info(fmt.Sprintf("解散OLA组成功: %s, %d 个 task", svc, len(tasks)), "server_control")
@@ -316,7 +320,7 @@ func GetIPMIConsole(state *app.State) gin.HandlerFunc {
 				})
 				return
 			}
-			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "获取 IPMI 信息失败"})
 			return
 		}
 		if activated, ok := ipmi["activated"].(bool); ok && !activated {
@@ -376,9 +380,9 @@ func GetIPMIConsole(state *app.State) gin.HandlerFunc {
 			// 已有 session 时 OVH 常返回冲突，直接尝试读取现有 access
 			lower := strings.ToLower(err.Error())
 			if strings.Contains(lower, "already") || strings.Contains(lower, "exist") || strings.Contains(lower, "409") {
-				state.Logger.Warn("[IPMI] 创建 access 冲突，尝试读取现有会话: "+err.Error(), "server_control")
+				state.Logger.Warn("[IPMI] 创建 access 冲突，尝试读取现有会话", "server_control")
 			} else {
-				c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "创建 IPMI 访问任务失败: " + err.Error()})
+				c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "创建 IPMI 访问任务失败"})
 				return
 			}
 		}
@@ -393,8 +397,8 @@ func GetIPMIConsole(state *app.State) gin.HandlerFunc {
 				time.Sleep(2 * time.Second)
 				var ts map[string]interface{}
 				if err := client.Get(fmt.Sprintf("/dedicated/server/%s/task/%v", svc, taskID), &ts); err != nil {
-					state.Logger.Error(fmt.Sprintf("[IPMI] 查询任务 %v 失败: %s", taskID, err.Error()), "server_control")
-					c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "查询 IPMI 任务失败: " + err.Error()})
+					state.Logger.Error(fmt.Sprintf("[IPMI] 查询任务 %v 失败", taskID), "server_control")
+					c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "查询 IPMI 任务失败"})
 					return
 				}
 				status, _ := ts["status"].(string)
@@ -419,17 +423,14 @@ func GetIPMIConsole(state *app.State) gin.HandlerFunc {
 
 		// 任务完成后 access 内容可能延迟出现，短轮询取值
 		var consoleAccess map[string]interface{}
-		var lastErr error
 		for i := 0; i < 8; i++ {
 			consoleAccess = nil
 			if err := client.Get("/dedicated/server/"+svc+"/features/ipmi/access?type="+url.QueryEscape(accessType), &consoleAccess); err != nil {
-				lastErr = err
-				state.Logger.Warn(fmt.Sprintf("[IPMI] 读取 access 失败 (%d/8): %s", i+1, err.Error()), "server_control")
+				state.Logger.Warn(fmt.Sprintf("[IPMI] 读取 access 失败 (%d/8)", i+1), "server_control")
 				time.Sleep(1500 * time.Millisecond)
 				continue
 			}
 			if consoleAccessValue(consoleAccess) != "" {
-				lastErr = nil
 				break
 			}
 			state.Logger.Info(fmt.Sprintf("[IPMI] access 尚无 value/url (%d/8)，继续等待", i+1), "server_control")
@@ -438,9 +439,6 @@ func GetIPMIConsole(state *app.State) gin.HandlerFunc {
 		val := consoleAccessValue(consoleAccess)
 		if val == "" {
 			msg := "IPMI 会话已创建，但未返回控制台 URL/内容"
-			if lastErr != nil {
-				msg = msg + ": " + lastErr.Error()
-			}
 			c.JSON(http.StatusBadGateway, gin.H{
 				"success":    false,
 				"error":      msg,
@@ -531,7 +529,7 @@ func GetTrafficStatistics(state *app.State) gin.HandlerFunc {
 		var raw interface{}
 		if err := client.Get(path, &raw); err != nil {
 			if isOVHNotAvailable(err) {
-				state.Logger.Info("[Stats] 机型不支持 /statistics: "+err.Error(), "server_control")
+				state.Logger.Info("[Stats] 机型不支持 /statistics", "server_control")
 				c.JSON(http.StatusOK, gin.H{
 					"success":      false,
 					"notAvailable": true,
@@ -542,11 +540,11 @@ func GetTrafficStatistics(state *app.State) gin.HandlerFunc {
 				})
 				return
 			}
-			state.Logger.Error("[Stats] 调用失败: "+err.Error(), "server_control")
+			state.Logger.Error("[Stats] 调用失败", "server_control")
 			c.JSON(http.StatusBadGateway, gin.H{
 				"success": false,
 				"error":   "流量统计上游调用失败",
-				"details": err.Error(),
+				"details": "上游统计服务未返回数据",
 			})
 			return
 		}
@@ -658,7 +656,7 @@ func GetNetworkInterfaceStats(state *app.State) gin.HandlerFunc {
 		state.Logger.Info("[Network] 获取服务器 "+svc+" 网络接口信息", "server_control")
 		var macs []string
 		if err := client.Get("/dedicated/server/"+svc+"/networkInterfaceController", &macs); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "服务器网络请求失败"})
 			return
 		}
 		// 并发拉每张网卡详情

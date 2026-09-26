@@ -3,8 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,11 +17,46 @@ import (
 	"github.com/ovh-webui/server/internal/types"
 )
 
+const (
+	maxFeishuBodyBytes         = 1 << 20
+	feishuEventCleanupInterval = time.Hour
+)
+
+var feishuEventCleanup = struct {
+	sync.Mutex
+	last time.Time
+}{}
+
+func maybeCleanupFeishuEvents(state *app.State) {
+	if state == nil || state.DB == nil {
+		return
+	}
+	feishuEventCleanup.Lock()
+	defer feishuEventCleanup.Unlock()
+	now := time.Now()
+	if !feishuEventCleanup.last.IsZero() && now.Sub(feishuEventCleanup.last) < feishuEventCleanupInterval {
+		return
+	}
+	before := float64(now.Add(-feishuEventRetentionDays * 24 * time.Hour).Unix())
+	if _, err := state.DB.CleanupFeishuEvents(before); err != nil {
+		if state.Logger != nil {
+			state.Logger.Warn("清理 Feishu event_id 记录失败", "feishu")
+		}
+		return
+	}
+	feishuEventCleanup.last = now
+}
+
 func feishuJSONBody(c *gin.Context) ([]byte, map[string]interface{}, error) {
-	raw, err := c.GetRawData()
-	if err != nil { return nil, nil, err }
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFeishuBodyBytes)
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return nil, nil, err
+	}
 	var body map[string]interface{}
-	if err := json.Unmarshal(raw, &body); err != nil { return raw, nil, err }
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return raw, nil, err
+	}
 	return raw, body, nil
 }
 
@@ -67,7 +104,7 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 		}
 		body, err = monitor.FeishuUnwrapPayload(state, body)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": "invalid event payload"})
 			return
 		}
 		token, appID = feishuHeaderValues(body)
@@ -79,7 +116,13 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 			c.JSON(http.StatusOK, gin.H{"challenge": challenge})
 			return
 		}
-		if !claimFeishuEvent(state, body) {
+		claimed, claimErr := claimFeishuEvent(state, body)
+		if claimErr != nil {
+			state.Logger.Error("飞书事件幂等认领失败", "feishu")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1, "msg": "event idempotency unavailable"})
+			return
+		}
+		if !claimed {
 			c.JSON(http.StatusOK, gin.H{"code": 0, "duplicate": true})
 			return
 		}
@@ -136,7 +179,7 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 			} else if plans := findServerPlansByModel(state, trimmed); len(plans) > 0 {
 				// 每个 PlanCode 独立发送非表格卡片；配置过长时在完整分区之间自动分页。
 				if err := sendFeishuServerPlanCards(state, openID, trimmed, plans); err != nil {
-					state.Logger.Warn("发送飞书服务器型号卡片失败: "+err.Error(), "feishu")
+					state.Logger.Warn("发送飞书服务器型号卡片失败", "feishu")
 					_ = monitor.FeishuSendText(state, openID, "❌ 服务器配置卡片发送失败，请稍后重试")
 				}
 			} else if looksLikeServerModelQuery(trimmed) {
@@ -162,23 +205,23 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 }
 
 // claimFeishuEvent 在 Webhook 和长连接之间共用事件幂等记录。
-func claimFeishuEvent(state *app.State, body map[string]interface{}) bool {
-	eventID := feishuEventID(body)
-	if state.DB == nil || eventID == "" {
-		return true
+func claimFeishuEvent(state *app.State, body map[string]interface{}) (bool, error) {
+	if state == nil || state.DB == nil {
+		return false, fmt.Errorf("飞书事件幂等存储不可用")
+	}
+	eventID := strings.TrimSpace(feishuEventID(body))
+	if eventID == "" {
+		return false, fmt.Errorf("飞书事件缺少 event_id")
 	}
 	claimed, err := state.DB.TryClaimFeishuEvent(eventID)
 	if err != nil {
-		state.Logger.Warn("飞书 event_id 幂等写入失败: "+err.Error(), "feishu")
-		return true
+		return false, err
 	}
 	if !claimed {
-		return false
+		return false, nil
 	}
-	if len(eventID)%20 == 0 {
-		_, _ = state.DB.CleanupFeishuEvents(float64(time.Now().Add(-feishuEventRetentionDays * 24 * time.Hour).Unix()))
-	}
-	return true
+	maybeCleanupFeishuEvents(state)
+	return true, nil
 }
 
 // processFeishuMessage 是长连接消息适配器使用的业务处理入口。
@@ -235,7 +278,7 @@ func processFeishuMessage(state *app.State, mon *monitor.Monitor, body map[strin
 		}
 	} else if plans := findServerPlansByModel(state, trimmed); len(plans) > 0 {
 		if err := sendFeishuServerPlanCards(state, openID, trimmed, plans); err != nil {
-			state.Logger.Warn("发送飞书服务器型号卡片失败: "+err.Error(), "feishu")
+			state.Logger.Warn("发送飞书服务器型号卡片失败", "feishu")
 			_ = monitor.FeishuSendText(state, openID, "⚠️ 服务器配置卡片发送失败，请稍后重试")
 		}
 	} else if looksLikeServerModelQuery(trimmed) {
@@ -258,11 +301,11 @@ func processFeishuMessage(state *app.State, mon *monitor.Monitor, body map[strin
 }
 
 type feishuCardActionResult struct {
-	Type      string
-	Content   string
-	SendText  bool
-	Action    string
-	OpenID    string
+	Type     string
+	Content  string
+	SendText bool
+	Action   string
+	OpenID   string
 }
 
 // processFeishuCardActionBody 处理 WebSocket 卡片事件，并返回 SDK 所需的 toast 内容。
@@ -298,8 +341,8 @@ func processFeishuCardActionBody(state *app.State, body map[string]interface{}) 
 		accountID, _ := values["account_id"].(string)
 		account, err := switchDefaultAccount(state, accountID)
 		if err != nil {
-			state.Logger.Warn("飞书切换默认账户失败: "+err.Error(), "feishu")
-			result.Content = "切换失败：" + err.Error()
+			state.Logger.Warn("飞书切换默认账户失败", "feishu")
+			result.Content = "切换失败，请稍后重试"
 		} else {
 			result.Content = "✅ 默认 OVH 账户已切换为：" + accountDisplayName(account)
 			result.SendText = true
@@ -379,17 +422,36 @@ func feishuAccountForOpenID(state *app.State, openID string) (string, bool) {
 func FeishuCardAction(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, body, err := feishuJSONBody(c)
-		if err != nil { c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": "invalid json"}); return }
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": "invalid json"})
+			return
+		}
 		token, appID := feishuHeaderValues(body)
 		if !monitor.FeishuVerifyRequest(state, raw, token, appID, c.GetHeader("X-Lark-Request-Timestamp"), c.GetHeader("X-Lark-Request-Nonce"), c.GetHeader("X-Lark-Signature")) {
-			c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid token"}); return
+			c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid token"})
+			return
 		}
 		body, err = monitor.FeishuUnwrapPayload(state, body)
-		if err != nil { c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": err.Error()}); return }
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": "invalid event payload"})
+			return
+		}
 		token, appID = feishuHeaderValues(body)
-		if !monitor.FeishuVerifyIdentity(state, token, appID) { c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid identity"}); return }
-		if challenge, ok := body["challenge"].(string); ok && challenge != "" { c.JSON(http.StatusOK, gin.H{"challenge": challenge}); return }
-		if !claimFeishuEvent(state, body) {
+		if !monitor.FeishuVerifyIdentity(state, token, appID) {
+			c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid identity"})
+			return
+		}
+		if challenge, ok := body["challenge"].(string); ok && challenge != "" {
+			c.JSON(http.StatusOK, gin.H{"challenge": challenge})
+			return
+		}
+		claimed, claimErr := claimFeishuEvent(state, body)
+		if claimErr != nil {
+			state.Logger.Error("飞书卡片事件幂等认领失败", "feishu")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1, "msg": "event idempotency unavailable"})
+			return
+		}
+		if !claimed {
 			c.JSON(http.StatusOK, gin.H{"toast": gin.H{"type": "success", "content": "操作已处理"}})
 			return
 		}
@@ -411,7 +473,13 @@ func FeishuBinding(state *app.State) gin.HandlerFunc {
 
 func ClearFeishuBinding(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if err := monitor.FeishuDeleteDefaultBinding(state); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()}); return }
+		if err := monitor.FeishuDeleteDefaultBinding(state); err != nil {
+			if state.Logger != nil {
+				state.Logger.Warn("清除飞书默认绑定失败", "feishu")
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "清除飞书绑定失败"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "cleared": true})
 	}
 }
@@ -419,9 +487,21 @@ func ClearFeishuBinding(state *app.State) gin.HandlerFunc {
 func FeishuTestCard(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		binding, ok := monitor.FeishuDefaultBinding(state)
-		if !ok { c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "尚未绑定全局飞书接收人"}); return }
-		if !monitor.FeishuEnabled(state) { c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "飞书应用未启用或配置不完整"}); return }
-		if err := monitor.FeishuSendStreamingCard(state, binding.OpenID, monitor.FeishuTestCard()); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()}); return }
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "尚未绑定全局飞书接收人"})
+			return
+		}
+		if !monitor.FeishuEnabled(state) {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "飞书应用未启用或配置不完整"})
+			return
+		}
+		if err := monitor.FeishuSendStreamingCard(state, binding.OpenID, monitor.FeishuTestCard()); err != nil {
+			if state.Logger != nil {
+				state.Logger.Warn("发送飞书测试卡片失败", "feishu")
+			}
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "飞书消息发送失败"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "测试交互卡片已发送"})
 	}
 }
@@ -458,24 +538,43 @@ func feishuOpenID(body map[string]interface{}) string {
 
 func feishuAccountStatusText(state *app.State) string {
 	accounts, _ := state.DB.ListAccounts()
-	if len(accounts) == 0 { return "当前没有配置 OVH 账户" }
+	if len(accounts) == 0 {
+		return "当前没有配置 OVH 账户"
+	}
 	lines := []string{"OVH 账户状态"}
-	for _, acc := range accounts { lines = append(lines, "• "+acc.Name+" ("+acc.Zone+")：已配置") }
+	for _, acc := range accounts {
+		lines = append(lines, "• "+acc.Name+" ("+acc.Zone+")：已配置")
+	}
 	return strings.Join(lines, "\n")
 }
 
 func feishuEnqueue(state *app.State, values map[string]interface{}) string {
 	uuid, _ := values["uuid"].(string)
-	if uuid == "" || state.DB == nil { return "按钮协议已升级，请等待新的通知卡片" }
+	if uuid == "" || state.DB == nil {
+		return "按钮协议已升级，请等待新的通知卡片"
+	}
 	row, ok, err := state.DB.ClaimTelegramButton(uuid)
-	if err != nil { return "按钮处理失败："+err.Error() }
-	if !ok { return "按钮已使用、已过期或不存在" }
+	if err != nil {
+		return "按钮处理失败，请稍后重试"
+	}
+	if !ok {
+		return "按钮已使用、已过期或不存在"
+	}
 	configInfo := dbParseConfigInfo(row.ConfigInfo)
 	accountID, _ := configInfo["accountId"].(string)
-	if accountID == "" { rollbackTelegramButton(state, uuid, "飞书通知未冻结账户"); return "通知未冻结账户，请等待新的通知卡片" }
-	if _, ok := state.FindAccount(accountID); !ok { rollbackTelegramButton(state, uuid, "飞书通知账户不存在"); return "通知对应的 OVH 账户已不存在" }
+	if accountID == "" {
+		rollbackTelegramButton(state, uuid, "飞书通知未冻结账户")
+		return "通知未冻结账户，请等待新的通知卡片"
+	}
+	if _, ok := state.FindAccount(accountID); !ok {
+		rollbackTelegramButton(state, uuid, "飞书通知账户不存在")
+		return "通知对应的 OVH 账户已不存在"
+	}
 	options := dbParseOptions(row.Options)
 	result := telegram.EnqueueSingle(state, accountID, row.PlanCode, row.Datacenter, options, true)
-	if !result.Success { rollbackTelegramButton(state, uuid, "飞书入队失败"); return "入队失败："+result.Message }
+	if !result.Success {
+		rollbackTelegramButton(state, uuid, "飞书入队失败")
+		return "入队失败：" + result.Message
+	}
 	return fmt.Sprintf("✅ %s (%s) 已加入购买队列", row.PlanCode, strings.ToUpper(row.Datacenter))
 }
