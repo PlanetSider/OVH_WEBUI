@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 go build -tags ui -trimpath -ldflags="-s -w" -o /out/ovh-webui
 
 FROM alpine:3.20.6
 RUN apk add --no-cache ca-certificates tzdata wget \
-    && addgroup -S -g 100 ovh \
+    && addgroup -S -g 10001 ovh \
     && adduser -S -D -H -u 100 -G ovh ovh
 
 WORKDIR /app
