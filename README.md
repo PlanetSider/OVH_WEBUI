@@ -12,7 +12,7 @@ OVH 独服与 VPS 的自托管控制台，提供服务器目录、可用性监�
 - Telegram 通知、Webhook、文本下单和一键入队
 - Telegram / 飞书 / 微信机器人均支持库存、价格和机房信息查询；价格展示使用 catalog 数据
 - 飞书通知、交互卡片、可用性配置聚合和一键入队
-- 飞书基础配置只需 App ID 和 App Secret；Token / Encrypt Key 为回调安全项
+- 飞书回调要求 Encrypt Key 进行请求签名校验；Verification Token 可作为额外身份校验
 - 微信 iLink Bot 扫码接入、私聊命令和主动通知（无需公网 Webhook）
 - 多 OVH 账户、默认账户切换、账户凭据验证和账户状态查询
 - 独服电源、重装、硬件、IPMI、网络、IP、防护、续费等控制
@@ -26,21 +26,24 @@ OVH 独服与 VPS 的自托管控制台，提供服务器目录、可用性监�
 ### 架构
 
 ```text
-Internet :19998（或由外部反向代理转发）
+HTTPS 反向代理
         |
         v
-  ghcr.io/planetsider/ovh-webui
+127.0.0.1:19998（Compose 仅绑定本机）
+        |
+        v
+  ghcr.io/planetsider/ovh-webui@sha256:<reviewed-digest>
   React UI + Go API
         |
         v
-  宿主机 ./data:/data
-  SQLite / 日志 / 缓存
+宿主机 ./data:/data
+SQLite / 日志 / 缓存
 ```
 
-项目自身只构建一个镜像：
+项目自身只构建一个镜像；生产部署必须把镜像变量设为经过审核的不可变 digest：
 
 ```text
-ghcr.io/planetsider/ovh-webui:latest
+ghcr.io/planetsider/ovh-webui@sha256:<reviewed-digest>
 ```
 
 ### 首次部署
@@ -55,6 +58,8 @@ cd /opt/ovh-webui
 
 cp .env.example .env
 sed -i "s/^API_SECRET_KEY=.*/API_SECRET_KEY=$(openssl rand -hex 32)/" .env
+# 从发布页或可信构建记录取得摘要后填写，不要使用 latest
+sed -i "s#^OVH_WEBUI_IMAGE=.*#OVH_WEBUI_IMAGE=ghcr.io/planetsider/ovh-webui@sha256:<reviewed-digest>#" .env
 mkdir -p data
 # 镜像以 UID 100 的非 root 用户运行，确保运行时目录可写
 sudo chown -R 100:100 data
@@ -63,9 +68,12 @@ sudo chown -R 100:100 data
 编辑 `.env`，至少设置：
 
 ```dotenv
-API_SECRET_KEY=替换为强随机密钥
-TG_WEBHOOK_SECRET=可选的随机密钥
+API_SECRET_KEY=替换为同时含大写、小写、数字且至少 8 位的随机密钥
+OVH_WEBUI_IMAGE=ghcr.io/planetsider/ovh-webui@sha256:<reviewed-digest>
+TG_WEBHOOK_SECRET=可选的随机密钥（配置 Telegram Webhook 时必须设置）
 TG_WEBHOOK_SECRET_OPTIONAL=false
+# 可选但生产建议设置：首次飞书绑定允许的 open_id，逗号分隔
+FEISHU_ALLOWED_OPEN_IDS=
 # 可选：敏感凭据 AES-GCM 密钥；未设置时首次启动自动写入 data/config.key
 OVH_DB_KEY=
 ```
@@ -84,7 +92,7 @@ docker compose up -d
 docker compose ps
 ```
 
-访问 `http://服务器IP:19998`，使用 `API_SECRET_KEY` 登录，然后在设置页添加 OVH 账户。
+通过反向代理访问 `https://你的域名`；仅在部署主机本地调试时使用 `http://127.0.0.1:19998`，然后使用 `API_SECRET_KEY` 登录。
 
 根目录 `.env` 只供 Docker Compose 使用；本地直接运行 Go 后端时使用 `backend/.env`，可通过 `scripts/init-first-run.ps1` 或 `scripts/init-first-run.sh` 生成。两者的 `API_SECRET_KEY` 应保持一致，便于前端和烟测登录。
 
@@ -100,7 +108,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Compose 默认使用 `ghcr.io/planetsider/ovh-webui:latest`。
+更新前先将 `.env` 中的 `OVH_WEBUI_IMAGE` 改为新的、经过审核的完整 `sha256` digest；不要改回 `latest`。
 
 ### GitHub 自动构建
 
@@ -122,7 +130,7 @@ Compose 默认使用 `ghcr.io/planetsider/ovh-webui:latest`。
 
 镜像标签包括：
 
-- `latest`：`main` 分支
+- `latest`：`main` 分支发布标签，仅用于发布流程，不用于生产 Compose
 - `sha-<commit>`：每次构建
 - `vX.Y.Z`：版本标签
 
@@ -152,8 +160,8 @@ Telegram Webhook 路径免 `X-API-Key`，但使用 Telegram Secret Token 校验�
 |------|----------|------|
 | App ID | 必填 | 基础消息和卡片发送 |
 | App Secret | 必填 | 基础消息和卡片发送 |
-| Verification Token | 可选 | 事件订阅和回调安全校验 |
-| Encrypt Key | 可选 | 加密事件解密和请求签名校验 |
+| Verification Token | 可选 | 事件身份附加校验；建议与 Encrypt Key 一起配置 |
+| Encrypt Key | 必填（使用 HTTP 回调时） | 请求签名、时间戳新鲜度和加密事件解密 |
 
 回调地址：
 
@@ -162,7 +170,7 @@ https://你的域名/api/feishu/events
 https://你的域名/api/feishu/card-action
 ```
 
-基础通知只需要 App ID 和 App Secret。需要事件绑定账户或卡片按钮交互时，按飞书应用后台的事件订阅配置填写安全项。
+基础通知需要 App ID 和 App Secret；使用 HTTP 事件/卡片回调时必须配置 Encrypt Key。首次私聊绑定还应在 `FEISHU_ALLOWED_OPEN_IDS` 中列出允许的 `open_id`，已有绑定不会被其他用户覆盖。
 
 飞书私聊同样支持 `/reboot` 交互卡片；服务器按钮会显示数据中心国旗、三字母机房代码和自定义名称。
 
@@ -317,11 +325,16 @@ curl -fsS http://127.0.0.1:19998/health
 
 ## API 入口
 
-除健康检查、Webhook 等白名单路径外，API 需要请求头：
+除健康检查、版本检查和 Webhook 等白名单路径外，API 需要以下请求头。官方前端和仓库内烟测会自动生成这些值；脚本客户端必须按 `METHOD\nEscapedPath?RawQuery\nTimestamp\nNonce\nBody` 生成 HMAC-SHA256 hex 签名：
 
 ```http
 X-API-Key: <API_SECRET_KEY>
+X-Request-Time: <Unix milliseconds>
+X-Request-Nonce: <unique nonce>
+X-Request-Signature: <HMAC-SHA256 hex>
 ```
+
+时间戳允许偏差最多 5 分钟，同一 nonce 只能使用一次。
 
 主要接口：
 

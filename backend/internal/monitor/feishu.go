@@ -8,11 +8,14 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,30 +57,80 @@ func FeishuEnabled(state *app.State) bool {
 	return cfg.FeishuEnabled && cfg.IsFeishuNotificationsEnabled() && cfg.FeishuAppID != "" && cfg.FeishuAppSecret != ""
 }
 
+const feishuRequestMaxAge = 5 * time.Minute
+
 func FeishuVerifyRequest(state *app.State, body []byte, token, appID, timestamp, nonce, signature string) bool {
 	cfg := state.Config.Get()
 	if !cfg.FeishuEnabled || cfg.FeishuAppID == "" || cfg.FeishuAppSecret == "" {
 		return false
 	}
-	if cfg.FeishuVerificationToken == "" && cfg.FeishuEncryptKey == "" {
+	// HTTP Webhook 必须配置 Encrypt Key；仅 Verification Token 的模式没有
+	// 请求级签名，不能防止合法请求被复制重放。
+	if cfg.FeishuEncryptKey == "" {
 		return false
 	}
-	if cfg.FeishuEncryptKey != "" {
-		if signature == "" || timestamp == "" || nonce == "" {
-			return false
-		}
-		sum := sha256.Sum256([]byte(timestamp + nonce + cfg.FeishuEncryptKey + string(body)))
-		if !hmac.Equal([]byte(base64.StdEncoding.EncodeToString(sum[:])), []byte(signature)) {
-			return false
-		}
+	if signature == "" || timestamp == "" || nonce == "" {
+		return false
+	}
+	ts, err := strconv.ParseInt(strings.TrimSpace(timestamp), 10, 64)
+	if err != nil {
+		return false
+	}
+	requestTime := time.Unix(ts, 0)
+	if ts > 1_000_000_000_000 {
+		requestTime = time.UnixMilli(ts)
+	}
+	age := time.Since(requestTime)
+	if age < -feishuRequestMaxAge || age > feishuRequestMaxAge {
+		return false
+	}
+	sum := sha256.Sum256([]byte(timestamp + nonce + cfg.FeishuEncryptKey + string(body)))
+	// Feishu X-Lark-Signature 是 SHA-256 摘要的十六进制表示。
+	expected := hex.EncodeToString(sum[:])
+	if !hmac.Equal([]byte(expected), []byte(strings.ToLower(strings.TrimSpace(signature)))) {
+		return false
 	}
 	if cfg.FeishuVerificationToken != "" && (token == "" || !hmac.Equal([]byte(cfg.FeishuVerificationToken), []byte(token))) {
 		return false
 	}
-	if appID == "" {
-		return cfg.FeishuEncryptKey != ""
+	return appID != "" && hmac.Equal([]byte(cfg.FeishuAppID), []byte(appID))
+}
+
+// FeishuUnsignedChallenge 处理飞书配置阶段可能发送的无签名加密 URL 验证。
+// 该握手不执行任何业务事件；只有 Encrypt Key 能成功解密、类型明确为
+// url_verification、challenge 非空且配置的 token/app_id（若请求提供）匹配时才放行。
+func FeishuUnsignedChallenge(state *app.State, body map[string]interface{}) (string, bool) {
+	cfg := state.Config.Get()
+	if !cfg.FeishuEnabled || cfg.FeishuAppID == "" || cfg.FeishuAppSecret == "" || cfg.FeishuEncryptKey == "" {
+		return "", false
 	}
-	return hmac.Equal([]byte(cfg.FeishuAppID), []byte(appID))
+	encrypted, ok := body["encrypt"].(string)
+	if !ok || strings.TrimSpace(encrypted) == "" {
+		return "", false
+	}
+	if appID, _ := body["app_id"].(string); appID != "" && !hmac.Equal([]byte(cfg.FeishuAppID), []byte(appID)) {
+		return "", false
+	}
+	decrypted, err := decryptFeishuPayload(cfg.FeishuEncryptKey, encrypted)
+	if err != nil {
+		return "", false
+	}
+	token, _ := body["token"].(string)
+	if token == "" {
+		token, _ = decrypted["token"].(string)
+	}
+	if cfg.FeishuVerificationToken != "" && (token == "" || !hmac.Equal([]byte(cfg.FeishuVerificationToken), []byte(token))) {
+		return "", false
+	}
+	typeName, _ := decrypted["type"].(string)
+	challenge, _ := decrypted["challenge"].(string)
+	if appID, _ := decrypted["app_id"].(string); appID != "" && !hmac.Equal([]byte(cfg.FeishuAppID), []byte(appID)) {
+		return "", false
+	}
+	if typeName != "url_verification" || strings.TrimSpace(challenge) == "" {
+		return "", false
+	}
+	return challenge, true
 }
 
 func FeishuVerifyIdentity(state *app.State, token, appID string) bool {
@@ -92,6 +145,35 @@ func FeishuVerifyIdentity(state *app.State, token, appID string) bool {
 		return false
 	}
 	return appID != "" && hmac.Equal([]byte(cfg.FeishuAppID), []byte(appID))
+}
+
+// FeishuOpenIDInAllowlist 用显式环境变量保护首次绑定。
+// 生产环境应配置 FEISHU_ALLOWED_OPEN_IDS（逗号分隔的 open_id）。
+func FeishuOpenIDInAllowlist(openID string) bool {
+	openID = strings.TrimSpace(openID)
+	if openID == "" {
+		return false
+	}
+	for _, item := range strings.Split(os.Getenv("FEISHU_ALLOWED_OPEN_IDS"), ",") {
+		if strings.TrimSpace(item) == openID {
+			return true
+		}
+	}
+	return false
+}
+
+// FeishuActorAuthorized 绑定存在时只允许绑定用户；尚未绑定时仅允许
+// 显式白名单用户继续完成首次绑定。
+func FeishuActorAuthorized(state *app.State, openID string) bool {
+	openID = strings.TrimSpace(openID)
+	if openID == "" {
+		return false
+	}
+	binding, bound := FeishuDefaultBinding(state)
+	if bound {
+		return binding.OpenID == openID
+	}
+	return FeishuOpenIDInAllowlist(openID)
 }
 
 func FeishuUnwrapPayload(state *app.State, body map[string]interface{}) (map[string]interface{}, error) {

@@ -63,14 +63,10 @@ func EnsureWebhookSecret(state *app.State) (string, error) {
 	return secret, nil
 }
 
-// ValidateWebhookSecret 校验请求头中的 secret。
-// 若未配置 secret：拒绝（生产强制），除非环境变量 TG_WEBHOOK_SECRET_OPTIONAL=true（仅开发）。
+// ValidateWebhookSecret 校验请求头中的 secret。生产环境始终拒绝缺失或无法读取的 secret。
 func ValidateWebhookSecret(state *app.State, headerValue string) bool {
 	want, err := EnsureWebhookSecret(state)
 	if err != nil || want == "" {
-		if strings.EqualFold(os.Getenv("TG_WEBHOOK_SECRET_OPTIONAL"), "true") {
-			return true
-		}
 		return false
 	}
 	got := strings.TrimSpace(headerValue)

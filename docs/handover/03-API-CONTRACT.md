@@ -2,9 +2,9 @@
 
 ## 鉴权
 
-- Header：`X-API-Key: <API_SECRET_KEY>`
-- 可选：`X-Request-Time`（毫秒时间戳，偏差 >5 分钟拒绝）
-- 白名单免鉴权：`/health`, `/api/health`, `/api/version`, `/api/telegram/webhook`, `/api/feishu/events`, `/api/feishu/card-action` 等
+- 受保护 API 必须携带：`X-API-Key: <API_SECRET_KEY>`、`X-Request-Time: <Unix milliseconds>`、`X-Request-Nonce: <unique nonce>`、`X-Request-Signature: <HMAC-SHA256 hex>`
+- 签名原文为 `METHOD\nEscapedPath?RawQuery\nTimestamp\nNonce\nBody`，其中 Body 是实际发送的原始字节；时间戳偏差超过 5 分钟或重复 nonce 会被拒绝
+- 白名单免 API 鉴权：`/health`, `/api/health`, `/api/version`, `/api/version/check-update`, `/api/telegram/webhook`, `/api/feishu/events`, `/api/feishu/card-action`；Webhook 必须通过各自协议校验
 
 ## 多账户
 
@@ -57,7 +57,7 @@
 - `POST /api/feishu/card-action`：交互卡片回调
 - `GET/DELETE /api/feishu/binding`
 - `POST /api/feishu/test-card`
-- 基础发送配置只需 `feishuAppId` 与 `feishuAppSecret`；`feishuVerificationToken`、`feishuEncryptKey` 为事件回调安全项，使用回调/按钮交互时建议配置
+- 基础通知只需 `feishuAppId` 与 `feishuAppSecret`；HTTP 事件/卡片回调必须配置 `feishuEncryptKey`，可额外配置 `feishuVerificationToken` 做身份校验
 
 ### 微信 iLink Bot
 

@@ -44,7 +44,7 @@ func TestCipherWrongKeyFails(t *testing.T) {
 }
 
 func TestLoadKeyEnvironmentPrecedesFiles(t *testing.T) {
-	t.Setenv("OVH_DB_KEY", "environment-key")
+	t.Setenv("OVH_DB_KEY", strings.Repeat("ab", 32))
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, legacyKeyFileName), []byte("file-key"), 0o600); err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestLoadKeyEnvironmentPrecedesFiles(t *testing.T) {
 func TestLoadKeyUsesProtectedConfigFileAfterLegacyCandidates(t *testing.T) {
 	t.Setenv("OVH_DB_KEY", "")
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, protectedKeyFileName), []byte("config-key"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, protectedKeyFileName), []byte(strings.Repeat("cd", 32)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, info, err := LoadKey(dir)

@@ -18,11 +18,15 @@ OVH_WEBUI 烟测脚本（与 ADR：巡检 / Config Sniper 已下线对齐）
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
+import uuid
 
 BASE = os.environ.get("SMOKE_BASE", "http://127.0.0.1:19998")
 API_KEY = os.environ.get("API_SECRET_KEY", "")
@@ -37,17 +41,27 @@ class Fail(Exception):
     pass
 
 
+def auth_headers(method: str, path: str, body: bytes = b"") -> dict[str, str]:
+    timestamp = str(int(time.time() * 1000))
+    nonce = str(uuid.uuid4())
+    payload = f"{method.upper()}\n{path}\n{timestamp}\n{nonce}\n".encode() + body
+    signature = hmac.new(API_KEY.encode(), payload, hashlib.sha256).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "X-API-Key": API_KEY,
+        "X-Request-Time": timestamp,
+        "X-Request-Nonce": nonce,
+        "X-Request-Signature": signature,
+    }
+
+
 def req(method: str, path: str, body: dict | None = None) -> dict | list | None:
     if not API_KEY:
         raise Fail("请设置环境变量 API_SECRET_KEY（与 backend/.env 一致）")
     data = None
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-Key": API_KEY,
-        "X-Request-Time": str(int(__import__("time").time() * 1000)),
-    }
     if body is not None:
         data = json.dumps(body).encode("utf-8")
+    headers = auth_headers(method, path, data or b"")
     r = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(r, timeout=120) as resp:
@@ -63,11 +77,7 @@ def req(method: str, path: str, body: dict | None = None) -> dict | list | None:
 
 
 def req_status(method: str, path: str) -> int:
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-Key": API_KEY or "x",
-        "X-Request-Time": str(int(__import__("time").time() * 1000)),
-    }
+    headers = auth_headers(method, path)
     r = urllib.request.Request(BASE + path, headers=headers, method=method)
     try:
         with urllib.request.urlopen(r, timeout=30) as resp:

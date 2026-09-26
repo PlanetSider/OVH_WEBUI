@@ -98,6 +98,10 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 			return
 		}
 		token, appID := feishuHeaderValues(body)
+		if challenge, ok := monitor.FeishuUnsignedChallenge(state, body); ok {
+			c.JSON(http.StatusOK, gin.H{"challenge": challenge})
+			return
+		}
 		if !monitor.FeishuVerifyRequest(state, raw, token, appID, c.GetHeader("X-Lark-Request-Timestamp"), c.GetHeader("X-Lark-Request-Nonce"), c.GetHeader("X-Lark-Signature")) {
 			c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid token"})
 			return
@@ -135,9 +139,22 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 		text, _ := content["text"].(string)
 		openID := feishuOpenID(body)
 		if openID != "" && chatType == "p2p" {
-			// 合法私聊事件的发送人即全局飞书接收人；业务命令统一使用当时的默认 OVH 账户。
-			if binding, ok := monitor.FeishuDefaultBinding(state); !ok || binding.OpenID != openID {
-				_ = monitor.FeishuSaveDefaultBinding(state, types.FeishuBinding{AccountID: "default", OpenID: openID, Name: openID, UpdatedAt: types.NowISO()})
+			if !monitor.FeishuActorAuthorized(state, openID) {
+				state.Logger.Warn("拒绝未授权的飞书私聊用户", "feishu")
+				c.JSON(http.StatusOK, gin.H{"code": 0})
+				return
+			}
+			// 仅允许显式白名单用户完成首次绑定；已有绑定不能被其他用户覆盖。
+			if _, bound := monitor.FeishuDefaultBinding(state); !bound {
+				if !monitor.FeishuOpenIDInAllowlist(openID) {
+					c.JSON(http.StatusOK, gin.H{"code": 0})
+					return
+				}
+				if err := monitor.FeishuSaveDefaultBinding(state, types.FeishuBinding{AccountID: "default", OpenID: openID, Name: openID, UpdatedAt: types.NowISO()}); err != nil {
+					state.Logger.Error("保存飞书全局绑定失败", "feishu")
+					c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1, "msg": "binding unavailable"})
+					return
+				}
 			}
 			trimmed := strings.TrimSpace(text)
 			if trimmed != "" && !telegram.AllowRate("feishu:"+openID) {
@@ -238,8 +255,18 @@ func processFeishuMessage(state *app.State, mon *monitor.Monitor, body map[strin
 	if openID == "" || chatType != "p2p" {
 		return
 	}
-	if binding, ok := monitor.FeishuDefaultBinding(state); !ok || binding.OpenID != openID {
-		_ = monitor.FeishuSaveDefaultBinding(state, types.FeishuBinding{AccountID: "default", OpenID: openID, Name: openID, UpdatedAt: types.NowISO()})
+	if !monitor.FeishuActorAuthorized(state, openID) {
+		state.Logger.Warn("拒绝未授权的飞书长连接私聊用户", "feishu")
+		return
+	}
+	if _, bound := monitor.FeishuDefaultBinding(state); !bound {
+		if !monitor.FeishuOpenIDInAllowlist(openID) {
+			return
+		}
+		if err := monitor.FeishuSaveDefaultBinding(state, types.FeishuBinding{AccountID: "default", OpenID: openID, Name: openID, UpdatedAt: types.NowISO()}); err != nil {
+			state.Logger.Error("保存飞书全局绑定失败", "feishu")
+			return
+		}
 	}
 	trimmed := strings.TrimSpace(text)
 	if trimmed != "" && !telegram.AllowRate("feishu:"+openID) {
@@ -427,6 +454,10 @@ func FeishuCardAction(state *app.State) gin.HandlerFunc {
 			return
 		}
 		token, appID := feishuHeaderValues(body)
+		if challenge, ok := monitor.FeishuUnsignedChallenge(state, body); ok {
+			c.JSON(http.StatusOK, gin.H{"challenge": challenge})
+			return
+		}
 		if !monitor.FeishuVerifyRequest(state, raw, token, appID, c.GetHeader("X-Lark-Request-Timestamp"), c.GetHeader("X-Lark-Request-Nonce"), c.GetHeader("X-Lark-Signature")) {
 			c.JSON(http.StatusForbidden, gin.H{"code": 1, "msg": "invalid token"})
 			return

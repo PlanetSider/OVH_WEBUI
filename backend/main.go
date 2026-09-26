@@ -75,17 +75,17 @@ func main() {
 	}
 	state := app.NewState(paths, cfgStore, lg, sqliteDB)
 	state.APIKey = strings.TrimSpace(os.Getenv("API_SECRET_KEY"))
-	allowInsecureKey := strings.EqualFold(os.Getenv("ALLOW_INSECURE_DEFAULT_KEY"), "true")
-	if state.APIKey == "" || state.APIKey == "123456" || state.APIKey == "change-me-to-a-long-random-string" {
-		if allowInsecureKey {
-			if state.APIKey == "" {
-				state.APIKey = "123456"
-			}
-			console.Warn("using insecure API_SECRET_KEY (ALLOW_INSECURE_DEFAULT_KEY=true); do not use in production")
-		} else {
-			console.Error("API_SECRET_KEY is missing or weak; set a long random secret, or ALLOW_INSECURE_DEFAULT_KEY=true for local dev only")
-			os.Exit(1)
-		}
+	if err := auth.ValidateAPIKeyStrength(state.APIKey); err != nil {
+		console.Error("API_SECRET_KEY is invalid", "error", err)
+		os.Exit(1)
+	}
+	if strings.EqualFold(os.Getenv("ALLOW_INSECURE_DEFAULT_KEY"), "true") {
+		console.Error("ALLOW_INSECURE_DEFAULT_KEY is not supported; configure a strong API_SECRET_KEY")
+		os.Exit(1)
+	}
+	if strings.EqualFold(os.Getenv("ENABLE_API_KEY_AUTH"), "false") {
+		console.Error("ENABLE_API_KEY_AUTH=false is not supported; API authentication is mandatory")
+		os.Exit(1)
 	}
 	state.Port = os.Getenv("PORT")
 	if state.Port == "" {
@@ -165,11 +165,16 @@ func main() {
 	// 不信任任意反向代理头，避免 X-Forwarded-For 伪造 ClientIP
 	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
+	r.Use(func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20)
+		c.Next()
+	})
+	r.Use(handlers.ValidatePathParams)
 	allowedOrigins := strings.Fields(os.Getenv("CORS_ALLOWED_ORIGINS"))
 	corsConfig := cors.Config{
 		AllowOrigins:     allowedOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-		AllowHeaders:     []string{"Content-Type", "Authorization", "X-API-Key", "X-Request-Time"},
+		AllowHeaders:     []string{"Content-Type", "Authorization", "X-API-Key", "X-Request-Time", "X-Request-Nonce", "X-Request-Signature"},
 		ExposeHeaders:    []string{"X-Cache-Warning"},
 		AllowCredentials: false,
 	}
@@ -179,10 +184,9 @@ func main() {
 	}
 	r.Use(cors.New(corsConfig))
 
-	enableAuth := !strings.EqualFold(os.Getenv("ENABLE_API_KEY_AUTH"), "false")
 	r.Use(auth.Middleware(auth.Config{
 		APIKey:         state.APIKey,
-		Enabled:        enableAuth,
+		Enabled:        true,
 		WhitelistPaths: auth.DefaultWhitelist(),
 	}))
 
@@ -534,7 +538,7 @@ func main() {
 	// 仅本机调试可设 LISTEN_HOST=127.0.0.1
 	host := os.Getenv("LISTEN_HOST")
 	addr := host + ":" + state.Port
-	console.Info("Listening", "addr", addr, "auth", enableAuth, "ui", hasUI(), "dataDir", paths.DataDir)
+	console.Info("Listening", "addr", addr, "auth", true, "ui", hasUI(), "dataDir", paths.DataDir)
 
 	// http.Server + 优雅退出：Docker/systemd 发 SIGTERM 时先停接新连接、刷日志，再退出
 	srv := &http.Server{

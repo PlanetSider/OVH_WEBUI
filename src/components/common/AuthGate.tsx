@@ -8,6 +8,7 @@ import {
   setApiSecretKey,
   clearApiSecretKey,
   resolveAbsoluteUrl,
+  buildRequestAuthHeaders,
 } from "@/lib/http";
 
 type AuthState = "checking" | "needs-auth" | "authed";
@@ -167,7 +168,7 @@ function LoginOverlay({
 async function verifyKey(key: string): Promise<boolean> {
   try {
     const res = await axios.get(resolveAbsoluteUrl("/api/stats"), {
-      headers: { "X-API-Key": key, "X-Request-Time": Date.now().toString() },
+      headers: await buildRequestAuthHeaders(key, "GET", "/api/stats"),
       timeout: 10000,
       validateStatus: () => true,
     });

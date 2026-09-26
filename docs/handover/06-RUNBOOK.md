@@ -44,14 +44,14 @@ VITE_DEV_API_KEY=<同 backend API_SECRET_KEY>
 
 ## 配置 OVH
 
-仅前端「设置 → OVH 账户」或：
+仅前端「设置 → OVH 账户」或仓库签名脚本访问账户接口。受保护 API 除 `X-API-Key` 外还必须带时间戳、唯一 nonce 和绑定原始请求体的 HMAC 签名，直接复制只带 API key 的 curl 会返回 401。可用烟测先验证连接：
 
-```bash
-curl -X POST http://127.0.0.1:19998/api/accounts \
-  -H "X-API-Key: <你的密钥>" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"main","zone":"IE","appKey":"...","appSecret":"...","consumerKey":"...","setDefault":true}'
+```powershell
+$env:API_SECRET_KEY = "与 backend/.env 一致的密钥"
+python scripts/smoke_test.py
 ```
+
+脚本按 `METHOD\nEscapedPath?RawQuery\nTimestamp\nNonce\nBody` 生成 HMAC-SHA256 hex 签名。
 
 ## Docker / Linux 生产
 
@@ -68,8 +68,8 @@ chmod +x scripts/docker-deploy.sh
 |------|------|------|
 | PORT | 端口 | 19998 |
 | API_SECRET_KEY | 网关密钥 | **必填** |
-| TG_WEBHOOK_SECRET | Telegram Webhook 密钥 | 空时自动生成并落盘 |
-| TG_WEBHOOK_SECRET_OPTIONAL | 是否允许缺少 Webhook 密钥 | false |
+| TG_WEBHOOK_SECRET | Telegram Webhook 密钥；为空时首次启动随机生成并落盘 | 空时自动生成并落盘 |
+| TG_WEBHOOK_SECRET_OPTIONAL | 必须为 false；不允许关闭 Webhook 密钥校验 | false |
 | DATA_DIR | 数据目录 | data（Compose 绑定 `./data`） |
 
 **已废弃（勿再配置）**：`INSPECTION_ALLOWLIST`、`ALLOW_FULL_INSPECTION`。

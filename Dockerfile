@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # OVH_WEBUI 前后端一体镜像：Vite 静态资源嵌入 Go 二进制。
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.25.0
 
-FROM node:20-alpine AS frontend
+FROM node:20.19-alpine AS frontend
 WORKDIR /app
 
 COPY package.json package-lock.json ./
@@ -27,10 +27,10 @@ COPY --from=frontend /app/dist ./web
 
 RUN CGO_ENABLED=0 go build -tags ui -trimpath -ldflags="-s -w" -o /out/ovh-webui .
 
-FROM alpine:3.20
+FROM alpine:3.20.6
 RUN apk add --no-cache ca-certificates tzdata wget \
-    && addgroup -S ovh \
-    && adduser -S -G ovh -h /app ovh
+    && addgroup -S -g 100 ovh \
+    && adduser -S -D -H -u 100 -G ovh ovh
 
 WORKDIR /app
 COPY --from=backend /out/ovh-webui /app/ovh-webui

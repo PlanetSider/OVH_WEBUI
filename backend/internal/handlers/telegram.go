@@ -160,8 +160,7 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			if username == "" {
 				username = "未知用户"
 			}
-			state.Logger.Info(fmt.Sprintf("收到Telegram普通消息: user_id=%v, username=%s, text=%s",
-				userID, username, truncate(text, 100)), "telegram")
+			state.Logger.Info(fmt.Sprintf("收到Telegram普通消息: user_id=%v, username=%s", userID, username), "telegram")
 
 			// 频率限制
 			rateKey := telegram.ChatIDString(chatID)
@@ -189,7 +188,7 @@ func handleCallbackQuery(state *app.State, mon *monitor.Monitor, cb map[string]i
 	messageID, _ := getNumOrFloat(message["message_id"])
 	fromUser, _ := cb["from"].(map[string]interface{})
 	userID, _ := getNumOrFloat(fromUser["id"])
-	state.Logger.Info(fmt.Sprintf("收到Telegram回调: user_id=%v, callback_data=%s...", userID, truncate(cbData, 50)), "telegram")
+	state.Logger.Info(fmt.Sprintf("收到Telegram回调: user_id=%v", userID), "telegram")
 
 	cbID := fmt.Sprintf("%v", cb["id"])
 

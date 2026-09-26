@@ -48,12 +48,16 @@ func AddQueueItem(state *app.State) gin.HandlerFunc {
 			Options       []string `json:"options"`
 			RetryInterval int      `json:"retryInterval"`
 		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "请求处理失败"})
+		if !bindJSONOrBadRequest(c, &body) {
 			return
 		}
+		body.AccountID = strings.TrimSpace(body.AccountID)
 		body.PlanCode = strings.TrimSpace(body.PlanCode)
 		body.Datacenter = strings.TrimSpace(body.Datacenter)
+		if err := validateQueueFields(body.AccountID, body.PlanCode, body.Datacenter, body.Options); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+			return
+		}
 		if body.AccountID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "缺少 account_id"})
 			return
@@ -331,6 +335,14 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 		options := item.Options
 		if body.Options != nil {
 			options = append([]string{}, (*body.Options)...)
+		}
+		if err := validateDatacenters(dcs); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+			return
+		}
+		if err := validateQueueFields(accountID, planCode, dcs[0], options); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+			return
 		}
 
 		now := types.NowISO()

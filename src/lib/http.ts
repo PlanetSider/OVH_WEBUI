@@ -3,7 +3,7 @@
  *
  * - 开发：Vite 代理 `/api`、`/health` → `http://127.0.0.1:19998`
  * - 生产：同源；localStorage `backendUrl` 可覆盖到独立后端
- * - 鉴权：`X-API-Key` + `X-Request-Time`
+ * - 鉴权：`X-API-Key` + `X-Request-Time` + `X-Request-Nonce` + `X-Request-Signature`
  * - 多账户：`/server-control`、`/vps-control`、`/ovh/` 自动注入 `account`
  *
  * 用法：
@@ -109,13 +109,73 @@ type ExtraConfig = AxiosRequestConfig & {
   absolute?: boolean;
 };
 
+function requestPath(config: AxiosRequestConfig): string {
+  try {
+    const raw = axios.getUri(config);
+    if (typeof window !== "undefined") {
+      const parsed = new URL(raw, window.location.origin);
+      return `${parsed.pathname}${parsed.search}`;
+    }
+    return raw;
+  } catch {
+    const base = config.baseURL || "";
+    const raw = `${base}${config.url || ""}`;
+    if (typeof window !== "undefined") {
+      try {
+        const parsed = new URL(raw, window.location.origin);
+        return `${parsed.pathname}${parsed.search}`;
+      } catch {
+        // fall through to the conservative relative-path form
+      }
+    }
+    const path = config.url || "/";
+    if (path.startsWith("/api/")) return path;
+    if (path === "/api") return "/api";
+    return `${base.replace(/\/$/, "")}/${path.replace(/^\//, "")}` || "/";
+  }
+}
+
+function requestBodyBytes(config: AxiosRequestConfig): Uint8Array {
+  if (config.data == null || config.data === "") return new Uint8Array();
+  if (typeof config.data === "string") return new TextEncoder().encode(config.data);
+  return new TextEncoder().encode(JSON.stringify(config.data));
+}
+
+async function signRequest(apiKey: string, method: string, path: string, timestamp: string, nonce: string, body: Uint8Array): Promise<string> {
+  const prefix = `${method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n`;
+  const payload = new Uint8Array(new TextEncoder().encode(prefix).length + body.length);
+  payload.set(new TextEncoder().encode(prefix));
+  payload.set(body, new TextEncoder().encode(prefix).length);
+  const cryptoKey = await window.crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(apiKey),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = await window.crypto.subtle.sign("HMAC", cryptoKey, payload);
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+export async function buildRequestAuthHeaders(apiKey: string, method: string, path: string, body: string | Uint8Array = ""): Promise<Record<string, string>> {
+  const timestamp = Date.now().toString();
+  const nonce = window.crypto.randomUUID();
+  const bodyBytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
+  return {
+    "X-API-Key": apiKey,
+    "X-Request-Time": timestamp,
+    "X-Request-Nonce": nonce,
+    "X-Request-Signature": await signRequest(apiKey, method, path, timestamp, nonce, bodyBytes),
+  };
+}
+
 function createApiClient(): AxiosInstance {
   const client = axios.create({
     baseURL: "/api",
     timeout: 120000,
   });
 
-  client.interceptors.request.use((config) => {
+  client.interceptors.request.use(async (config) => {
     const extra = config as ExtraConfig;
     const url = config.url || "";
 
@@ -129,30 +189,40 @@ function createApiClient(): AxiosInstance {
       config.baseURL = resolveApiBaseURL();
     }
 
-    const key = getApiSecretKey();
-    if (key) {
-      config.headers.set("X-API-Key", key);
-      config.headers.set("X-Request-Time", Date.now().toString());
-    }
+    if (extra.injectAccount !== false) {
+      // 相对 /api 的路径，或绝对 URL 中含控制/账户段
+      const needAccount =
+        url.includes("/server-control") ||
+        url.includes("/vps-control") ||
+        url.includes("/ovh/") ||
+        url.startsWith("server-control") ||
+        url.startsWith("vps-control") ||
+        url.startsWith("ovh/");
 
-    if (extra.injectAccount === false) {
-      return config;
-    }
-
-    // 相对 /api 的路径，或绝对 URL 中含控制/账户段
-    const needAccount =
-      url.includes("/server-control") ||
-      url.includes("/vps-control") ||
-      url.includes("/ovh/") ||
-      url.startsWith("server-control") ||
-      url.startsWith("vps-control") ||
-      url.startsWith("ovh/");
-
-    if (needAccount && !(config.params && (config.params as Record<string, unknown>).account)) {
-      const acc = getActiveServerControlAccount();
-      if (acc) {
-        config.params = { ...(config.params || {}), account: acc };
+      if (needAccount && !(config.params && (config.params as Record<string, unknown>).account)) {
+        const acc = getActiveServerControlAccount();
+        if (acc) {
+          config.params = { ...(config.params || {}), account: acc };
+        }
       }
+    }
+
+    const key = getApiSecretKey();
+    const path = requestPath(config);
+    if (key && path.startsWith("/api/")) {
+      const timestamp = Date.now().toString();
+      const nonce = window.crypto.randomUUID();
+      const body = requestBodyBytes(config);
+      if (body.length > 0 && !config.headers.get("Content-Type")) {
+        config.headers.set("Content-Type", "application/json");
+      }
+      if (typeof config.data !== "string" && config.data != null) {
+        config.data = JSON.stringify(config.data);
+      }
+      config.headers.set("X-API-Key", key);
+      config.headers.set("X-Request-Time", timestamp);
+      config.headers.set("X-Request-Nonce", nonce);
+      config.headers.set("X-Request-Signature", await signRequest(key, config.method || "GET", path, timestamp, nonce, body));
     }
     return config;
   });

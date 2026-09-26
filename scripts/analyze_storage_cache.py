@@ -4,13 +4,30 @@
 from __future__ import annotations
 
 import collections
+import hashlib
+import hmac
 import json
 import os
 import re
+import time
 import urllib.request
+import uuid
 
 BASE = os.environ.get("SMOKE_BASE", "http://127.0.0.1:19998")
 KEY = os.environ.get("API_SECRET_KEY", "")
+
+
+def auth_headers(method: str, path: str, body: bytes = b"") -> dict[str, str]:
+    timestamp = str(int(time.time() * 1000))
+    nonce = str(uuid.uuid4())
+    payload = f"{method.upper()}\n{path}\n{timestamp}\n{nonce}\n".encode() + body
+    signature = hmac.new(KEY.encode(), payload, hashlib.sha256).hexdigest()
+    return {
+        "X-API-Key": KEY,
+        "X-Request-Time": timestamp,
+        "X-Request-Nonce": nonce,
+        "X-Request-Signature": signature,
+    }
 
 
 def get(path: str):
@@ -20,10 +37,7 @@ def get(path: str):
         raise SystemExit("请设置环境变量 API_SECRET_KEY")
     req = urllib.request.Request(
         BASE + path,
-        headers={
-            "X-API-Key": KEY,
-            "X-Request-Time": str(int(time.time() * 1000)),
-        },
+        headers=auth_headers("GET", path),
     )
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.loads(r.read().decode())

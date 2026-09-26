@@ -69,6 +69,13 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 		if !bindJSONOrBadRequest(c, &body) {
 			return
 		}
+		body.AccountID = strings.TrimSpace(body.AccountID)
+		body.PlanCode = strings.TrimSpace(body.PlanCode)
+		body.Datacenter = strings.TrimSpace(body.Datacenter)
+		if err := validateQueueFields(body.AccountID, body.PlanCode, body.Datacenter, body.Options); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+			return
+		}
 		if body.PlanCode == "" || body.Datacenter == "" {
 			c.JSON(http.StatusOK, gin.H{"success": false, "error": "缺少 planCode 或 datacenter"})
 			return

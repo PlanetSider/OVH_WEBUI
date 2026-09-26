@@ -4,19 +4,29 @@
 
 services:
   ovh-webui:
-    image: ghcr.io/planetsider/ovh-webui:latest
-    pull_policy: always
+    # 使用经审核的不可变 digest，例如 ghcr.io/planetsider/ovh-webui@sha256:...
+    image: ${OVH_WEBUI_IMAGE:?Set OVH_WEBUI_IMAGE to a reviewed immutable image digest}
     container_name: ovh-webui
     restart: unless-stopped
     environment:
       API_SECRET_KEY: ${API_SECRET_KEY:?Set API_SECRET_KEY in .env}
       TG_WEBHOOK_SECRET: ${TG_WEBHOOK_SECRET:-}
-      TG_WEBHOOK_SECRET_OPTIONAL: ${TG_WEBHOOK_SECRET_OPTIONAL:-false}
+      TG_WEBHOOK_SECRET_OPTIONAL: "false"
       OVH_DB_KEY: ${OVH_DB_KEY:-}
+      FEISHU_ALLOWED_OPEN_IDS: ${FEISHU_ALLOWED_OPEN_IDS:-}
+      ENABLE_API_KEY_AUTH: "true"
     ports:
-      - "19998:19998"
+      - "127.0.0.1:19998:19998"
     volumes:
       - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:19998/health"]
       interval: 15s

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,16 @@ const (
 	maxLogs        = 1000
 	writeThreshold = 10
 )
+
+var (
+	sensitiveAssignmentPattern = regexp.MustCompile(`(?i)(^|[^[:alnum:]_])(["']?(?:api[_-]?key|token|secret|password|consumer[_-]?key|app[_-]?secret|authorization|encrypt[_-]?key)["']?)([[:space:]]*[:=][[:space:]]*)("[^"]*"|'[^']*'|[^[:space:],;}\x5d]+)`)
+	bearerPattern              = regexp.MustCompile(`(?i)(Bearer[[:space:]]+)[^[:space:]]+`)
+)
+
+func redactMessage(message string) string {
+	message = bearerPattern.ReplaceAllString(message, `${1}[REDACTED]`)
+	return sensitiveAssignmentPattern.ReplaceAllString(message, `${1}${2}${3}[REDACTED]`)
+}
 
 // Logger 与 Python add_log 行为一致：内存累积 + 批量刷盘 + 控制台输出
 type Logger struct {
@@ -65,6 +76,7 @@ func (l *Logger) Add(level, message, source string) {
 	if source == "" {
 		source = "system"
 	}
+	message = redactMessage(message)
 	entry := types.LogEntry{
 		ID:        uuid.NewString(),
 		Timestamp: time.Now().Format(time.RFC3339Nano),

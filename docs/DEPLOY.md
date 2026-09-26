@@ -12,6 +12,8 @@ cd /opt/ovh-webui
 git clone https://github.com/PlanetSider/OVH_WEBUI.git .
 cp .env.example .env
 sed -i "s/^API_SECRET_KEY=.*/API_SECRET_KEY=$(openssl rand -hex 32)/" .env
+# 填写发布记录中的真实 digest，禁止 latest
+sed -i "s#^OVH_WEBUI_IMAGE=.*#OVH_WEBUI_IMAGE=ghcr.io/planetsider/ovh-webui@sha256:<reviewed-digest>#" .env
 mkdir -p data
 # 镜像使用非 root 用户运行；Linux 主机首次部署时将 data 目录交给容器用户
 sudo chown -R 100:100 data
@@ -20,19 +22,21 @@ docker compose up -d
 docker compose ps
 ```
 
-打开 `http://服务器IP:19998`，使用 `.env` 中的 `API_SECRET_KEY` 登录。
+通过已配置的 HTTPS 反向代理打开 `https://你的域名`，使用 `.env` 中的 `API_SECRET_KEY` 登录。Compose 默认只将 `19998` 绑定到 `127.0.0.1`；仅在部署主机本地调试时访问 `http://127.0.0.1:19998`。
 
 如果 GHCR 镜像是私有的，先执行 `docker login ghcr.io`。
 
 ## 配置
 
 ```dotenv
-API_SECRET_KEY=强随机密钥
-TG_WEBHOOK_SECRET=可选的随机密钥
+API_SECRET_KEY=同时含大写、小写、数字且至少 8 位的随机密钥
+OVH_WEBUI_IMAGE=ghcr.io/planetsider/ovh-webui@sha256:<reviewed-digest>
+TG_WEBHOOK_SECRET=随机密钥（配置 Telegram Webhook 时必须设置）
 TG_WEBHOOK_SECRET_OPTIONAL=false
+FEISHU_ALLOWED_OPEN_IDS=首次飞书绑定允许的 open_id，逗号分隔（生产建议设置）
 ```
 
-容器内部和宿主机都使用 `19998` 端口。需要 HTTPS 时，在容器前使用已有的反向代理，并将流量转发到该端口；应用本身不申请证书。
+容器内部和宿主机都使用 `19998` 端口，但 Compose 仅绑定宿主机回环地址。公网访问和 Telegram/飞书回调必须使用 HTTPS 反向代理；应用本身不申请证书。
 
 数据直接绑定到项目目录的 `./data`（Linux 首次部署需确保容器用户可写）：
 

@@ -168,8 +168,8 @@ func SetWebhook(state *app.State, webhookURL string) (bool, string, map[string]i
 	if cfg.TgToken == "" {
 		return false, "未配置 Telegram Bot Token", nil
 	}
-	if !strings.HasPrefix(webhookURL, "http://") && !strings.HasPrefix(webhookURL, "https://") {
-		return false, "Webhook URL 必须以 http:// 或 https:// 开头", nil
+	if !strings.HasPrefix(webhookURL, "https://") {
+		return false, "Webhook URL 必须使用 HTTPS", nil
 	}
 	if !strings.HasSuffix(webhookURL, "/api/telegram/webhook") {
 		webhookURL = strings.TrimSuffix(webhookURL, "/") + "/api/telegram/webhook"

@@ -15,18 +15,35 @@ OVH_WEBUI 全功能测试（从零）
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 BASE = os.environ.get("SMOKE_BASE", "http://127.0.0.1:19998")
 API_KEY = os.environ.get("API_SECRET_KEY", "")
 ALLOWED = os.environ.get("SMOKE_ALLOWED_SERVER", "").strip()
+
+
+def auth_headers(method: str, path: str, body: bytes = b"") -> dict[str, str]:
+    timestamp = str(int(time.time() * 1000))
+    nonce = str(uuid.uuid4())
+    payload = f"{method.upper()}\n{path}\n{timestamp}\n{nonce}\n".encode() + body
+    signature = hmac.new(API_KEY.encode(), payload, hashlib.sha256).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "X-API-Key": API_KEY,
+        "X-Request-Time": timestamp,
+        "X-Request-Nonce": nonce,
+        "X-Request-Signature": signature,
+    }
 
 # 绝对禁止的危险路径关键字（测试脚本自身不会调用）
 FORBIDDEN_ACTIONS = (
@@ -82,13 +99,9 @@ def req(
     timeout: int = 90,
 ) -> tuple[int, Any]:
     data = None
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-Key": API_KEY,
-        "X-Request-Time": str(int(time.time() * 1000)),
-    }
     if body is not None:
         data = json.dumps(body).encode("utf-8")
+    headers = auth_headers(method, path, data or b"")
     r = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(r, timeout=timeout) as resp:

@@ -4,7 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -125,8 +124,9 @@ func LoadKey(dataDir string) (*Cipher, KeyInfo, error) {
 	return cipher, KeyInfo{Source: KeySourceConfigFile, Path: path}, err
 }
 
-// ParseKey accepts a 64-character hex key, a base64 key, a raw 32-byte key,
-// or derives a stable AES-256 key from a passphrase with SHA-256.
+// ParseKey accepts an explicitly encoded 32-byte key: 64-character hex,
+// base64 (with or without padding), or the prefixed forms hex:/base64:.
+// Arbitrary passphrases are rejected instead of being cheaply hashed.
 func ParseKey(raw string) ([]byte, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -140,25 +140,25 @@ func ParseKey(raw string) ([]byte, error) {
 		return decoded, nil
 	}
 	if strings.HasPrefix(raw, "base64:") {
-		decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(raw, "base64:"))
-		if err != nil || len(decoded) != 32 {
-			return nil, fmt.Errorf("base64 key must decode to 32 bytes")
-		}
-		return decoded, nil
+		return parseBase64Key(strings.TrimPrefix(raw, "base64:"))
 	}
 	if len(raw) == 64 {
 		if decoded, err := hex.DecodeString(raw); err == nil && len(decoded) == 32 {
 			return decoded, nil
 		}
 	}
-	if decoded, err := base64.RawStdEncoding.DecodeString(raw); err == nil && len(decoded) == 32 {
-		return decoded, nil
+	return parseBase64Key(raw)
+}
+
+func parseBase64Key(value string) ([]byte, error) {
+	decoded, err := base64.RawStdEncoding.DecodeString(value)
+	if err != nil {
+		decoded, err = base64.StdEncoding.DecodeString(value)
 	}
-	if len([]byte(raw)) == 32 {
-		return []byte(raw), nil
+	if err != nil || len(decoded) != 32 {
+		return nil, fmt.Errorf("OVH_DB_KEY must be a 32-byte random key encoded as hex or base64")
 	}
-	digest := sha256.Sum256([]byte(raw))
-	return digest[:], nil
+	return decoded, nil
 }
 
 func ParseKeyFile(data []byte) ([]byte, error) {

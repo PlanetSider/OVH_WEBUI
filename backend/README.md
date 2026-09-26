@@ -1,6 +1,6 @@
 # OVH 控制台 · 后端
 
-Go (Gin) 实现的后端服务，配套 `../web/` 前端使用。
+Go (Gin) 实现的后端服务，配套 `../src/` 前端使用。
 
 ## 功能模块
 
@@ -41,9 +41,9 @@ server/
 ## 运行
 
 ```bash
-cd server
+cd backend
 cp .env.example .env
-# 编辑 .env：OVH AppKey/AppSecret/ConsumerKey、API_KEY（前端访问凭据）等
+# 编辑 .env：API_SECRET_KEY（至少 8 位且含大写、小写、数字）等
 
 go mod tidy
 go run .
@@ -57,17 +57,19 @@ go run .
 
 | 变量 | 说明 |
 |---|---|
-| `API_KEY` | 前端访问后端的 X-API-Key。前端 localStorage 里也存这个值 |
-| `API_KEY_ENABLED` | 是否启用 API Key 校验（默认 true） |
-| `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` | OVH API 凭据，可在前端"API 设置"页面填，也可写入 .env |
+| `API_SECRET_KEY` | 前端和脚本访问后端的网关密钥，至少 8 位且同时含英文大写、小写和数字。前端 localStorage 也存这个值 |
+| `ENABLE_API_KEY_AUTH` | 必须保持 `true`；设置为 `false` 会导致服务启动失败 |
+| `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` | OVH API 凭据，可在前端“API 设置”页面填，也可写入 .env |
 | `OVH_ENDPOINT` | `ovh-eu` / `ovh-us` / `ovh-ca`，决定 OVH API host |
 | `DATA_DIR` | 持久化目录（队列、订阅、历史、缓存），默认 `./data` |
 | `PORT` | HTTP 端口，默认 19998 |
 | `TG_TOKEN` / `TG_CHAT_ID` | Telegram 通知（可选，前端也能配） |
+| `TG_WEBHOOK_SECRET` | Telegram Webhook Secret Token；未设置时首次启动生成随机值并落盘 |
+| `TG_WEBHOOK_SECRET_OPTIONAL` | 必须保持 `false`，不允许关闭 Webhook secret 校验 |
 
 ## 鉴权
 
-所有 `/api/*` 路径（除 `/api/health` 等少数白名单）都要求 `X-API-Key` 请求头。前端 [AuthGate](../web/src/components/common/AuthGate.tsx) 在挂载时探测一次 `/api/stats`，401 直接弹登录窗。
+所有 `/api/*` 路径（除 `/api/health` 等少数白名单）都要求 `X-API-Key`、`X-Request-Time`、`X-Request-Nonce` 和 `X-Request-Signature`。签名原文为 `METHOD\nEscapedPath?RawQuery\nTimestamp\nNonce\nBody`，使用 API key 作为 HMAC-SHA256 密钥并发送 hex 摘要；时间戳偏差超过 5 分钟或重复 nonce 会被拒绝。前端 [AuthGate](../src/components/common/AuthGate.tsx) 在挂载时探测一次 `/api/stats`，401 直接弹登录窗。
 
 ## 主要路由
 
