@@ -27,6 +27,34 @@ var KnownCommands = map[string]string{
 	"buy":     "快速下单: /buy <planCode> [dc] [qty] [options]",
 	"monitor": "添加监控: /monitor <planCode> [dc...]",
 	"price":   "查询价格: /price <planCode> <dc>",
+	"order":   "查询订单: /order [数量|unpaid]",
+	"pay":     "支付订单: /pay <订单号>",
+}
+
+var commandAliases = map[string]string{
+	"开始":   "start",
+	"帮助":   "help",
+	"账户":   "account",
+	"切换账户": "account",
+	"重启":   "reboot",
+	"库存":   "stock",
+	"抢购":   "queue",
+	"下单":   "buy",
+	"监控":   "monitor",
+	"价格":   "price",
+	"订单":   "order",
+	"支付":   "pay",
+}
+
+func canonicalCommand(name string, args []string) (string, []string) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if canonical, ok := commandAliases[name]; ok {
+		if name == "切换账户" && len(args) == 0 {
+			return canonical, []string{"switch"}
+		}
+		return canonical, args
+	}
+	return name, args
 }
 
 // ParseBotCommand 解析以 / 开头的 Bot 命令。
@@ -60,12 +88,14 @@ func ParseBotCommand(text string) *BotCommand {
 	if len(parts) > 1 {
 		args = parts[1:]
 	}
+	cmd, args = canonicalCommand(cmd, args)
 	return &BotCommand{Name: cmd, Args: args, Raw: text}
 }
 
 // IsKnownCommand 是否为本 Bot 支持的命令。
 func IsKnownCommand(name string) bool {
-	_, ok := KnownCommands[strings.ToLower(strings.TrimSpace(name))]
+	canonical, _ := canonicalCommand(name, nil)
+	_, ok := KnownCommands[canonical]
 	return ok
 }
 
@@ -77,6 +107,17 @@ func HelpMessage() string {
 👤 当前账户
   /account
   /account switch  打开账户切换菜单
+  /账户            查看当前账户
+  /切换账户        打开账户切换菜单
+
+💳 订单与支付
+  /order           查看最近一个月订单
+  /order <数量>    查看最近数量条订单（1–100）
+  /order unpaid    查看最近一个月未付款订单
+  /pay <订单号>    使用当前账户默认支付方式支付
+  /订单、/支付     对应中文别名
+  其他别名：/开始 /帮助 /重启 /库存 /抢购 /下单 /监控 /价格
+  订单会显示时间、订单号、状态和含税价格
 
 🔄 重启独立服务器
   /reboot  选择账户和服务器，确认后重启
@@ -173,7 +214,8 @@ func DefaultAccountID(state *app.State) string {
 
 // ParseOrderArgs 从命令参数解析 planCode / dc / qty / options。
 // 约定与 free-form ParseOrderMessage 一致：
-//   planCode [datacenter] [quantity] [options(逗号分隔)]
+//
+//	planCode [datacenter] [quantity] [options(逗号分隔)]
 func ParseOrderArgs(args []string) *OrderInfo {
 	if len(args) == 0 {
 		return nil

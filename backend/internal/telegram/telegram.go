@@ -249,6 +249,8 @@ func SetMyCommands(state *app.State) string {
 		{Command: "buy", Description: "快速下单 planCode [dc]"},
 		{Command: "monitor", Description: "添加监控 planCode"},
 		{Command: "price", Description: "查询价格 planCode dc"},
+		{Command: "order", Description: "查询订单 [数量|unpaid]"},
+		{Command: "pay", Description: "支付订单 orderNumber"},
 	}
 	payload, _ := json.Marshal(map[string]interface{}{"commands": commands})
 	url := "https://api.telegram.org/bot" + cfg.TgToken + "/setMyCommands"

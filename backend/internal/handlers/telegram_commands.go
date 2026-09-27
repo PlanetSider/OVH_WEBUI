@@ -36,6 +36,10 @@ func dispatchBotCommand(state *app.State, mon *monitor.Monitor, cmd *telegram.Bo
 		return cmdMonitor(state, mon, cmd.Args, accountID, channel)
 	case "price":
 		return cmdPrice(state, cmd.Args, accountID)
+	case "order":
+		return cmdOrder(state, cmd.Args, accountID)
+	case "pay":
+		return cmdPay(state, cmd.Args, accountID)
 	default:
 		return "❌ 未知命令: /" + cmd.Name + "\n\n" + telegram.HelpMessage()
 	}

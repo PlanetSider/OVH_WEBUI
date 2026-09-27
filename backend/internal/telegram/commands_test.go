@@ -26,6 +26,21 @@ func TestParseBotCommand(t *testing.T) {
 		{"/queue 24ska01 gra 1 ram-32g,softraid-2x512nvme", "queue",
 			[]string{"24ska01", "gra", "1", "ram-32g,softraid-2x512nvme"}, false},
 		{"/price 24ska01 gra", "price", []string{"24ska01", "gra"}, false},
+		{"/order", "order", nil, false},
+		{"/order unpaid", "order", []string{"unpaid"}, false},
+		{"/pay 12345", "pay", []string{"12345"}, false},
+		{"/开始", "start", nil, false},
+		{"/帮助", "help", nil, false},
+		{"/账户", "account", nil, false},
+		{"/切换账户", "account", []string{"switch"}, false},
+		{"/重启", "reboot", nil, false},
+		{"/库存 24ska01", "stock", []string{"24ska01"}, false},
+		{"/抢购 24ska01 gra", "queue", []string{"24ska01", "gra"}, false},
+		{"/下单 24ska01 gra", "buy", []string{"24ska01", "gra"}, false},
+		{"/监控 24ska01 gra", "monitor", []string{"24ska01", "gra"}, false},
+		{"/价格 24ska01 gra", "price", []string{"24ska01", "gra"}, false},
+		{"/订单 unpaid", "order", []string{"unpaid"}, false},
+		{"/支付 12345", "pay", []string{"12345"}, false},
 		{"/monitor 24ska01 gra rbx", "monitor", []string{"24ska01", "gra", "rbx"}, false},
 		{"/unknown foo", "unknown", []string{"foo"}, false},
 	}
@@ -67,7 +82,7 @@ func TestParseOrderArgs(t *testing.T) {
 }
 
 func TestIsKnownCommand(t *testing.T) {
-	if !IsKnownCommand("buy") || !IsKnownCommand("STOCK") || !IsKnownCommand("account") || !IsKnownCommand("reboot") {
+	if !IsKnownCommand("buy") || !IsKnownCommand("STOCK") || !IsKnownCommand("account") || !IsKnownCommand("reboot") || !IsKnownCommand("order") || !IsKnownCommand("pay") || !IsKnownCommand("订单") || !IsKnownCommand("支付") {
 		t.Fatal("expected known")
 	}
 	if IsKnownCommand("foo") {
@@ -96,6 +111,9 @@ func TestHelpMessageNonEmpty(t *testing.T) {
 	}
 	if !strings.Contains(HelpMessage(), "/reboot") {
 		t.Fatal("help should mention /reboot")
+	}
+	if !strings.Contains(HelpMessage(), "/order unpaid") || !strings.Contains(HelpMessage(), "/pay <订单号>") {
+		t.Fatal("help should mention order and pay")
 	}
 	if !strings.Contains(HelpMessage(), "KS-1") {
 		t.Fatal("help should mention server model lookup")
