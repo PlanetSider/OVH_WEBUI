@@ -66,8 +66,15 @@ type Config struct {
 	QQUserOpenIDs              []string          `json:"qqUserOpenIds,omitempty"`
 	QQGroupOpenIDs             []string          `json:"qqGroupOpenIds,omitempty"`
 	QQChannelTargets           []QQChannelTarget `json:"qqChannelTargets,omitempty"`
-	IAM                        string            `json:"iam"`
-	Zone                       string            `json:"zone"`
+	// 定时任务播报设置使用指针以区分旧配置中的“未提供”和显式关闭。
+	TaskBroadcastEnabled        *bool  `json:"taskBroadcastEnabled,omitempty"`
+	TaskBroadcastTime           string `json:"taskBroadcastTime,omitempty"`
+	TaskBroadcastQueueEnabled   *bool  `json:"taskBroadcastQueueEnabled,omitempty"`
+	TaskBroadcastMonitorEnabled *bool  `json:"taskBroadcastMonitorEnabled,omitempty"`
+	TaskBroadcastVPSEnabled     *bool  `json:"taskBroadcastVpsEnabled,omitempty"`
+	TaskBroadcastReportEnabled  *bool  `json:"taskBroadcastReportEnabled,omitempty"`
+	IAM                         string `json:"iam"`
+	Zone                        string `json:"zone"`
 }
 
 func notificationsEnabled(flag *bool) bool {
@@ -103,16 +110,22 @@ func DefaultConfig() Config {
 	trueValue := true
 	falseValue := false
 	return Config{
-		QueueAutoPayEnabled:        &falseValue,
-		MonitorAutoPayEnabled:      &falseValue,
-		Endpoint:                   "ovh-eu",
-		IAM:                        "go-ovh-ie",
-		Zone:                       "IE",
-		FeishuConnectionMode:       "long_connection",
-		TgNotificationsEnabled:     &trueValue,
-		FeishuNotificationsEnabled: &trueValue,
-		WeixinNotificationsEnabled: &trueValue,
-		QQNotificationsEnabled:     &trueValue,
+		QueueAutoPayEnabled:         &falseValue,
+		MonitorAutoPayEnabled:       &falseValue,
+		TaskBroadcastEnabled:        &falseValue,
+		TaskBroadcastTime:           "09:00",
+		TaskBroadcastQueueEnabled:   &falseValue,
+		TaskBroadcastMonitorEnabled: &falseValue,
+		TaskBroadcastVPSEnabled:     &falseValue,
+		TaskBroadcastReportEnabled:  &falseValue,
+		Endpoint:                    "ovh-eu",
+		IAM:                         "go-ovh-ie",
+		Zone:                        "IE",
+		FeishuConnectionMode:        "long_connection",
+		TgNotificationsEnabled:      &trueValue,
+		FeishuNotificationsEnabled:  &trueValue,
+		WeixinNotificationsEnabled:  &trueValue,
+		QQNotificationsEnabled:      &trueValue,
 	}
 }
 

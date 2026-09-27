@@ -99,6 +99,29 @@ func (s *Store) applyDefaults() {
 		v := true
 		s.cfg.QQNotificationsEnabled = &v
 	}
+	if s.cfg.TaskBroadcastEnabled == nil {
+		v := false
+		s.cfg.TaskBroadcastEnabled = &v
+	}
+	if s.cfg.TaskBroadcastQueueEnabled == nil {
+		v := false
+		s.cfg.TaskBroadcastQueueEnabled = &v
+	}
+	if s.cfg.TaskBroadcastMonitorEnabled == nil {
+		v := false
+		s.cfg.TaskBroadcastMonitorEnabled = &v
+	}
+	if s.cfg.TaskBroadcastVPSEnabled == nil {
+		v := false
+		s.cfg.TaskBroadcastVPSEnabled = &v
+	}
+	if s.cfg.TaskBroadcastReportEnabled == nil {
+		v := false
+		s.cfg.TaskBroadcastReportEnabled = &v
+	}
+	if s.cfg.TaskBroadcastTime == "" {
+		s.cfg.TaskBroadcastTime = "09:00"
+	}
 }
 
 func (s *Store) LoadError() error {

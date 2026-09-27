@@ -2,13 +2,25 @@ package monitor
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/ovh-webui/server/internal/app"
 )
 
-// Monitor 对应 Python: ServerMonitor 类
+type VPSBroadcastModel struct {
+	Name      string
+	Memory    string
+	Storage   string
+	Bandwidth string
+	Monthly   string
+	Install   string
+	Total     string
+}
+
+type VPSBroadcastModelResolver func(context.Context, string, string, string) (VPSBroadcastModel, error)
+
 type Monitor struct {
 	state *app.State
 
@@ -41,6 +53,9 @@ type Monitor struct {
 	messageUUIDCacheTTL time.Duration
 
 	cacheLock sync.Mutex
+
+	vpsBroadcastModelMu       sync.RWMutex
+	vpsBroadcastModelResolver VPSBroadcastModelResolver
 
 	// 通知渠道健康检查时间戳：loop 每 5 分钟验证一次。临时失效只记警告，
 	// 不停止监控；待发送事件保留到渠道恢复。
@@ -127,7 +142,28 @@ func New(state *app.State) *Monitor {
 	}
 }
 
-// Snapshot 返回订阅列表副本（JSON 用），永不返回 nil
+func (m *Monitor) SetVPSBroadcastModelResolver(resolver VPSBroadcastModelResolver) {
+	if m == nil {
+		return
+	}
+	m.vpsBroadcastModelMu.Lock()
+	m.vpsBroadcastModelResolver = resolver
+	m.vpsBroadcastModelMu.Unlock()
+}
+
+func (m *Monitor) resolveVPSBroadcastModel(ctx context.Context, accountID, subsidiary, planCode string) (VPSBroadcastModel, error) {
+	if m == nil {
+		return VPSBroadcastModel{}, fmt.Errorf("monitor 不可用")
+	}
+	m.vpsBroadcastModelMu.RLock()
+	resolver := m.vpsBroadcastModelResolver
+	m.vpsBroadcastModelMu.RUnlock()
+	if resolver == nil {
+		return VPSBroadcastModel{}, fmt.Errorf("VPS 型号目录解析器未配置")
+	}
+	return resolver(ctx, accountID, subsidiary, planCode)
+}
+
 func (m *Monitor) Snapshot() []*Subscription {
 	m.subsMu.Lock()
 	defer m.subsMu.Unlock()

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -102,6 +103,27 @@ func main() {
 
 	// 监控器
 	mon := monitor.New(state)
+	mon.SetVPSBroadcastModelResolver(func(ctx context.Context, accountID, subsidiary, planCode string) (monitor.VPSBroadcastModel, error) {
+		_ = ctx
+		subsidiary = vps.NormalizeSubsidiary(subsidiary)
+		if subsidiary == "" {
+			subsidiary = vps.DefaultSubsidiary(state, accountID)
+		}
+		models, err := vps.Models(state, subsidiary)
+		if err != nil {
+			return monitor.VPSBroadcastModel{}, err
+		}
+		for _, model := range models {
+			if strings.EqualFold(strings.TrimSpace(model.PlanCode), strings.TrimSpace(planCode)) {
+				monthly := strings.TrimSpace(model.Price)
+				if monthly != "" && !strings.Contains(monthly, "/月") {
+					monthly += "/月"
+				}
+				return monitor.VPSBroadcastModel{Name: model.Name, Monthly: monthly}, nil
+			}
+		}
+		return monitor.VPSBroadcastModel{}, fmt.Errorf("VPS 型号 %s 不在 %s 目录中", planCode, subsidiary)
+	})
 	// QQ 入站命令复用 Telegram/飞书的命令解析与业务分发；QQ 群聊由处理器限制为库存/价格。
 	qqClient.SetMessageHandler(func(ctx context.Context, event qqbot.MessageEvent) {
 		handlers.HandleQQMessage(ctx, state, mon, event, qqClient)
@@ -534,6 +556,12 @@ func main() {
 		vps.Start(state)
 		state.Logger.Info("自动启动VPS监控", "system")
 	}
+	state.GoBackground(func(ctx context.Context) {
+		mon.SendStartupTaskBroadcast(ctx)
+	})
+	state.GoBackground(func(ctx context.Context) {
+		mon.RunTaskBroadcastLoop(ctx)
+	})
 
 	state.Logger.Info("Server started", "system")
 	// 默认监听所有网卡（双栈 IPv4+IPv6）。容器 / Linux 生产请保持 LISTEN_HOST 为空。

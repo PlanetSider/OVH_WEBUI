@@ -1,6 +1,6 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Radar, Network, AlertCircle, ShoppingCart } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Radar, Network, AlertCircle, ShoppingCart, CalendarClock } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -53,6 +53,7 @@ const SECTIONS = [
   { id: "telegram", icon: Send, label: "Telegram" },
   { id: "feishu", icon: MessageSquare, label: "飞书" },
   { id: "qq", icon: MessageSquare, label: "QQ 机器人" },
+  { id: "broadcast", icon: CalendarClock, label: "定时播报" },
   { id: "cache", icon: Database, label: "缓存管理" },
 ] as const;
 
@@ -213,8 +214,10 @@ function SettingsPage() {
                 <FeishuSection form={form} set={set} onSave={onSave} saving={save.isPending} />
               ) : active === "qq" ? (
                 <QQSection form={form} set={set} onSave={onSave} saving={save.isPending} />
-              ) : (
-                <CacheSection />
+              ) : active === "broadcast" ? (
+                 <TaskBroadcastSection form={form} set={set} />
+               ) : (
+                 <CacheSection />
               )}
             </fieldset>
           </CardContent>
@@ -247,6 +250,54 @@ function Field({ label, hint, children }: {
       {children(id, labelId, hintId)}
       {hint && <p id={hintId} className="text-[11px] text-muted-foreground mt-1">{hint}</p>}
     </div>
+  );
+}
+
+function TaskBroadcastSection({
+  form,
+  set,
+}: {
+  form: SettingsConfig;
+  set: <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => void;
+}) {
+  const enabled = form.taskBroadcastEnabled === true;
+  const categories = [
+    ["taskBroadcastQueueEnabled", "抢购任务"],
+    ["taskBroadcastMonitorEnabled", "独服监控"],
+    ["taskBroadcastVpsEnabled", "VPS 监控"],
+    ["taskBroadcastReportEnabled", "抢购战报"],
+  ] as const;
+
+  return (
+    <Section title="定时播报">
+      <p className="text-xs text-muted-foreground">每日按北京时间播报一次。服务启动时的三类任务播报不受这里的开关影响。</p>
+      <label className="flex items-start gap-3 rounded-xl border border-border p-4 cursor-pointer">
+        <Checkbox checked={enabled} onCheckedChange={(value) => set("taskBroadcastEnabled", value === true)} />
+        <span>
+          <span className="block text-sm font-medium">启用每日定时播报</span>
+          <span className="block text-xs text-muted-foreground mt-1">关闭后不会发送每日任务内容或抢购战报。</span>
+        </span>
+      </label>
+      <Field label="每日播报时间" hint="使用北京时间，格式为 24 小时制。">
+        {(id) => (
+          <Input
+            id={id}
+            type="time"
+            value={form.taskBroadcastTime || "09:00"}
+            onChange={(event) => set("taskBroadcastTime", event.target.value)}
+            disabled={!enabled}
+          />
+        )}
+      </Field>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {categories.map(([key, label]) => (
+          <label key={key} className="flex items-center gap-3 rounded-xl border border-border p-3 cursor-pointer">
+            <Checkbox checked={form[key] === true} onCheckedChange={(value) => set(key, value === true)} />
+            <span className="text-sm">{label}</span>
+          </label>
+        ))}
+      </div>
+    </Section>
   );
 }
 

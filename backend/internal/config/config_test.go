@@ -9,6 +9,19 @@ import (
 	"github.com/ovh-webui/server/internal/types"
 )
 
+func TestDefaultConfigTaskBroadcastSettings(t *testing.T) {
+	cfg := types.DefaultConfig()
+	if cfg.TaskBroadcastEnabled == nil || *cfg.TaskBroadcastEnabled {
+		t.Fatal("task broadcast should be disabled by default")
+	}
+	if cfg.TaskBroadcastTime != "09:00" {
+		t.Fatalf("task broadcast time = %q, want 09:00", cfg.TaskBroadcastTime)
+	}
+	if cfg.TaskBroadcastQueueEnabled == nil || *cfg.TaskBroadcastQueueEnabled || cfg.TaskBroadcastMonitorEnabled == nil || *cfg.TaskBroadcastMonitorEnabled || cfg.TaskBroadcastVPSEnabled == nil || *cfg.TaskBroadcastVPSEnabled || cfg.TaskBroadcastReportEnabled == nil || *cfg.TaskBroadcastReportEnabled {
+		t.Fatal("task broadcast categories should be disabled by default")
+	}
+}
+
 func TestNewWithCipherMigratesLegacyConfigWithoutExposingPlaintext(t *testing.T) {
 	database, err := db.Open(t.TempDir())
 	if err != nil {

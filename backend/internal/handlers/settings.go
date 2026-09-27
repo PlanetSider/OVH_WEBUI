@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -44,6 +45,22 @@ func toSettingsResponse(cfg types.Config) settingsResponse {
 	return response
 }
 
+func normalizeTaskBroadcastTime(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) != 5 || value[2] != ':' || value[0] < '0' || value[0] > '9' || value[1] < '0' || value[1] > '9' || value[3] < '0' || value[3] > '9' || value[4] < '0' || value[4] > '9' {
+		return "", fmt.Errorf("每日播报时间必须为 HH:mm")
+	}
+	hour := int(value[0]-'0')*10 + int(value[1]-'0')
+	minute := int(value[3]-'0')*10 + int(value[4]-'0')
+	if hour > 23 || minute > 59 {
+		return "", fmt.Errorf("每日播报时间超出范围")
+	}
+	return value, nil
+}
+
 func normalizeQQIDs(values []string) []string {
 	if values == nil {
 		return nil
@@ -85,7 +102,35 @@ func normalizeQQChannelTargets(values []types.QQChannelTarget) []types.QQChannel
 	return out
 }
 
-// GetSettings GET /api/settings
+func applyTaskBroadcastPatch(cfg *types.Config, patch types.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("配置不可用")
+	}
+	if patch.TaskBroadcastEnabled != nil {
+		cfg.TaskBroadcastEnabled = patch.TaskBroadcastEnabled
+	}
+	if patch.TaskBroadcastQueueEnabled != nil {
+		cfg.TaskBroadcastQueueEnabled = patch.TaskBroadcastQueueEnabled
+	}
+	if patch.TaskBroadcastMonitorEnabled != nil {
+		cfg.TaskBroadcastMonitorEnabled = patch.TaskBroadcastMonitorEnabled
+	}
+	if patch.TaskBroadcastVPSEnabled != nil {
+		cfg.TaskBroadcastVPSEnabled = patch.TaskBroadcastVPSEnabled
+	}
+	if patch.TaskBroadcastReportEnabled != nil {
+		cfg.TaskBroadcastReportEnabled = patch.TaskBroadcastReportEnabled
+	}
+	if strings.TrimSpace(patch.TaskBroadcastTime) != "" {
+		timeValue, err := normalizeTaskBroadcastTime(patch.TaskBroadcastTime)
+		if err != nil {
+			return err
+		}
+		cfg.TaskBroadcastTime = timeValue
+	}
+	return nil
+}
+
 func GetSettings(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, toSettingsResponse(state.Config.Get()))
@@ -104,6 +149,10 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 
 		prev := state.Config.Get()
 		newCfg := prev
+		if err := applyTaskBroadcastPatch(&newCfg, patch); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			return
+		}
 		if patch.QueueAutoPayEnabled != nil {
 			newCfg.QueueAutoPayEnabled = patch.QueueAutoPayEnabled
 		}

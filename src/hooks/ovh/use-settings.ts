@@ -33,6 +33,12 @@ export interface SettingsConfig {
   feishuEncryptKeyConfigured?: boolean;
   queueAutoPayEnabled?: boolean;
   monitorAutoPayEnabled?: boolean;
+  taskBroadcastEnabled?: boolean;
+  taskBroadcastTime?: string;
+  taskBroadcastQueueEnabled?: boolean;
+  taskBroadcastMonitorEnabled?: boolean;
+  taskBroadcastVpsEnabled?: boolean;
+  taskBroadcastReportEnabled?: boolean;
   qqAppId?: string;
   qqAppSecret?: string;
   qqAppSecretConfigured?: boolean;

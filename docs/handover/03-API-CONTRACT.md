@@ -51,7 +51,12 @@
 - 独服监控（/api/monitor/*）支持有货变化后的自动下单；VPS 监控（/api/vps-monitor/*）仅发送库存通知，不支持自动下单。
 - 创建或更新 VPS 订阅不接受 autoOrder、quantity、autoOrderAccountId 字段；旧数据库中的 auto_order_account_id 仅为兼容保留列，不再使用。
 
-### 飞书
+### 定时任务播报
+
+- `GET/POST /api/settings` 支持 `taskBroadcastEnabled`、`taskBroadcastTime`（北京时间 `HH:mm`）、`taskBroadcastQueueEnabled`、`taskBroadcastMonitorEnabled`、`taskBroadcastVpsEnabled` 和 `taskBroadcastReportEnabled`。
+- 定时总开关默认关闭；四个内容开关分别控制抢购任务、独服监控、VPS 监控和按账号统计的“抢购战报”。未提供字段的部分更新保留旧值，时间非法返回 `400`。
+- 每次服务启动都会独立播报当前三类运行任务一次，不受定时总开关和四个内容开关影响；启动播报不包含“抢购战报”。每日定时播报按北京时间执行，战报统计最近 24 小时成功下单并按 OVH 账号列出未支付/已支付订单数和金额。
+- 任务消息分别发送，标题后只有一个空行；`型号`、`Plan Code`、`月费`、`安装费`、`总价` 为独立字段，后三项紧跟在 `数据中心` 后，`自动付款` 为最后一行。价格使用含税公开 catalog 拆分，缺失时显示 `暂不可用`。
 
 - `POST /api/feishu/events`：事件订阅与绑定账户
 - `POST /api/feishu/card-action`：交互卡片回调
