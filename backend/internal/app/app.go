@@ -144,6 +144,16 @@ type ProxyGuardAction struct {
 type ProxyGuardMonitorMutator func(accountID string, enabled bool) (int, error)
 type ProxyGuardNotificationHandler func(ProxyGuardAction)
 
+// QQNotifier 是业务层使用的 QQ Bot 最小能力。普通通知只到用户目标，
+// 监控通知会额外到群聊和频道目标。
+type QQNotifier interface {
+	Configured() bool
+	SendDefault(string) bool
+	SendDefaultWithContext(context.Context, string) bool
+	SendMonitor(string) bool
+	SendMonitorWithContext(context.Context, string) bool
+}
+
 // State 聚合所有共享运行状态。
 type State struct {
 	Paths       storage.Paths
@@ -200,9 +210,8 @@ type State struct {
 	// 保存设置后会调用 Reconfigure，使长连接配置立即生效。
 	FeishuConnection FeishuConnectionController
 
-	// Weixin 由 iLink 适配器在启动时注入。业务层只依赖最小发送能力，
-	// 避免 app/monitor/purchase 与具体协议实现形成循环依赖。
-	Weixin WeixinNotifier
+	// QQ 由启动层注入，业务层只依赖消息路由最小接口。
+	QQ QQNotifier
 
 	// 串行化全表 Replace 落盘，避免并发 SaveHistory/SaveQueue 快照互相覆盖丢数据
 	accountsPersistMu sync.Mutex
@@ -273,12 +282,6 @@ var (
 	// 该任务不得再次自动 checkout，必须先人工核对 OVH 侧状态。
 	ErrCheckoutAttemptExists = db.ErrCheckoutAttemptExists
 )
-
-// WeixinNotifier 是微信 iLink 通知适配器暴露给业务层的最小接口。
-type WeixinNotifier interface {
-	Configured() bool
-	SendDefault(message string) bool
-}
 
 // FeishuConnectionController 是飞书长连接管理器的最小生命周期接口。
 type FeishuConnectionController interface {
@@ -866,11 +869,10 @@ func (s *State) recoveryNotificationChannels() []string {
 			}
 		}
 	}
-	if cfg.IsWeixinNotificationsEnabled() {
-		var count int
-		if err := s.DB.Get(&count, `SELECT COUNT(1) FROM weixin_credentials WHERE id = 1 AND TRIM(account_id) <> '' AND TRIM(bot_token) <> '' AND TRIM(base_url) <> '' AND TRIM(user_id) <> ''`); err == nil && count > 0 {
-			channels = append(channels, "weixin")
-		}
+	if cfg.IsQQNotificationsEnabled() && strings.TrimSpace(cfg.QQAppID) != "" &&
+		strings.TrimSpace(cfg.QQAppSecret) != "" &&
+		(len(cfg.QQUserOpenIDs) > 0 || len(cfg.QQGroupOpenIDs) > 0 || len(cfg.QQChannelTargets) > 0) {
+		channels = append(channels, "qq")
 	}
 	return channels
 }

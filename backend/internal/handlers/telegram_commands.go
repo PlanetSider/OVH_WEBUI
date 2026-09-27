@@ -23,9 +23,6 @@ func dispatchBotCommand(state *app.State, mon *monitor.Monitor, cmd *telegram.Bo
 	}
 	switch cmd.Name {
 	case "start", "help":
-		if channel == "weixin" {
-			return weixinHelpMessage()
-		}
 		return telegram.HelpMessage()
 	case "account":
 		return accountCommandText(state, cmd.Args, channel)
@@ -40,9 +37,6 @@ func dispatchBotCommand(state *app.State, mon *monitor.Monitor, cmd *telegram.Bo
 	case "price":
 		return cmdPrice(state, cmd.Args, accountID)
 	default:
-		if channel == "weixin" {
-			return fmt.Sprintf("❌ 未知命令: /%s%c%c%s", cmd.Name, 10, 10, weixinHelpMessage())
-		}
 		return "❌ 未知命令: /" + cmd.Name + "\n\n" + telegram.HelpMessage()
 	}
 }
@@ -176,10 +170,6 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID
 		if _, ok := monitor.FeishuDefaultBinding(state); !ok {
 			return "❌ 尚未绑定全局飞书接收人"
 		}
-	} else if channel == "weixin" {
-		if state.Weixin == nil || !state.Weixin.Configured() {
-			return "❌ 微信 iLink Bot 尚未连接或未绑定接收人"
-		}
 	} else if ok, reason := telegram.VerifyConfig(state); !ok {
 		return "❌ Telegram 配置无效: " + reason
 	}
@@ -228,8 +218,6 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID
 	notifyChannel := "Telegram"
 	if channel == "feishu" {
 		notifyChannel = "飞书"
-	} else if channel == "weixin" {
-		notifyChannel = "微信"
 	}
 	return fmt.Sprintf("✅ 已添加监控\n\n型号: %s\n机房: %s\n有货时将通过 %s 通知。", namePart, dcText, notifyChannel)
 }

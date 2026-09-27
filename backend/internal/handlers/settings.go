@@ -23,6 +23,7 @@ type settingsResponse struct {
 	FeishuAppSecretConfigured    bool `json:"feishuAppSecretConfigured"`
 	FeishuVerificationConfigured bool `json:"feishuVerificationTokenConfigured"`
 	FeishuEncryptConfigured      bool `json:"feishuEncryptKeyConfigured"`
+	QQAppSecretConfigured        bool `json:"qqAppSecretConfigured"`
 }
 
 func toSettingsResponse(cfg types.Config) settingsResponse {
@@ -34,11 +35,54 @@ func toSettingsResponse(cfg types.Config) settingsResponse {
 		FeishuAppSecretConfigured:    cfg.FeishuAppSecret != "",
 		FeishuVerificationConfigured: cfg.FeishuVerificationToken != "",
 		FeishuEncryptConfigured:      cfg.FeishuEncryptKey != "",
+		QQAppSecretConfigured:        cfg.QQAppSecret != "",
 	}
 	response.AppKey, response.AppSecret, response.ConsumerKey = "", "", ""
 	response.TgToken, response.TgChatID, response.TgWebhookSecret = "", "", ""
 	response.FeishuAppSecret, response.FeishuVerificationToken, response.FeishuEncryptKey = "", "", ""
+	response.QQAppSecret = ""
 	return response
+}
+
+func normalizeQQIDs(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeQQChannelTargets(values []types.QQChannelTarget) []types.QQChannelTarget {
+	if values == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]types.QQChannelTarget, 0, len(values))
+	for _, value := range values {
+		value.GuildID = strings.TrimSpace(value.GuildID)
+		value.ChannelID = strings.TrimSpace(value.ChannelID)
+		if value.ChannelID == "" {
+			continue
+		}
+		if _, exists := seen[value.ChannelID]; exists {
+			continue
+		}
+		seen[value.ChannelID] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 // GetSettings GET /api/settings
@@ -74,6 +118,11 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		patch.FeishuConnectionMode = strings.ToLower(strings.TrimSpace(patch.FeishuConnectionMode))
 		patch.FeishuVerificationToken = strings.TrimSpace(patch.FeishuVerificationToken)
 		patch.FeishuEncryptKey = strings.TrimSpace(patch.FeishuEncryptKey)
+		patch.QQAppID = strings.TrimSpace(patch.QQAppID)
+		patch.QQAppSecret = strings.TrimSpace(patch.QQAppSecret)
+		patch.QQUserOpenIDs = normalizeQQIDs(patch.QQUserOpenIDs)
+		patch.QQGroupOpenIDs = normalizeQQIDs(patch.QQGroupOpenIDs)
+		patch.QQChannelTargets = normalizeQQChannelTargets(patch.QQChannelTargets)
 		patch.Endpoint = strings.TrimSpace(patch.Endpoint)
 		patch.Zone = strings.TrimSpace(patch.Zone)
 		patch.IAM = strings.TrimSpace(patch.IAM)
@@ -124,6 +173,24 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		}
 		if patch.WeixinNotificationsEnabled != nil {
 			newCfg.WeixinNotificationsEnabled = patch.WeixinNotificationsEnabled
+		}
+		if patch.QQAppID != "" {
+			newCfg.QQAppID = patch.QQAppID
+		}
+		if patch.QQAppSecret != "" {
+			newCfg.QQAppSecret = patch.QQAppSecret
+		}
+		if patch.QQNotificationsEnabled != nil {
+			newCfg.QQNotificationsEnabled = patch.QQNotificationsEnabled
+		}
+		if patch.QQUserOpenIDs != nil {
+			newCfg.QQUserOpenIDs = patch.QQUserOpenIDs
+		}
+		if patch.QQGroupOpenIDs != nil {
+			newCfg.QQGroupOpenIDs = patch.QQGroupOpenIDs
+		}
+		if patch.QQChannelTargets != nil {
+			newCfg.QQChannelTargets = patch.QQChannelTargets
 		}
 		// App ID + App Secret 即自动启用飞书发送能力；回调安全项单独校验。
 		newCfg.FeishuEnabled = newCfg.FeishuAppID != "" && newCfg.FeishuAppSecret != ""

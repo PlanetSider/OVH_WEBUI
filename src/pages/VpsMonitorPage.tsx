@@ -460,10 +460,10 @@ function AddVPSDialog({
                   Telegram 通知未配置或无效
                 </div>
                 <div className="text-amber-800/80 dark:text-amber-200/80 mt-0.5 break-words">
-                  {tgVerify.data?.reason || "如已配置飞书或微信，可继续使用 VPS 库存通知"}
+                  {tgVerify.data?.reason || "如已配置飞书或 QQ，可继续使用 VPS 库存通知"}
                 </div>
                 <div className="text-amber-800/80 dark:text-amber-200/80 mt-0.5">
-                  若飞书或微信已配置有效，仍可直接提交。
+                  若飞书或 QQ 已配置有效，仍可直接提交。
                 </div>
                 <Link
                   to="/settings"

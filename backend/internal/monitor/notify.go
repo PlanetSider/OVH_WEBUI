@@ -240,8 +240,8 @@ func (m *Monitor) SendAvailabilityAlertGroupedWithContext(ctx context.Context, p
 	if notificationChannelSelected(expected, NotificationChannelFeishu) {
 		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, "🎉 服务器上架通知", msg.String(), "green", feishuActions)
 	}
-	if notificationChannelSelected(expected, NotificationChannelWeixin) {
-		delivered[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg.String()+"\n\n微信下单：/buy "+planCode+" <机房代码>")
+	if notificationChannelSelected(expected, NotificationChannelQQ) {
+		delivered[NotificationChannelQQ] = SendQQMonitorNotificationWithContext(ctx, m.state, msg.String())
 	}
 
 	configDesc := ""
@@ -317,8 +317,8 @@ func (m *Monitor) SendUnavailableAlertGroupedWithContext(ctx context.Context, pl
 	if notificationChannelSelected(expected, NotificationChannelFeishu) {
 		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, "📦 服务器下架通知", msg.String(), "grey", nil)
 	}
-	if notificationChannelSelected(expected, NotificationChannelWeixin) {
-		delivered[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg.String())
+	if notificationChannelSelected(expected, NotificationChannelQQ) {
+		delivered[NotificationChannelQQ] = SendQQMonitorNotificationWithContext(ctx, m.state, msg.String())
 	}
 
 	configDesc := ""
@@ -505,8 +505,8 @@ func (m *Monitor) SendAvailabilityAlertWithContext(ctx context.Context, planCode
 	if notificationChannelSelected(expected, NotificationChannelFeishu) {
 		delivered[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, title, msg.String(), template, nil)
 	}
-	if notificationChannelSelected(expected, NotificationChannelWeixin) {
-		delivered[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg.String())
+	if notificationChannelSelected(expected, NotificationChannelQQ) {
+		delivered[NotificationChannelQQ] = SendQQMonitorNotificationWithContext(ctx, m.state, msg.String())
 	}
 	tgOK := false
 	if notificationChannelSelected(expected, NotificationChannelTelegram) {
@@ -553,8 +553,8 @@ func (m *Monitor) SendNewServerAlertWithContext(ctx context.Context, server map[
 	if notificationChannelSelected(expected, NotificationChannelTelegram) {
 		delivered[NotificationChannelTelegram] = telegram.SendMessageWithContext(ctx, m.state, msg, nil)
 	}
-	if notificationChannelSelected(expected, NotificationChannelWeixin) {
-		delivered[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
+	if notificationChannelSelected(expected, NotificationChannelQQ) {
+		delivered[NotificationChannelQQ] = SendQQNotificationWithContext(ctx, m.state, msg)
 	}
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
 	return delivered

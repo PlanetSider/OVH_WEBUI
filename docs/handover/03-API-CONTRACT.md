@@ -47,7 +47,7 @@
 
 - `/api/monitor/*` 独服
 - `/api/vps-monitor/*` VPS
-- 监控通知支持 Telegram、飞书或微信；飞书可用性通知按内存/存储配置聚合并提供卡片入队按钮，微信使用文本命令下单
+- 监控通知支持 Telegram、飞书或 QQ；飞书可用性通知按内存/存储配置聚合并提供卡片入队按钮。QQ 用户目标接收完整通知；群聊和频道目标只接收独服/VPS 上架、下架监控提醒。
 - 独服监控（/api/monitor/*）支持有货变化后的自动下单；VPS 监控（/api/vps-monitor/*）仅发送库存通知，不支持自动下单。
 - 创建或更新 VPS 订阅不接受 autoOrder、quantity、autoOrderAccountId 字段；旧数据库中的 auto_order_account_id 仅为兼容保留列，不再使用。
 
@@ -59,15 +59,14 @@
 - `POST /api/feishu/test-card`
 - 基础通知只需 `feishuAppId` 与 `feishuAppSecret`；HTTP 事件/卡片回调必须配置 `feishuEncryptKey`，可额外配置 `feishuVerificationToken` 做身份校验
 
-### 微信 iLink Bot
+### QQ Bot v2
 
-- `POST /api/weixin/login/start`：创建 8 分钟扫码会话，返回 `sessionId` 和 `qrContent`
-- `GET /api/weixin/login/:sessionId`：查询 `wait|scanned|confirmed|expired|error`
-- `GET /api/weixin/status`：连接、长轮询、Bot ID 和绑定用户 ID；不返回 Token
-- `POST /api/weixin/test`：向扫码绑定用户发送测试文本
-- `DELETE /api/weixin/config`：解除绑定并清除本地 Token、游标、上下文与去重状态
-- 所有微信管理接口都要求 `X-API-Key`；入站消息由后端直接长轮询 iLink，不存在公网回调白名单
-- 首版仅接收绑定用户的私聊文本；群聊和媒体不在契约内
+- `GET/POST /api/settings`：配置 `qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds`、`qqChannelTargets`；读取响应只返回 `qqAppSecretConfigured`，不返回 AppSecret 或 access token
+- `POST /api/qq/test`：向所有已配置 QQ 目标发送测试消息；要求 `X-API-Key`
+- Token：后端调用 `POST https://api.bot.qq.com/app/getAppAccessToken`，使用 `Authorization: QQBot <access_token>`；token 只在服务端内存缓存并在过期前 60 秒刷新
+- 发送端点：用户 `/v2/users/{user_openid}/messages`、群聊 `/v2/groups/{group_openid}/messages` 使用 `{ "msg_type": 0, "content": "..." }`；频道 `/channels/{channel_id}/messages` 使用 `content` 字段。频道发送前后端会调用 `/gateway` 并完成 `QQBot <access_token>` Identify、READY 和心跳保持在线，这是 QQ 官方频道主动消息接口的前置条件
+- 路由：普通通知只发用户；独服/VPS 上架和下架监控通知发用户、群聊和频道。仅配置群聊/频道时普通通知视为策略性抑制，不进入无限重试
+- 当前版本手动填写 AppID/AppSecret，不提供二维码扫描或自动回填。微信登录、命令和通知 API 已退役；微信 SQLite 历史表和数据保留用于迁移/历史兼容
 
 ### 服务器控制
 

@@ -27,6 +27,12 @@ func ParseTS(value string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// QQChannelTarget 是 QQ 机器人频道目标。GuildID 仅用于管理端标识；发送 API 使用 ChannelID。
+type QQChannelTarget struct {
+	GuildID   string `json:"guildId,omitempty"`
+	ChannelID string `json:"channelId"`
+}
+
 // Config 对应 Python 全局 config dict
 type Config struct {
 	AppKey      string `json:"appKey"`
@@ -47,12 +53,18 @@ type Config struct {
 	FeishuDomain               string `json:"feishuDomain,omitempty"`
 	// webhook is the backwards-compatible default; long_connection uses the
 	// official Feishu WebSocket client for events and card callbacks.
-	FeishuConnectionMode       string `json:"feishuConnectionMode,omitempty"`
-	FeishuVerificationToken    string `json:"feishuVerificationToken,omitempty"`
-	FeishuEncryptKey           string `json:"feishuEncryptKey,omitempty"`
-	WeixinNotificationsEnabled *bool  `json:"weixinNotificationsEnabled,omitempty"`
-	IAM                        string `json:"iam"`
-	Zone                       string `json:"zone"`
+	FeishuConnectionMode       string            `json:"feishuConnectionMode,omitempty"`
+	FeishuVerificationToken    string            `json:"feishuVerificationToken,omitempty"`
+	FeishuEncryptKey           string            `json:"feishuEncryptKey,omitempty"`
+	WeixinNotificationsEnabled *bool             `json:"weixinNotificationsEnabled,omitempty"`
+	QQAppID                    string            `json:"qqAppId,omitempty"`
+	QQAppSecret                string            `json:"qqAppSecret,omitempty"`
+	QQNotificationsEnabled     *bool             `json:"qqNotificationsEnabled,omitempty"`
+	QQUserOpenIDs              []string          `json:"qqUserOpenIds,omitempty"`
+	QQGroupOpenIDs             []string          `json:"qqGroupOpenIds,omitempty"`
+	QQChannelTargets           []QQChannelTarget `json:"qqChannelTargets,omitempty"`
+	IAM                        string            `json:"iam"`
+	Zone                       string            `json:"zone"`
 }
 
 func notificationsEnabled(flag *bool) bool {
@@ -69,6 +81,10 @@ func (c Config) IsFeishuNotificationsEnabled() bool {
 
 func (c Config) IsWeixinNotificationsEnabled() bool {
 	return notificationsEnabled(c.WeixinNotificationsEnabled)
+}
+
+func (c Config) IsQQNotificationsEnabled() bool {
+	return notificationsEnabled(c.QQNotificationsEnabled)
 }
 
 // FeishuBinding 记录全局飞书通知接收人；AccountID 固定为 default。
@@ -90,6 +106,7 @@ func DefaultConfig() Config {
 		TgNotificationsEnabled:     &trueValue,
 		FeishuNotificationsEnabled: &trueValue,
 		WeixinNotificationsEnabled: &trueValue,
+		QQNotificationsEnabled:     &trueValue,
 	}
 }
 

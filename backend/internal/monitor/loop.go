@@ -44,9 +44,9 @@ func (m *Monitor) checkNotificationsWithContext(ctx context.Context) {
 	m.tgCheckMu.Lock()
 	m.lastTGCheck = time.Now()
 	m.tgCheckMu.Unlock()
-	weixinOK := m.state.Config.Get().IsWeixinNotificationsEnabled() && m.state.Weixin != nil && m.state.Weixin.Configured()
-	if !tgOK && !feishuOK && !weixinOK {
-		m.state.Logger.Warn("Telegram、飞书与微信通知当前均失效，监控继续运行并保留待通知事件: "+tgReason, "monitor")
+	qqOK := m.state.Config.Get().IsQQNotificationsEnabled() && m.state.QQ != nil && m.state.QQ.Configured()
+	if !tgOK && !feishuOK && !qqOK {
+		m.state.Logger.Warn("Telegram、飞书与 QQ 通知当前均失效，监控继续运行并保留待通知事件: "+tgReason, "monitor")
 	}
 }
 

@@ -1,8 +1,10 @@
 # 统一消息渠道账户状态与通知健康度
 
 - 日期：2026-09-24
-- 状态：设计已确认，待实施
-- 范围：Telegram、飞书、微信消息渠道；WebUI 只读展示；不改变服务器控制/VPS 资源级账户选择
+- 状态：已被 ADR-007（QQ Bot v2 通道替换）取代；本文仅保留历史设计记录
+- 原范围：Telegram、飞书、微信消息渠道；WebUI 只读展示；不改变服务器控制/VPS 资源级账户选择
+
+> 本文记录的是微信运行时仍存在时的历史方案，未实施部分不得据此恢复微信登录、轮询、命令或通知代码。当前 QQ 通道的配置、路由和运行时边界以 `docs/handover/03-API-CONTRACT.md`、`docs/handover/01-ARCHITECTURE.md` 和 `docs/handover/DECISIONS.md` 为准。
 
 ## Goal
 

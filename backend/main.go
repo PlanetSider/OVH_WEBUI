@@ -25,6 +25,7 @@ import (
 	"github.com/ovh-webui/server/internal/logger"
 	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/purchase"
+	"github.com/ovh-webui/server/internal/qqbot"
 	"github.com/ovh-webui/server/internal/secret"
 	"github.com/ovh-webui/server/internal/storage"
 	"github.com/ovh-webui/server/internal/vps"
@@ -74,6 +75,7 @@ func main() {
 		os.Exit(1)
 	}
 	state := app.NewState(paths, cfgStore, lg, sqliteDB)
+	state.QQ = qqbot.New(state.Config.Get, nil, qqbot.DefaultBaseURL)
 	state.APIKey = strings.TrimSpace(os.Getenv("API_SECRET_KEY"))
 	if err := auth.ValidateAPIKeyStrength(state.APIKey); err != nil {
 		console.Error("API_SECRET_KEY is invalid", "error", err)
@@ -128,12 +130,6 @@ func main() {
 	// ReplaceMonitorSubscriptions 会先 DELETE 全表；若加载失败/空读却再写回，会把线上订阅抹掉。
 	console.Info("监控检查间隔已强制设置为: 5秒（全局固定值）")
 
-	// 微信 iLink Bot：使用 Hermes 原生协议的 Go 实现，无需外部 Python 服务或公网 Webhook。
-	weixinManager := weixin.NewManager(state, func(senderID, text string) string {
-		return handlers.HandleWeixinText(state, mon, senderID, text)
-	})
-	state.Weixin = weixinManager
-	weixinManager.Start()
 	// 通知 outbox 使用独立后台循环，即使没有任何监控订阅，失败的抢购成功/
 	// 新服务器通知也会持续重试。发送仍由 State 全局互斥，避免与即时刷送重复。
 	outboxCtx, cancelOutbox := context.WithCancel(context.Background())
@@ -245,13 +241,8 @@ func main() {
 		api.POST("/telegram/quick-order", handlers.TelegramQuickOrder(state, mon))
 		api.POST("/telegram/register-commands", handlers.RegisterTelegramCommands(state))
 
-		// 微信 iLink Bot（全部由 WebUI 调用，继续要求 X-API-Key）
-		api.POST("/weixin/login/start", handlers.StartWeixinLogin(weixinManager))
-		api.GET("/weixin/login/:sessionId", handlers.PollWeixinLogin(weixinManager))
-		api.GET("/weixin/status", handlers.GetWeixinStatus(weixinManager))
-		api.POST("/weixin/test", handlers.TestWeixin(weixinManager))
-		api.POST("/weixin/quick-order", handlers.WeixinQuickOrder(state, mon))
-		api.DELETE("/weixin/config", handlers.DisconnectWeixin(weixinManager))
+		// QQ Bot v2（手填 AppID/AppSecret，继续要求 X-API-Key）
+		api.POST("/qq/test", handlers.TestQQ(state))
 
 		// Servers / availability / cache
 		api.GET("/servers", handlers.GetServers(state, mon))
@@ -579,8 +570,10 @@ func main() {
 	cancelOutbox()
 	cancelOrderStatus()
 	stopHourlyDataRefresh()
-	weixinManager.Stop()
 	feishuConnection.Stop()
+	if closer, ok := state.QQ.(interface{ Close() }); ok {
+		closer.Close()
+	}
 
 	// 停监控循环（若实现了 Stop）
 	if mon != nil {

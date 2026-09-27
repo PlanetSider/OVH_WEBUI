@@ -205,7 +205,7 @@ func (db *DB) QuarantineNotification(id, reason string) (bool, error) {
 }
 
 // AssignNotificationChannels 把尚未确定接收端的事件原子转换为普通待发送事件。
-// 进程在抢购成功恢复后可能还没有完成飞书/微信初始化，因此必须先持久化
+// 进程在抢购成功恢复后可能还没有完成飞书/QQ 初始化，因此必须先持久化
 // 事件，等至少一个接收端真正可用时再冻结目标渠道。
 func (db *DB) AssignNotificationChannels(id string, channels []string) (bool, error) {
 	normalized, err := normalizeOutboxEntry(types.NotificationOutboxEntry{EventKey: "assign", Kind: "assign", Channels: channels})

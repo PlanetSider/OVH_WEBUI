@@ -319,8 +319,8 @@ func sendVPSOrderNotification(state *app.State, message string) {
 			_ = telegram.SendMessage(state, message, nil)
 		case monitor.NotificationChannelFeishu:
 			_ = monitor.FeishuSendDefaultNotification(state, "VPS 自动下单", message, "blue", nil)
-		case monitor.NotificationChannelWeixin:
-			_ = monitor.SendWeixinNotification(state, message)
+		case monitor.NotificationChannelQQ:
+			_ = monitor.SendQQNotification(state, message)
 		}
 	}
 }

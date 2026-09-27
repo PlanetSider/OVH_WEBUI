@@ -1,6 +1,6 @@
 # OVH_WEBUI
 
-OVH 独服与 VPS 的自托管控制台，提供服务器目录、可用性监控、抢购队列、多账户管理、已购服务器控制，以及 Telegram / 飞书通知和交互卡片。
+OVH 独服与 VPS 的自托管控制台，提供服务器目录、可用性监控、抢购队列、多账户管理、已购服务器控制，以及 Telegram / 飞书 / QQ Bot v2 通知和交互卡片。
 
 项目采用 **一个前后端一体镜像**：React 前端构建后嵌入 Go 二进制，由同一个应用容器提供页面和 API。HTTPS 可按需交给已有的反向代理处理。
 
@@ -10,10 +10,10 @@ OVH 独服与 VPS 的自托管控制台，提供服务器目录、可用性监�
 - 抢购队列、快速下单、自动重试、历史记录
 - 独服补货监控和 VPS 监控
 - Telegram 通知、Webhook、文本下单和一键入队
-- Telegram / 飞书 / 微信机器人均支持库存、价格和机房信息查询；价格展示使用 catalog 数据
+- Telegram、飞书与 QQ Bot v2 通知；用户目标接收完整通知，群聊/频道目标仅接收独服和 VPS 上下架监控提醒
 - 飞书通知、交互卡片、可用性配置聚合和一键入队
 - 飞书回调要求 Encrypt Key 进行请求签名校验；Verification Token 可作为额外身份校验
-- 微信 iLink Bot 扫码接入、私聊命令和主动通知（无需公网 Webhook）
+- QQ Bot v2 使用手填 AppID/AppSecret；支持用户 OpenID、群聊 OpenID 和频道 ID 目标
 - 多 OVH 账户、默认账户切换、账户凭据验证和账户状态查询
 - 独服电源、重装、硬件、IPMI、网络、IP、防护、续费等控制
 - VPS 电源、快照、重装和任务控制
@@ -174,15 +174,19 @@ https://你的域名/api/feishu/card-action
 
 飞书私聊同样支持 `/reboot` 交互卡片；服务器按钮会显示数据中心国旗、三字母机房代码和自定义名称。
 
-### 微信 iLink Bot
+### QQ Bot v2
 
-在设置页进入「微信」，点击生成二维码并使用微信扫码确认。系统会通过 iLink Bot API 长轮询收取私聊消息，无需公网 Webhook，也不需要手动填写 Bot Token。
+在设置页进入「QQ 机器人」，手动填写 QQ 开放平台的 `AppID` 和 `AppSecret`，再按目标类型填写 ID：
 
-- 扫码会创建独立的 @im.bot 身份，不会接管普通个人微信号。
-- 扫码者会成为唯一绑定用户，可使用 /stock、/price、/monitor、/queue、/buy、/account 和自由文本下单。
-- 独服/VPS 补货、抢购成功等主动通知会发送给绑定用户。
-- 首版只保证私聊文本；普通微信群、图片、语音和文件暂不支持。
-- iLink 凭据、同步游标和 context_token 只保存在 SQLite 中。
+| 目标 | 字段 | 通知范围 |
+|------|------|----------|
+| 用户 | `qqUserOpenIds` | 完整通知，包括库存、订单、目录和监控 |
+| 群聊 | `qqGroupOpenIds` | 仅独服/VPS 监控上架、下架提醒 |
+| 频道 | `qqChannelTargets` 的 `channelId`（可选 `guildId`） | 仅独服/VPS 监控上架、下架提醒 |
+
+后端通过 `POST /api/qq/test` 发送配置测试消息，所有 QQ 管理接口均要求 `X-API-Key`。`AppSecret` 由现有 AES-GCM 配置加密链路保存，设置 API 只返回 `qqAppSecretConfigured`，不会返回密钥或 access token。当前版本不提供二维码扫描或自动回填参数；频道发送使用 QQ 官方 `/channels/{channel_id}/messages` 接口，客户端会按官方要求先建立 Gateway WebSocket、完成 Identify/READY 并维持心跳，同时受机器人权限、在线状态和频控限制。
+
+微信运行时登录、命令和下单入口已退役；历史微信 SQLite 表和数据仍保留，仅用于迁移/历史兼容，不作为当前通知通道。
 
 ## 本地开发
 
@@ -261,13 +265,13 @@ docker build -f Dockerfile -t ovh-webui:local .
 |------|------|
 | 网关 API 密钥 | `.env` 的 `API_SECRET_KEY` |
 | OVH 账户凭据 | SQLite `/data`，通过 WebUI 添加 |
-| 队列、历史、监控订阅、微信 iLink 凭据 | SQLite `/data` |
+| 队列、历史、监控订阅、微信历史表 | SQLite `/data` |
 | 日志和缓存 | `/data/logs`、`/data/cache` |
 | Docker 数据目录 | `./data` 绑定到容器 `/data` |
 
 直接运行后端时，`DATA_DIR` 默认是 `backend/data`；Docker Compose 使用项目根目录的 `./data`。两种模式不要共用同一个 SQLite 文件，避免并发写入。
 
-不要把以下内容提交到 Git：`.env`、`backend/.env`、`backend/data/`、OVH 凭据、Telegram Token、飞书 App Secret、微信 iLink Bot Token。
+不要把以下内容提交到 Git：`.env`、`backend/.env`、`backend/data/`、OVH 凭据、Telegram Token、飞书 App Secret、QQ AppSecret 或 access token。微信历史表中的旧密文同样不应导出。
 
 开发/测试脚本支持以下环境变量：
 
@@ -349,7 +353,8 @@ X-Request-Signature: <HMAC-SHA256 hex>
 - `/api/vps-control/*`：已购 VPS 控制
 - `/api/feishu/*`：飞书绑定、事件和卡片
 - `/api/telegram/*`：Telegram Webhook、命令和下单
-- `/api/weixin/*`：微信扫码、连接状态、测试通知和解绑
+- `/api/qq/test`：QQ Bot v2 测试通知
+- 微信历史表仍由启动迁移代码维护，但不再提供微信登录、命令或通知 API
 
 后台在运行主机的每个整点并行刷新完整服务器目录和实时可用性批次。预添加服务器只使用同一批次在线获取的区域实时可用性与区域公开目录进行比对；完整服务器目录独立提交，不参与或覆盖该批次。任一刷新失败时保留对应的上一份成功数据。
 

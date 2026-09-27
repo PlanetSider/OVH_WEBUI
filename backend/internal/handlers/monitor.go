@@ -435,13 +435,13 @@ func TestNotification(state *app.State) gin.HandlerFunc {
 		msg := "🔔 服务器监控测试通知\n\n时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n✅ 通知配置正常！"
 		tgOK := telegram.SendMessage(state, msg, nil)
 		feishuOK := monitor.FeishuSendDefaultNotification(state, "🔔 服务器监控测试通知", msg, "blue", nil)
-		weixinOK := monitor.SendWeixinNotification(state, msg)
-		if tgOK || feishuOK || weixinOK {
+		qqOK := monitor.SendQQNotification(state, msg)
+		if tgOK || feishuOK || qqOK {
 			state.Logger.Info("机器人测试通知发送成功", "monitor")
-			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "测试通知已发送", "telegram": tgOK, "feishu": feishuOK, "weixin": weixinOK})
+			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "测试通知已发送", "telegram": tgOK, "feishu": feishuOK, "qq": qqOK})
 			return
 		}
 		state.Logger.Warn("机器人测试通知发送失败", "monitor")
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "发送失败，请检查 Telegram/飞书/微信配置和日志"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "发送失败，请检查 Telegram/飞书/QQ 配置和日志"})
 	}
 }

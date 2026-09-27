@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	NotificationChannelTelegram = "telegram"
-	NotificationChannelFeishu   = "feishu"
-	NotificationChannelWeixin   = "weixin"
+	NotificationChannelTelegram     = "telegram"
+	NotificationChannelFeishu       = "feishu"
+	NotificationChannelQQ           = "qq"
+	legacyNotificationChannelWeixin = "weixin"
 )
 
 // NotificationDeliveryResult 按渠道记录一次通知尝试的结果。只有目标渠道
@@ -23,7 +24,9 @@ func canonicalNotificationChannels(channels []string) []string {
 	for _, channel := range channels {
 		channel = strings.ToLower(strings.TrimSpace(channel))
 		switch channel {
-		case NotificationChannelTelegram, NotificationChannelFeishu, NotificationChannelWeixin:
+		case legacyNotificationChannelWeixin:
+			channel = NotificationChannelQQ
+		case NotificationChannelTelegram, NotificationChannelFeishu, NotificationChannelQQ:
 		default:
 			continue
 		}
@@ -62,8 +65,8 @@ func ConfiguredNotificationChannels(state *app.State) []string {
 			channels = append(channels, NotificationChannelFeishu)
 		}
 	}
-	if cfg.IsWeixinNotificationsEnabled() && state.Weixin != nil && state.Weixin.Configured() {
-		channels = append(channels, NotificationChannelWeixin)
+	if cfg.IsQQNotificationsEnabled() && state.QQ != nil && state.QQ.Configured() {
+		channels = append(channels, NotificationChannelQQ)
 	}
 	return canonicalNotificationChannels(channels)
 }
@@ -90,8 +93,8 @@ func PendingNotificationChannels(state *app.State) []string {
 	if cfg.IsFeishuNotificationsEnabled() {
 		channels = append(channels, NotificationChannelFeishu)
 	}
-	if cfg.IsWeixinNotificationsEnabled() {
-		channels = append(channels, NotificationChannelWeixin)
+	if cfg.IsQQNotificationsEnabled() {
+		channels = append(channels, NotificationChannelQQ)
 	}
 	return canonicalNotificationChannels(channels)
 }
@@ -137,8 +140,8 @@ func EnabledNotificationChannels(state *app.State, channels []string) []string {
 			if cfg.IsFeishuNotificationsEnabled() {
 				out = append(out, channel)
 			}
-		case NotificationChannelWeixin:
-			if cfg.IsWeixinNotificationsEnabled() {
+		case NotificationChannelQQ:
+			if cfg.IsQQNotificationsEnabled() {
 				out = append(out, channel)
 			}
 		}

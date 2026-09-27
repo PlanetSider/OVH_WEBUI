@@ -285,7 +285,7 @@ func (db *DB) CommitPurchaseSuccessWithNotification(entry types.PurchaseHistoryE
 		return fmt.Errorf("delete checkout attempt %s: %w", entry.TaskID, err)
 	}
 	// 即使当前没有已配置渠道，也要保留 AwaitingChannels 事件；启动恢复
-	// 可能发生在飞书/微信初始化之前，后续配置完成后由 outbox 再分配渠道。
+	// 可能发生在飞书/QQ 初始化之前，后续配置完成后由 outbox 再分配渠道。
 	if notification != nil {
 		if err := insertNotificationOutboxTx(tx, *notification); err != nil {
 			return err

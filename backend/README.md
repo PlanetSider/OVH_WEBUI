@@ -9,7 +9,7 @@ Go (Gin) 实现的后端服务，配套 `../src/` 前端使用。
 - 监控：服务器补货 / VPS 补货 / 配置绑定狙击
 - 已购服务器管理（数十个 OVH 端点：BIOS / 启动模式 / 重装 / 任务 / 网络 / 维护 / 高级选项 等）
 - 账户管理 + 联系人变更
-- Telegram webhook、飞书与微信 iLink Bot 通知
+- Telegram webhook、飞书与 QQ Bot v2 通知
 
 ## 目录结构
 
@@ -33,7 +33,8 @@ server/
     ├── sniper/          # 配置绑定狙击扫描
     ├── storage/         # JSON 文件读写
     ├── telegram/        # Telegram bot 通知
-    ├── weixin/          # 微信 iLink Bot 扫码、长轮询与发送
+    ├── qqbot/             # QQ Bot v2 token、用户/群聊/频道消息发送
+    ├── weixin/            # 仅保留历史 SQLite store/types 与密文迁移兼容
     ├── types/           # 核心数据结构
     └── vps/             # VPS 可用性查询
 ```
@@ -67,7 +68,10 @@ go run .
 | `TG_WEBHOOK_SECRET` | Telegram Webhook Secret Token；未设置时首次启动生成随机值并落盘 |
 | `TG_WEBHOOK_SECRET_OPTIONAL` | 必须保持 `false`，不允许关闭 Webhook secret 校验 |
 
-## 鉴权
+### QQ Bot v2
+
+QQ 配置通过 `POST /api/settings` 保存：`qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds`、`qqChannelTargets`。AppSecret 由 `internal/secret` 加密，`GET /api/settings` 只返回 `qqAppSecretConfigured`。普通通知仅发送用户目标；独服/VPS 上架和下架监控通知发送用户、群聊和频道目标。`POST /api/qq/test` 发送测试消息，仍需完整 API Key 请求签名。频道发送按 QQ 官方要求按需连接 Gateway WebSocket，完成 Identify/READY 并维持心跳；客户端会在连接断开后自动重连。
+
 
 所有 `/api/*` 路径（除 `/api/health` 等少数白名单）都要求 `X-API-Key`、`X-Request-Time`、`X-Request-Nonce` 和 `X-Request-Signature`。签名原文为 `METHOD\nEscapedPath?RawQuery\nTimestamp\nNonce\nBody`，使用 API key 作为 HMAC-SHA256 密钥并发送 hex 摘要；时间戳偏差超过 5 分钟或重复 nonce 会被拒绝。前端 [AuthGate](../src/components/common/AuthGate.tsx) 在挂载时探测一次 `/api/stats`，401 直接弹登录窗。
 
@@ -113,12 +117,8 @@ GET    /api/ovh/contact-change-requests
 GET    /api/telegram/get-webhook-info
 POST   /api/telegram/webhook              (OVH bot 回调，白名单)
 
-# 微信 iLink Bot（均需 X-API-Key）
-POST   /api/weixin/login/start
-GET    /api/weixin/login/:sessionId
-GET    /api/weixin/status
-POST   /api/weixin/test
-DELETE /api/weixin/config
+# QQ Bot v2（均需 X-API-Key）
+POST   /api/qq/test
 ```
 
 ## OVH 下单流程

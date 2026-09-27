@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -16,10 +17,15 @@ type successfulTestNotifier struct {
 }
 
 func (n *successfulTestNotifier) Configured() bool { return true }
-func (n *successfulTestNotifier) SendDefault(string) bool {
+func (n *successfulTestNotifier) SendDefault(message string) bool {
 	n.sent++
 	return true
 }
+func (n *successfulTestNotifier) SendDefaultWithContext(context.Context, string) bool {
+	return n.SendDefault("")
+}
+func (n *successfulTestNotifier) SendMonitor(string) bool                             { return true }
+func (n *successfulTestNotifier) SendMonitorWithContext(context.Context, string) bool { return true }
 
 func testNotificationState(t *testing.T, telegramEnabled, feishuEnabled bool) *app.State {
 	t.Helper()
@@ -44,7 +50,7 @@ func disableNotificationChannels(t *testing.T, store *config.Store) {
 	disabled := false
 	cfg.TgNotificationsEnabled = &disabled
 	cfg.FeishuNotificationsEnabled = &disabled
-	cfg.WeixinNotificationsEnabled = &disabled
+	cfg.QQNotificationsEnabled = &disabled
 	if err := store.Set(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +137,7 @@ func TestCheckNewServersPersistsAwaitingNotificationWithoutEnabledChannels(t *te
 	}
 
 	state := &app.State{
-		DB: database,
+		DB:     database,
 		Config: config.New(database),
 		Logger: logger.New(t.TempDir()+"/monitor.log.json", nil),
 	}
@@ -207,12 +213,12 @@ func TestAwaitingNotificationIsDeliveredAfterChannelEnabled(t *testing.T) {
 
 	enabled := true
 	cfg := store.Get()
-	cfg.WeixinNotificationsEnabled = &enabled
+	cfg.QQNotificationsEnabled = &enabled
 	if err := store.Set(cfg); err != nil {
 		t.Fatal(err)
 	}
 	notifier := &successfulTestNotifier{}
-	state.Weixin = notifier
+	state.QQ = notifier
 	state.ClearNotificationOutboxRetry(items[0].ID)
 	m.DispatchNotificationOutbox()
 

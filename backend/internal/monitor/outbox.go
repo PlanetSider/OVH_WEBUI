@@ -271,8 +271,8 @@ func (m *Monitor) dispatchOutboxEntryWithContext(ctx context.Context, entry type
 		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
 			result[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, "📦 OVH 订单状态更新", msg, "blue", nil)
 		}
-		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
-			result[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
+		if notificationChannelSelected(entry.Channels, NotificationChannelQQ) {
+			result[NotificationChannelQQ] = SendQQNotificationWithContext(ctx, m.state, msg)
 		}
 		return result, nil
 	case NotificationKindPurchaseSuccess:
@@ -290,8 +290,8 @@ func (m *Monitor) dispatchOutboxEntryWithContext(ctx context.Context, entry type
 		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
 			result[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, "🎉 OVH 服务器抢购成功", msg, "green", nil)
 		}
-		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
-			result[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
+		if notificationChannelSelected(entry.Channels, NotificationChannelQQ) {
+			result[NotificationChannelQQ] = SendQQNotificationWithContext(ctx, m.state, msg)
 		}
 		return result, nil
 	case NotificationKindCatalogStatus:
@@ -309,8 +309,8 @@ func (m *Monitor) dispatchOutboxEntryWithContext(ctx context.Context, entry type
 		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
 			result[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, title, msg, template, nil)
 		}
-		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
-			result[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
+		if notificationChannelSelected(entry.Channels, NotificationChannelQQ) {
+			result[NotificationChannelQQ] = SendQQNotificationWithContext(ctx, m.state, msg)
 		}
 		return result, nil
 	case NotificationKindProxyGuard:
@@ -336,8 +336,8 @@ func (m *Monitor) dispatchOutboxEntryWithContext(ctx context.Context, entry type
 		if notificationChannelSelected(entry.Channels, NotificationChannelFeishu) {
 			result[NotificationChannelFeishu] = FeishuSendDefaultNotificationWithContext(ctx, m.state, title, msg, template, nil)
 		}
-		if notificationChannelSelected(entry.Channels, NotificationChannelWeixin) {
-			result[NotificationChannelWeixin] = SendWeixinNotificationWithContext(ctx, m.state, msg)
+		if notificationChannelSelected(entry.Channels, NotificationChannelQQ) {
+			result[NotificationChannelQQ] = SendQQNotificationWithContext(ctx, m.state, msg)
 		}
 		return result, nil
 	default:

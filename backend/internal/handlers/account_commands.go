@@ -19,9 +19,6 @@ func accountChannelName(channel string) string {
 	if channel == "feishu" {
 		return "飞书"
 	}
-	if channel == "weixin" {
-		return "微信"
-	}
 	return "Telegram"
 }
 

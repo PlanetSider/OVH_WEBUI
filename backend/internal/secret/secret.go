@@ -325,5 +325,5 @@ func configSecretFields(input *types.Config) []*string {
 		&input.FeishuAppSecret,
 		&input.FeishuVerificationToken,
 		&input.FeishuEncryptKey,
-	}
+		&input.QQAppSecret}
 }

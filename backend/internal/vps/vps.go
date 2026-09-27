@@ -37,7 +37,7 @@ const (
 	maxVPSAvailabilityResponseBytes = 4 << 20
 )
 
-// checkNotifications 节流后验证 Telegram / 全局飞书 / 微信。渠道临时失效时
+// checkNotifications 节流后验证 Telegram / 全局飞书 / QQ。渠道临时失效时
 // 监控保持运行，待通知事件会在渠道恢复后继续重试。
 func checkNotifications(state *app.State) {
 	tgCheckMu.Lock()
@@ -54,9 +54,9 @@ func checkNotifications(state *app.State) {
 	tgCheckMu.Lock()
 	lastTGCheck = time.Now()
 	tgCheckMu.Unlock()
-	weixinOK := state.Config.Get().IsWeixinNotificationsEnabled() && state.Weixin != nil && state.Weixin.Configured()
-	if !tgOK && !feishuOK && !weixinOK {
-		state.Logger.Warn("Telegram、飞书与微信通知当前均失效，VPS监控继续运行并保留待通知事件: "+tgReason, "vps_monitor")
+	qqOK := state.Config.Get().IsQQNotificationsEnabled() && state.QQ != nil && state.QQ.Configured()
+	if !tgOK && !feishuOK && !qqOK {
+		state.Logger.Warn("Telegram、飞书与 QQ 通知当前均失效，VPS监控继续运行并保留待通知事件: "+tgReason, "vps_monitor")
 	}
 }
 
@@ -195,8 +195,8 @@ func SendSummaryNotification(state *app.State, planCode string, dcs []map[string
 			result[channel] = cfg.TgToken != "" && cfg.TgChatID != "" && telegram.SendMessage(state, sb.String(), nil)
 		case monitor.NotificationChannelFeishu:
 			result[channel] = monitor.FeishuSendDefaultNotification(state, emoji+" "+title, sb.String(), map[string]string{"available": "green", "initial": "blue"}[changeType], nil)
-		case monitor.NotificationChannelWeixin:
-			result[channel] = monitor.SendWeixinNotification(state, sb.String())
+		case monitor.NotificationChannelQQ:
+			result[channel] = monitor.SendQQMonitorNotification(state, sb.String())
 		}
 	}
 	if monitor.DeliveryCompleteForChannels(expected, result) {
@@ -345,7 +345,7 @@ func canonicalVPSNotificationChannels(channels []string) []string {
 			continue
 		}
 		switch channel {
-		case monitor.NotificationChannelTelegram, monitor.NotificationChannelFeishu, monitor.NotificationChannelWeixin:
+		case monitor.NotificationChannelTelegram, monitor.NotificationChannelFeishu, monitor.NotificationChannelQQ:
 			seen[channel] = struct{}{}
 			out = append(out, channel)
 		}

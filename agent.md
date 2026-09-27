@@ -20,10 +20,18 @@ OVH_WEBUI 是一个前后端一体的 OVH 自托管控制台：
 - `backend/internal/db/`：SQLite 持久化；运行期主数据必须通过数据库访问，避免重新引入 JSON 主读写。
 - `backend/internal/catalog/`、`price/`：目录标准化与价格计算。
 - `backend/internal/purchase/`、`monitor/`、`vps/`：下单、独服/VPS 监控及其后台循环。
-- `backend/internal/telegram/`、`feishu` 处理器、`backend/internal/weixin/`：通知和交互通道。
+- `backend/internal/telegram/`、`backend/internal/feishu/`、`backend/internal/qqbot/`：通知和交互通道；`backend/internal/weixin/` 仅保留历史 store/types 与密文迁移兼容。
 - `src/pages/`、`src/components/`、`src/lib/`：页面、可复用 UI 和 API 客户端。
 - `scripts/`：初始化、启动和烟测脚本；优先复用脚本，不要复制一套临时流程。
 - `docs/`：部署、安全、架构、API 合同和交接记录。
+
+## 通知通道约定
+
+- QQ Bot v2 的唯一发送 owner 是 `backend/internal/qqbot/`；配置字段为 `qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds` 和 `qqChannelTargets`。
+- 普通通知（目录、订单、抢购、代理和新服务器）只发送 QQ 用户 OpenID；独服/VPS 监控的上架、下架提醒才发送到用户、群聊和频道目标。仅有群聊/频道目标时，普通通知必须按策略抑制，不得制造无限重试。
+- QQ AppSecret 必须复用 `secret.Cipher` 加密保存；设置 API 只能返回已配置布尔值，不得返回 AppSecret 或 access token。当前 QQ 接入使用手填 AppID/AppSecret，不实现二维码扫描或自动回填。
+- 频道主动消息使用 `/channels/{channel_id}/messages` 前，必须按 QQ 官方协议建立 Gateway WebSocket，Identify 的 token 使用 `QQBot <access_token>`，等待 `READY`、维持心跳并支持断线重连。不要把频道当成只需 HTTP POST 的目标。
+- 微信运行时登录、轮询、命令、快捷下单和主动发送已经退役。`backend/internal/weixin/` 仅允许保留历史 store/types 与密文迁移；`weixin_*` SQLite 表及历史 rows 不得删除。旧 outbox 的 `weixin` 渠道快照只能规范化为 `qq`。
 
 ## 上游能力迁移判定
 
@@ -88,15 +96,18 @@ python scripts/smoke_test.py
 
 ### 验证记录与环境限制
 
-每次验证应记录实际执行的命令、结果和环境限制，不要把“未执行”写成“通过”。截至 2026-08-29，本项目已完成以下验证（含 Git 提交状态）：
+每次验证应记录实际执行的命令、结果和环境限制，不要把“未执行”写成“通过”。以下记录包含既有验证与本次 QQ 通道迁移验证；后续任务必须以当前工作区的实际结果为准：
 
 - `npm exec tsc -- --noEmit --pretty false`：通过。
-- 使用不加载受限 `vite.config.ts` 临时文件的 Vite API 完成生产构建：通过；构建输出中的本地资源引用已检查。标准 `npm run build` 若因当前工作区无法写入 `vite.config.ts.timestamp-*.mjs` 而失败，应标记为环境权限限制，而不是代码构建失败。
+- `npm run build`：当前工作区标准 Vite 生产构建通过；构建输出中的 chunk 大小提示属于性能提示，不是构建失败。
 - `npm ls --depth=0 --all`：通过，未发现缺失或 invalid 依赖。
 - `scripts/*.py` 使用 `compile()` 做无 `.pyc` 语法检查：通过；PowerShell 初始化、后端启动和开发启动脚本解析：通过。
 - `git diff --check`：通过。
 - 历史 Git 提交与推送：提交 `25b66aa fix: harden monitoring purchase and account workflows` 已推送至 `origin/main`。
-- 使用免安装 Go 1.25 执行 `go test ./... -count=1`：全部后端测试包通过；项目脚本 `npm run test:unit:backend` 也通过。
+- 使用免安装 Go 1.25 执行 `go test ./... -count=1`：全部后端测试包通过，包含 `internal/qqbot` 的用户/群聊/频道路由、Gateway 握手/重连、token 刷新和错误解析测试。
+- `go test ./internal/qqbot -run 'TestClientRoutesDefaultAndMonitorMessages|TestGatewayReconnectsForSubsequentChannelMessage|TestTokenResponseCodeErrorOnHTTP200|TestOpenAPIErrorUsesErrCode' -count=1`：通过。
+- `npx tsc -b`：通过；`npm run build`：通过。
+- 本次验证未使用真实 QQ 凭据发送外部消息；部署后应在设置页分别验证用户、群聊和频道权限及频道频控。
 - 执行 `go build .`：Go 编译完成，但当前 Windows 环境拒绝写入默认输出 `backend/server.exe`；改用可写临时路径执行 `go build -o D:\Codex\OVH\server-go-build-test.exe .` 通过，临时文件已清理。
 - `.env`、`backend/.env`、`backend/data/` 和 SQLite 文件不得进入 Git；验证时只检查文件名、忽略规则和跟踪状态，不输出真实密钥或账户信息。
 
@@ -114,10 +125,10 @@ python scripts/smoke_test.py
 
 以下事项仍需在具备对应工具、服务或授权的环境中补验；不要将其误报为已通过：
 
-- Go 后端：完整 `go test ./... -count=1` 已通过；标准 `go build .` 的默认输出仍受 Windows 权限限制，详见上方验证记录。
+- Go 后端：完整 `go test ./... -count=1` 已通过；`go test -race ./internal/qqbot` 在当前 Windows ThreadSanitizer 环境因地址空间分配失败（`error code: 87`）未能完成，不能据此宣称竞态检查通过。
 - 后端运行时：当前未启动 `127.0.0.1:19998`，因此 smoke/full functional 测试尚未完成；启动后端并取得明确测试账户授权后再执行。
-- 标准前端构建：`npm run build` 曾受工作区无法写入 Vite 临时文件限制；替代构建已通过，换用可写环境后应补跑标准命令。
-- ESLint：`npm run lint` 当前仍有 216 项历史问题（191 error、25 warning），主要涉及 `any`、Hook 依赖、`require()` 等；除非用户明确要求，不扩大为无关重构。
+- 标准前端构建：`npm run build` 已通过；`npx tsc -b` 已通过。
+- ESLint：`npm run lint` 当前仍有 198 项基线问题（177 errors、21 warnings），主要涉及 `any`、Hook 依赖、`require()` 等；本次 QQ 相关前端文件单独检查为 0 errors、1 个既有 Hook warning，除非用户明确要求，不扩大为无关重构。
 - Docker 与依赖审计：Docker 未安装；npm registry 审计接口不可达，不能据此推断镜像或依赖安全结论。
 - 账户删除、PurchaseServer、队列公平性和监控恢复路径：当前 Go 单元测试已完成；真实 OVH 抢购、重装、电源、网络等副作用操作不得自动执行。
 - 通知 outbox：当前保证至少一次投递，多进程或进程崩溃后可能重复通知；若要求跨进程去重/恰好一次效果，需要单独设计 claim/lease、幂等键和状态迁移。
@@ -135,7 +146,7 @@ python scripts/smoke_test.py
 
 ## 安全与数据
 
-绝不提交或输出以下内容：`backend/.env`、根目录 `.env`、`backend/data/`、SQLite 数据库、OVH Application/Secret/Consumer Key、Telegram Token、飞书 App Secret、微信 iLink Bot Token 以及真实服务器主机名。使用 `.env.example` 和环境变量传递配置，日志和测试输出也要脱敏。
+绝不提交或输出以下内容：`backend/.env`、根目录 `.env`、`backend/data/`、SQLite 数据库、OVH Application/Secret/Consumer Key、Telegram Token、飞书 App Secret、QQ Bot AppSecret/access token 以及真实服务器主机名。历史微信表中的旧密文也不得导出。使用 `.env.example` 和环境变量传递配置，日志和测试输出也要脱敏。
 
 除 `/health` 等白名单外，API 默认要求 `X-API-Key`。Webhook 的例外必须保留来源校验（例如 Telegram Secret Token），不能为了方便关闭鉴权。
 

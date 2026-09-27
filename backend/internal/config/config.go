@@ -95,6 +95,10 @@ func (s *Store) applyDefaults() {
 		v := true
 		s.cfg.WeixinNotificationsEnabled = &v
 	}
+	if s.cfg.QQNotificationsEnabled == nil {
+		v := true
+		s.cfg.QQNotificationsEnabled = &v
+	}
 }
 
 func (s *Store) LoadError() error {

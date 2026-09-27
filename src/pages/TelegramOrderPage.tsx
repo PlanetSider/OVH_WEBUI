@@ -37,7 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useServers } from "@/hooks/useApi";
-import { useFeishuBinding, useSendFeishuTestCard, useSendWeixinTest, useSettings, useWeixinStatus } from "@/hooks/use-settings";
+import { useFeishuBinding, useSendFeishuTestCard, useSettings } from "@/hooks/use-settings";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "react-router-dom";
 import {
@@ -117,7 +117,7 @@ const HISTORY_STORAGE_KEY = 'telegram_command_history';
 const MAX_HISTORY_ITEMS = 20;
 
 interface TelegramOrderPageProps {
-  channel?: 'telegram' | 'feishu' | 'weixin';
+  channel?: 'telegram' | 'feishu';
 }
 
 interface OrderResult {
@@ -134,12 +134,7 @@ function errorMessage(error: unknown): string {
 
 const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => {
   const isFeishu = channel === 'feishu';
-  const isWeixin = channel === 'weixin';
-  const historyStorageKey = isFeishu
-    ? 'feishu_command_history'
-    : isWeixin
-      ? 'weixin_command_history'
-      : HISTORY_STORAGE_KEY;
+  const historyStorageKey = isFeishu ? 'feishu_command_history' : HISTORY_STORAGE_KEY;
   const { data: servers } = useServers();
   const settings = useSettings(isFeishu);
   const [selectedMode, setSelectedMode] = useState<OrderMode['mode']>('stock');
@@ -157,8 +152,6 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
   const [isSettingWebhook, setIsSettingWebhook] = useState(false);
   const feishuBinding = useFeishuBinding(isFeishu);
   const sendFeishuTestCard = useSendFeishuTestCard();
-  const weixinStatus = useWeixinStatus(isWeixin);
-  const sendWeixinTest = useSendWeixinTest();
   
   // Command history
   const [commandHistory, setCommandHistory] = useState<CommandHistory[]>([]);
@@ -282,19 +275,10 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
       return;
     }
 
-    if (isWeixin && !weixinStatus.data?.configured) {
-      toast.error("微信 iLink Bot 尚未连接");
-      return;
-    }
-
     const command = generateCommand();
     setIsSubmitting(true);
     try {
-      const execute = isFeishu
-        ? api.feishuQuickOrder
-        : isWeixin
-          ? api.weixinQuickOrder
-          : api.telegramQuickOrder;
+      const execute = isFeishu ? api.feishuQuickOrder : api.telegramQuickOrder;
       const result = await execute({
         mode: selectedMode,
         planCode,
@@ -344,14 +328,11 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
     settings.data?.feishuEnabled && settings.data?.feishuAppId && settings.data?.feishuAppSecret
   );
   const isFeishuConnected = isFeishuConfigured && Boolean(feishuBinding.data?.bound);
-  const isWeixinConnected = Boolean(weixinStatus.data?.configured);
   const connectionLoading = isFeishu
     ? settings.isLoading || feishuBinding.isLoading
-    : isWeixin
-      ? weixinStatus.isLoading
-      : isLoadingWebhook;
-  const isConnected = isFeishu ? isFeishuConnected : isWeixin ? isWeixinConnected : isWebhookConnected;
-  const channelName = isFeishu ? "飞书" : isWeixin ? "微信" : "Telegram";
+    : isLoadingWebhook;
+  const isConnected = isFeishu ? isFeishuConnected : isWebhookConnected;
+  const channelName = isFeishu ? "飞书" : "Telegram";
 
   return (
     <>
@@ -374,9 +355,7 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                 <p className="text-xs sm:text-sm text-muted-foreground mt-1">
                   {isFeishu
                     ? "通过飞书私聊命令和流式交互卡片执行下单（使用系统当前默认 OVH 账户）"
-                    : isWeixin
-                      ? "通过微信 iLink Bot 私聊命令执行下单（使用系统当前默认 OVH 账户）"
-                      : "通过 Telegram 消息快速执行下单（需先配置 Webhook 并注册命令菜单）"}
+                    : "通过 Telegram 消息快速执行下单（需先配置 Webhook 并注册命令菜单）"}
                 </p>
               </div>
               {/* Bot Connection Status */}
@@ -422,35 +401,6 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                     <Link to="/settings?section=feishu">
                       <Settings2 className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
                       飞书配置
-                    </Link>
-                  </Button>
-                </>
-              ) : isWeixin ? (
-                <>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void weixinStatus.refetch()}
-                    disabled={weixinStatus.isFetching}
-                    className="h-8 text-xs"
-                  >
-                    <RefreshCw className={cn("h-3 w-3 sm:h-4 sm:w-4 mr-1", weixinStatus.isFetching && "animate-spin")} />
-                    刷新状态
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => sendWeixinTest.mutate()}
-                    disabled={sendWeixinTest.isPending || !weixinStatus.data?.configured}
-                    className="h-8 text-xs"
-                  >
-                    {sendWeixinTest.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
-                    发送测试通知
-                  </Button>
-                  <Button asChild variant="terminal" size="sm" className="h-8 text-xs">
-                    <Link to="/settings?section=weixin">
-                      <Settings2 className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
-                      微信配置
                     </Link>
                   </Button>
                 </>
@@ -527,20 +477,14 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
             </div>
           </div>
 
-          {(isFeishu || isWeixin) && (
+          {isFeishu && (
             <div className="terminal-card p-3 sm:p-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-center">
               <div className="space-y-1">
                 <Label>命令使用账户</Label>
                 <div className="text-sm font-medium">系统当前默认 OVH 账户</div>
               </div>
               <div className="text-xs text-muted-foreground leading-relaxed">
-                {isWeixin ? (
-                  weixinStatus.data?.configured ? (
-                    <span className="text-primary">扫码用户已绑定；命令、库存和价格均使用当前默认 OVH 账户。</span>
-                  ) : (
-                    <>微信 iLink Bot 尚未连接，请先前往“微信配置”扫码授权。</>
-                  )
-                ) : isFeishuConnected ? (
+                {isFeishuConnected ? (
                   <span className="text-primary">全局接收人已绑定；命令、库存和价格均使用当前默认 OVH 账户。</span>
                 ) : isFeishuConfigured ? (
                   <>尚未绑定全局接收人。请在飞书中私聊机器人发送任意消息，然后刷新绑定状态。</>

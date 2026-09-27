@@ -1,35 +1,19 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Unplug, Radar, Network, AlertCircle } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Radar, Network, AlertCircle } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/common/Skeleton";
 import { Chip } from "@/components/common/Chip";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import {
-  useSettings,
-  useSaveSettings,
-  useCacheInfo,
-  useClearCache,
-  useTelegramWebhookInfo,
-  useSetTelegramWebhook,
-  useFeishuBinding,
-  useSendFeishuTestCard,
-  startFeishuRegistration,
-  pollFeishuRegistration,
-  startWeixinLogin,
-  pollWeixinLogin,
-  useWeixinStatus,
-  useSendWeixinTest,
-  useDisconnectWeixin,
-  type SettingsConfig,
-} from "@/hooks/use-settings";
+import { useSettings, useSaveSettings, useCacheInfo, useClearCache, useTelegramWebhookInfo, useSetTelegramWebhook, useFeishuBinding, useSendFeishuTestCard, startFeishuRegistration, pollFeishuRegistration, useSendQQTest, type SettingsConfig } from "@/hooks/use-settings";
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { createQRCodeDataURL } from "@/vendor/qrcode";
@@ -67,7 +51,7 @@ const SECTIONS = [
   { id: "accounts", icon: Globe, label: "OVH 账户" },
   { id: "telegram", icon: Send, label: "Telegram" },
   { id: "feishu", icon: MessageSquare, label: "飞书" },
-  { id: "weixin", icon: MessageSquare, label: "微信" },
+  { id: "qq", icon: MessageSquare, label: "QQ 机器人" },
   { id: "cache", icon: Database, label: "缓存管理" },
 ] as const;
 
@@ -213,8 +197,8 @@ function SettingsPage() {
                 <TelegramSection form={form} set={set} onSaveToken={onSave} saving={save.isPending} webhookUrlEdited={webhookUrlEdited} />
               ) : active === "feishu" ? (
                 <FeishuSection form={form} set={set} onSave={onSave} saving={save.isPending} />
-              ) : active === "weixin" ? (
-                <WeixinSection form={form} set={set} />
+              ) : active === "qq" ? (
+                <QQSection form={form} set={set} onSave={onSave} saving={save.isPending} />
               ) : (
                 <CacheSection />
               )}
@@ -471,160 +455,73 @@ function FeishuSection({
   );
 }
 
-function maskIdentifier(value?: string) {
-  const text = (value || "").trim();
-  if (!text) return "—";
-  if (text.length <= 12) return text;
-  return `${text.slice(0, 6)}…${text.slice(-4)}`;
+function parseQQIDLines(value: string): string[] {
+  return Array.from(new Set(value.split(/[\\n,，]+/).map((item) => item.trim()).filter(Boolean)));
 }
 
-function WeixinSection({ form, set }: {
+function parseQQChannelLines(value: string): Array<{ guildId?: string; channelId: string }> {
+  const seen = new Set<string>();
+  const targets: Array<{ guildId?: string; channelId: string }> = [];
+  for (const raw of value.split(/[\\n,，]+/)) {
+    const parts = raw.trim().split("/").map((part) => part.trim()).filter(Boolean);
+    const channelId = parts.length > 1 ? parts[parts.length - 1] : parts[0];
+    const guildId = parts.length > 1 ? parts.slice(0, -1).join("/") : undefined;
+    if (!channelId || seen.has(channelId)) continue;
+    seen.add(channelId);
+    targets.push(guildId ? { guildId, channelId } : { channelId });
+  }
+  return targets;
+}
+
+function QQSection({ form, set, onSave, saving }: {
   form: SettingsConfig;
   set: <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => void;
+  onSave: () => Promise<boolean>;
+  saving: boolean;
 }) {
-  const status = useWeixinStatus();
-  const refetchWeixinStatus = status.refetch;
-  const test = useSendWeixinTest();
-  const disconnect = useDisconnectWeixin();
-  const [login, setLogin] = useState<{ sessionId: string; qrContent: string; expiresAt: number } | null>(null);
-  const [loginStatus, setLoginStatus] = useState<"idle" | "starting" | "wait" | "scanned" | "confirmed" | "error">("idle");
-  const [loginError, setLoginError] = useState("");
-  const [qrCodeDataURL, setQRCodeDataURL] = useState("");
+  const test = useSendQQTest();
+  const userIDs = form.qqUserOpenIds || [];
+  const groupIDs = form.qqGroupOpenIds || [];
+  const channelTargets = form.qqChannelTargets || [];
+  const configured = Boolean(
+    form.qqAppId?.trim() &&
+    (form.qqAppSecret?.trim() || form.qqAppSecretConfigured) &&
+    userIDs.length + groupIDs.length + channelTargets.length > 0
+  );
+  const channelText = channelTargets.map((target) => target.guildId ? `${target.guildId}/${target.channelId}` : target.channelId).join("\\n");
 
-  const beginLogin = async () => {
-    setLoginStatus("starting");
-    setLoginError("");
-    try {
-      const result = await startWeixinLogin();
-      setLogin({
-        sessionId: result.sessionId,
-        qrContent: result.qrContent,
-        expiresAt: Date.now() + result.expiresIn * 1000,
-      });
-      setQRCodeDataURL("");
-      await createQRCodeDataURL(result.qrContent).then(setQRCodeDataURL);
-      setLoginStatus("wait");
-    } catch (error) {
-      setLoginStatus("error");
-      setLoginError(error instanceof Error ? error.message : "创建微信扫码会话失败");
-    }
-  };
-
-  useEffect(() => {
-    if (!login || (loginStatus !== "wait" && loginStatus !== "scanned")) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      if (Date.now() >= login.expiresAt) {
-        if (!cancelled) {
-          setLoginStatus("error");
-          setLoginError("二维码已过期，请重新生成");
-        }
-        return;
-      }
-      try {
-        const result = await pollWeixinLogin(login.sessionId);
-        if (cancelled) return;
-        if (result.status === "confirmed") {
-          setLoginStatus("confirmed");
-          void refetchWeixinStatus();
-          toast.success("微信 iLink Bot 已连接");
-          return;
-        }
-        if (result.status === "scanned") {
-          setLoginStatus("scanned");
-        } else if (result.status === "expired" || result.status === "error") {
-          setLoginStatus("error");
-          setLoginError(result.error || "微信扫码授权失败");
-          return;
-        } else {
-          setLoginStatus("wait");
-        }
-        timer = setTimeout(poll, 1500);
-      } catch (error) {
-        if (!cancelled) {
-          setLoginStatus("error");
-          setLoginError(error instanceof Error ? error.message : "查询微信扫码状态失败");
-        }
-      }
-    };
-    timer = setTimeout(poll, 1000);
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [login, loginStatus, refetchWeixinStatus]);
-
-  const connected = status.data?.configured;
   return (
-    <Section title="微信 iLink Bot">
+    <Section title="QQ 机器人通知">
       <div className="rounded-2xl border border-border p-4 space-y-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-[13px] font-medium">连接状态</h3>
-            <p className="text-[11px] text-muted-foreground mt-1">通过微信官方 iLink Bot 长轮询连接，不需要公网 Webhook，也无需手填 Token。</p>
+            <h3 className="text-[13px] font-medium">QQ Bot v2 凭据</h3>
+            <p className="text-[11px] text-muted-foreground mt-1">手动填写开放平台的 AppID 和 AppSecret，密钥只在服务端加密保存。</p>
           </div>
           <div className="flex items-center gap-3">
             <NotificationStatusSelect
-              enabled={form.weixinNotificationsEnabled}
-              onChange={(value) => set("weixinNotificationsEnabled", value)}
+              enabled={form.qqNotificationsEnabled}
+              onChange={(value) => set("qqNotificationsEnabled", value)}
             />
-            <Chip tone={connected && status.data?.polling ? "success" : connected ? "warning" : "warning"}>
-              {connected ? (status.data?.polling ? "已连接" : "已配置") : "未连接"}
-            </Chip>
+            <Chip tone={configured ? "success" : "warning"}>{configured ? "已配置" : "未配置"}</Chip>
           </div>
         </div>
-
-        {connected ? (
-          <div className="rounded-xl border bg-muted/20 p-4 space-y-2 text-[12px]">
-            <InfoRow label="Bot ID" value={<code className="font-mono">{maskIdentifier(status.data?.accountId)}</code>} />
-            <InfoRow label="绑定用户" value={<code className="font-mono">{maskIdentifier(status.data?.userId)}</code>} />
-            <InfoRow label="长轮询" value={status.data?.polling ? <Chip tone="success">运行中</Chip> : <Chip tone="warning">未运行</Chip>} />
-            {status.data?.lastPollAt && <InfoRow label="最近同步" value={new Date(status.data.lastPollAt).toLocaleString("zh-CN")} />}
-            {status.data?.lastError && <div className="text-destructive break-words pt-1">{status.data.lastError}</div>}
-          </div>
-        ) : (
-          <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-[13px] font-medium flex items-center gap-2"><QrCode className="h-4 w-4" />微信扫码授权</h3>
-                <p className="text-[11px] text-muted-foreground mt-1">扫码后将在微信中创建独立的 iLink Bot 身份，并把扫码者绑定为唯一命令与通知接收人。</p>
-              </div>
-              <Button type="button" size="sm" variant="outline" onClick={() => void beginLogin()} disabled={loginStatus === "starting" || loginStatus === "wait" || loginStatus === "scanned"}>
-                {loginStatus === "starting" ? <Loader2 className="h-4 w-4 animate-spin" /> : <QrCode className="h-4 w-4" />}
-                {loginStatus === "wait" || loginStatus === "scanned" ? "等待确认" : "生成二维码"}
-              </Button>
-            </div>
-            {login && (loginStatus === "wait" || loginStatus === "scanned") && (
-              <div className="rounded-lg bg-background border p-4 text-center space-y-3">
-                {qrCodeDataURL ? (
-                  <img src={qrCodeDataURL} alt="微信 iLink Bot 授权二维码" className="h-64 w-64 max-w-full mx-auto rounded-lg bg-white p-2" />
-                ) : (
-                  <div className="h-64 w-64 max-w-full mx-auto rounded-lg bg-white flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>
-                )}
-                <p className="text-xs text-muted-foreground">{loginStatus === "scanned" ? "已扫码，请在微信中确认授权。" : "请使用微信扫描二维码并确认。二维码在浏览器本地生成。"}</p>
-                <div className="flex items-center justify-center gap-2 text-xs text-primary"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在等待微信确认…</div>
-              </div>
-            )}
-            {loginStatus === "confirmed" && <div className="text-xs text-primary flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />连接成功，长轮询已自动启动。</div>}
-            {loginStatus === "error" && <div className="text-xs text-destructive">{loginError}</div>}
-          </div>
-        )}
-
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="AppID *" hint="QQ 开放平台机器人 ID">{(id) => <Input id={id} value={form.qqAppId || ""} onChange={(e) => set("qqAppId", e.target.value)} placeholder="例如 102xxxxxxxx" />}</Field>
+          <Field label="AppSecret *" hint={form.qqAppSecretConfigured ? "已保存密钥；留空表示保持原值" : "不会回显已保存的密钥"}>{(id) => <Input id={id} type="password" value={form.qqAppSecret || ""} onChange={(e) => set("qqAppSecret", e.target.value)} placeholder={form.qqAppSecretConfigured ? "已保存，留空保持不变" : "填写 AppSecret"} />}</Field>
+        </div>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Field label="用户 OpenID" hint="每行一个；用户目标接收完整通知">{(id) => <Textarea id={id} rows={4} value={userIDs.join("\\n")} onChange={(e) => set("qqUserOpenIds", parseQQIDLines(e.target.value))} placeholder="user_openid" />}</Field>
+          <Field label="群聊 OpenID" hint="每行一个；仅接收独服/VPS 上架和下架提醒">{(id) => <Textarea id={id} rows={4} value={groupIDs.join("\\n")} onChange={(e) => set("qqGroupOpenIds", parseQQIDLines(e.target.value))} placeholder="group_openid" />}</Field>
+          <Field label="频道目标" hint="每行 channel_id，或 guild_id/channel_id；仅接收独服/VPS 上架和下架提醒">{(id) => <Textarea id={id} rows={4} value={channelText} onChange={(e) => set("qqChannelTargets", parseQQChannelLines(e.target.value))} placeholder="channel_id\\n guild_id/channel_id" />}</Field>
+        </div>
         <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" onClick={() => test.mutate()} disabled={!connected || test.isPending}>{test.isPending ? "发送中…" : "发送测试通知"}</Button>
-          <Button type="button" variant="destructive" onClick={() => {
-            if (window.confirm("确定解除微信 iLink Bot 绑定？本地 Token、游标和会话上下文会被清除。")) {
-              disconnect.mutate();
-              setLogin(null);
-              setLoginStatus("idle");
-            }
-          }} disabled={!connected || disconnect.isPending}>
-            <Unplug className="h-4 w-4" />{disconnect.isPending ? "解除中…" : "解除绑定"}
-          </Button>
+          <Button type="button" onClick={() => void onSave()} disabled={saving}>{saving ? "保存中…" : "保存 QQ 配置"}</Button>
+          <Button type="button" variant="outline" onClick={() => test.mutate()} disabled={test.isPending || !configured}>{test.isPending ? "发送中…" : "发送测试通知"}</Button>
         </div>
+        {test.error && <div className="text-xs text-destructive break-words">{test.error instanceof Error ? test.error.message : "QQ 测试发送失败，请检查日志"}</div>}
       </div>
-      <p className="text-[11px] text-muted-foreground">首版支持私聊文本命令和主动通知；不承诺普通微信群可用，也暂不处理图片、语音或文件。连接的是独立的 @im.bot 身份，不会控制你的普通个人微信号。</p>
+      <p className="text-[11px] text-muted-foreground">普通通知、订单和抢购结果只发送到用户 OpenID；群聊与频道目标只用于独服监控和 VPS 监控的上架/下架提醒。频道主动消息会按需建立 QQ Gateway WebSocket 并维持心跳，仍受 QQ Bot 平台权限、在线状态和频控限制。</p>
     </Section>
   );
 }

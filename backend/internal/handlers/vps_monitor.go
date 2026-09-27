@@ -28,7 +28,7 @@ func GetVPSSubscriptions(state *app.State) gin.HandlerFunc {
 // AddVPSSubscription POST /api/vps-monitor/subscriptions
 func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// VPS 监控与独服监控一致：Telegram、飞书或微信任一可用即可。
+		// VPS 监控与独服监控一致：Telegram、飞书或 QQ 任一可用即可。
 		if ok, reason := monitor.NotificationConfigured(state, ""); !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": reason})
 			return

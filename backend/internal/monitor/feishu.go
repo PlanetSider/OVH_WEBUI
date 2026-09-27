@@ -700,36 +700,43 @@ func NotificationConfiguredWithContext(ctx context.Context, state *app.State, ac
 			return true, ""
 		}
 	}
-	if state.Config.Get().IsWeixinNotificationsEnabled() && state.Weixin != nil && state.Weixin.Configured() {
+	if state.Config.Get().IsQQNotificationsEnabled() && state.QQ != nil && state.QQ.Configured() {
 		return true, ""
 	}
 	if FeishuEnabled(state) {
 		return false, "飞书已配置，但尚未绑定全局飞书接收人"
 	}
-	return false, "Telegram、飞书与微信均未完成配置"
+	return false, "Telegram、飞书与 QQ 均未完成配置"
 }
 
-// SendWeixinNotification 将同一份通知文案发送到全局绑定的微信 iLink 用户。
-func SendWeixinNotification(state *app.State, message string) bool {
-	return SendWeixinNotificationWithContext(context.Background(), state, message)
+// SendQQNotification 向 QQ 用户目标发送普通通知；群聊和频道仅接收监控提醒。
+func SendQQNotification(state *app.State, message string) bool {
+	return SendQQNotificationWithContext(context.Background(), state, message)
 }
 
-func SendWeixinNotificationWithContext(ctx context.Context, state *app.State, message string) bool {
+func SendQQNotificationWithContext(ctx context.Context, state *app.State, message string) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if !state.Config.Get().IsWeixinNotificationsEnabled() || state.Weixin == nil {
+	if state == nil || state.Config == nil || !state.Config.Get().IsQQNotificationsEnabled() || state.QQ == nil {
 		return false
 	}
-	if notifier, ok := state.Weixin.(interface {
-		SendDefaultWithContext(context.Context, string) bool
-	}); ok {
-		return notifier.SendDefaultWithContext(ctx, message)
+	return state.QQ.SendDefaultWithContext(ctx, message)
+}
+
+// SendQQMonitorNotification 向 QQ 用户、群聊和频道目标发送独服/VPS 监控上下架提醒。
+func SendQQMonitorNotification(state *app.State, message string) bool {
+	return SendQQMonitorNotificationWithContext(context.Background(), state, message)
+}
+
+func SendQQMonitorNotificationWithContext(ctx context.Context, state *app.State, message string) bool {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if ctx.Err() != nil {
+	if state == nil || state.Config == nil || !state.Config.Get().IsQQNotificationsEnabled() || state.QQ == nil {
 		return false
 	}
-	return state.Weixin.SendDefault(message)
+	return state.QQ.SendMonitorWithContext(ctx, message)
 }
 
 // FeishuSendDefaultNotification 向全局飞书接收人发送通知。

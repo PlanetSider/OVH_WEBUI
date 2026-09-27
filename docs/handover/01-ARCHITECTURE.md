@@ -16,9 +16,11 @@ OVH_WEBUI/
 │       ├── monitor/         # 独服可用性监控
 │       ├── ovh/             # OVH client 工厂（多账户）
 │       ├── purchase/        # 抢购队列处理器
-│       ├── telegram/        # TG 通知/下单
-│       ├── types/           # 共享 DTO
-│       └── vps/             # VPS 相关
+│       ├── qqbot/            # QQ Bot v2 token 缓存与三类目标发送
+│       ├── telegram/         # TG 通知/下单
+│       ├── types/             # 共享 DTO
+│       ├── weixin/            # 历史 store/types 与密文迁移兼容，不参与运行时通知
+│       └── vps/               # VPS 相关
 ├── src/                     # React 前端
 │   ├── components/          # layout / dashboard / server-control / vps-control / ui
 │   ├── hooks/ovh/           # React Query hooks（主路径）
@@ -61,6 +63,13 @@ OVH_WEBUI/
 - 监控：有订阅时自动 Start
 - 数据刷新：运行主机每个整点并行刷新完整服务器目录与实时可用性批次。预增服务器仅使用当批在线获取的区域实时可用性和区域公开目录比对并原子保存；完整目录独立更新内存缓存与 SQLite，失败时各自保留上一份成功数据。
 
+## 通知通道责任
+
+- `monitor/feishu.go` 暴露统一的 QQ 普通通知和 QQ 监控通知 helper；`qqbot.Client` 是 QQ Bot v2 的唯一发送 owner。
+- 普通通知（订单状态、购买成功、目录/代理事件、新服务器）只调用 `SendDefault*`，因此只到 QQ 用户 OpenID。
+- 独服和 VPS 的上架/下架可用性提醒调用 `SendMonitor*`，发送到用户、群聊和频道目标。
+- QQ AppSecret 通过 `secret.Cipher` 加密，access token 只存在进程内；设置响应只返回已配置布尔值。
+- `internal/weixin/store.go` 与历史 `weixin_*` 表保留用于迁移/历史兼容；二维码、轮询、命令和主动发送运行时已删除。
 ## 前端路由
 
 | 路径 | 页面 |
