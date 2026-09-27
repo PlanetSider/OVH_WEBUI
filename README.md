@@ -191,9 +191,11 @@ https://你的域名/api/feishu/card-action
 
 | 目标 | 字段 | 通知范围 |
 |------|------|----------|
-| 用户 | `qqUserOpenIds` | 完整通知，包括库存、订单、目录和监控 |
-| 群聊 | `qqGroupOpenIds` | 仅独服/VPS 监控上架、下架提醒 |
+| 用户 | `qqUserOpenIds` | 完整通知；同时作为私聊管理员白名单，可执行全部机器人命令和中文别名 |
+| 群聊 | `qqGroupOpenIds` | 仅接受 `/stock`、`/price`、`/库存`、`/价格`；同时接收独服/VPS 监控上架、下架提醒 |
 | 频道 | `qqChannelTargets` 的 `channelId`（可选 `guildId`） | 仅独服/VPS 监控上架、下架提醒 |
+
+QQ Gateway 交互命令要求机器人订阅私聊/群聊事件。管理员私聊支持现有完整命令集，包括 `/order`、`/pay`、账户切换、`/reboot` 和全部中文别名；群聊只处理库存和价格命令。群聊通常需要在 QQ 中 `@` 机器人，QQ 平台投递的消息会回复到原用户或群聊并引用原消息。QQ 不提供普通 QQ 号码给 Bot API，管理员身份必须填写 `user_openid`。`/reboot` 在 QQ 中使用编号选择以及 `/reboot confirm`、`/reboot cancel` 文本确认。
 
 后端通过 `POST /api/qq/test` 发送配置测试消息，所有 QQ 管理接口均要求 `X-API-Key`。`AppSecret` 由现有 AES-GCM 配置加密链路保存，设置 API 只返回 `qqAppSecretConfigured`，不会返回密钥或 access token。当前版本不提供二维码扫描或自动回填参数；频道发送使用 QQ 官方 `/channels/{channel_id}/messages` 接口，客户端会按官方要求先建立 Gateway WebSocket、完成 Identify/READY 并维持心跳，同时受机器人权限、在线状态和频控限制。
 

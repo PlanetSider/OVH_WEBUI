@@ -75,7 +75,8 @@ func main() {
 		os.Exit(1)
 	}
 	state := app.NewState(paths, cfgStore, lg, sqliteDB)
-	state.QQ = qqbot.New(state.Config.Get, nil, qqbot.DefaultBaseURL)
+	qqClient := qqbot.New(state.Config.Get, nil, qqbot.DefaultBaseURL)
+	state.QQ = qqClient
 	state.APIKey = strings.TrimSpace(os.Getenv("API_SECRET_KEY"))
 	if err := auth.ValidateAPIKeyStrength(state.APIKey); err != nil {
 		console.Error("API_SECRET_KEY is invalid", "error", err)
@@ -101,6 +102,13 @@ func main() {
 
 	// 监控器
 	mon := monitor.New(state)
+	// QQ 入站命令复用 Telegram/飞书的命令解析与业务分发；QQ 群聊由处理器限制为库存/价格。
+	qqClient.SetMessageHandler(func(ctx context.Context, event qqbot.MessageEvent) {
+		handlers.HandleQQMessage(ctx, state, mon, event, qqClient)
+	})
+	state.GoBackground(func(ctx context.Context) {
+		qqClient.RunMessageGateway(ctx)
+	})
 	mon.LoadFromDB()
 	mon.LoadMessageUUIDCacheFromDB()
 	mon.SetCheckInterval(5)

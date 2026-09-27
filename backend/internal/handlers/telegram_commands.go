@@ -174,8 +174,10 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID
 		if _, ok := monitor.FeishuDefaultBinding(state); !ok {
 			return "❌ 尚未绑定全局飞书接收人"
 		}
-	} else if ok, reason := telegram.VerifyConfig(state); !ok {
-		return "❌ Telegram 配置无效: " + reason
+	} else if channel == "telegram" {
+		if ok, reason := telegram.VerifyConfig(state); !ok {
+			return "❌ Telegram 配置无效: " + reason
+		}
 	}
 	planCode := strings.TrimSpace(args[0])
 	dcs := []string{}
@@ -222,6 +224,8 @@ func cmdMonitor(state *app.State, mon *monitor.Monitor, args []string, accountID
 	notifyChannel := "Telegram"
 	if channel == "feishu" {
 		notifyChannel = "飞书"
+	} else if channel == "qq" {
+		notifyChannel = "QQ"
 	}
 	return fmt.Sprintf("✅ 已添加监控\n\n型号: %s\n机房: %s\n有货时将通过 %s 通知。", namePart, dcText, notifyChannel)
 }

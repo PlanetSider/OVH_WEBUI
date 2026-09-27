@@ -27,7 +27,8 @@ OVH_WEBUI 是一个前后端一体的 OVH 自托管控制台：
 
 ## 通知通道约定
 
-- QQ Bot v2 的唯一发送 owner 是 `backend/internal/qqbot/`；配置字段为 `qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds` 和 `qqChannelTargets`。
+- QQ Bot v2 的唯一发送 owner 是 `backend/internal/qqbot/`；配置字段为 `qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds` 和 `qqChannelTargets`。`qqUserOpenIds` 同时是私聊管理员 OpenID 白名单；`qqGroupOpenIds` 是群聊命令白名单。
+- QQ Gateway 入站命令只为 `qqUserOpenIds` 中的私聊用户执行完整命令；群聊仅放行 `/stock`、`/price`、`/库存`、`/价格`，并引用原消息回复。关闭 QQ 通知开关时入站命令也必须失效。
 - 普通通知（目录、订单、抢购、代理和新服务器）只发送 QQ 用户 OpenID；独服/VPS 监控的上架、下架提醒才发送到用户、群聊和频道目标。仅有群聊/频道目标时，普通通知必须按策略抑制，不得制造无限重试。
 - QQ AppSecret 必须复用 `secret.Cipher` 加密保存；设置 API 只能返回已配置布尔值，不得返回 AppSecret 或 access token。当前 QQ 接入使用手填 AppID/AppSecret，不实现二维码扫描或自动回填。
 - 频道主动消息使用 `/channels/{channel_id}/messages` 前，必须按 QQ 官方协议建立 Gateway WebSocket，Identify 的 token 使用 `QQBot <access_token>`，等待 `READY`、维持心跳并支持断线重连。不要把频道当成只需 HTTP POST 的目标。

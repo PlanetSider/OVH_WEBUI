@@ -37,6 +37,70 @@ type Client struct {
 
 	gatewayMu sync.Mutex
 	gateway   *gatewaySession
+
+	messageHandlerMu sync.RWMutex
+	messageHandler   MessageHandler
+
+	seenMessageMu sync.Mutex
+	seenMessages  map[string]time.Time
+}
+
+// MessageEvent 是 QQ Gateway 投递的私聊或群聊文本消息。
+// QQ 只提供 OpenID；业务层据此做管理员和群白名单校验。
+type MessageEvent struct {
+	ID          string
+	EventType   string
+	Content     string
+	UserOpenID  string
+	GroupOpenID string
+}
+
+// MessageHandler 处理已由 Gateway 解码的 QQ 入站消息。
+type MessageHandler func(context.Context, MessageEvent)
+
+const (
+	EventC2CMessageCreate     = "C2C_MESSAGE_CREATE"
+	EventGroupAtMessageCreate = "GROUP_AT_MESSAGE_CREATE"
+	EventGroupMessageCreate   = "GROUP_MESSAGE_CREATE"
+)
+
+func (c *Client) SetMessageHandler(handler MessageHandler) {
+	if c == nil {
+		return
+	}
+	c.messageHandlerMu.Lock()
+	c.messageHandler = handler
+	c.messageHandlerMu.Unlock()
+}
+
+func (c *Client) messageHandlerSnapshot() MessageHandler {
+	c.messageHandlerMu.RLock()
+	defer c.messageHandlerMu.RUnlock()
+	return c.messageHandler
+}
+
+func (c *Client) claimMessageID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return true
+	}
+	now := c.now()
+	cutoff := now.Add(-10 * time.Minute)
+	c.seenMessageMu.Lock()
+	defer c.seenMessageMu.Unlock()
+	if c.seenMessages == nil {
+		c.seenMessages = make(map[string]time.Time)
+	}
+	for seenID, seenAt := range c.seenMessages {
+		if seenAt.Before(cutoff) {
+			delete(c.seenMessages, seenID)
+		}
+	}
+	if seenAt, exists := c.seenMessages[id]; exists && !seenAt.Before(cutoff) {
+		return false
+	}
+	c.seenMessages[id] = now
+	return true
 }
 
 func New(getConfig func() types.Config, httpClient *http.Client, baseURL string) *Client {
@@ -48,10 +112,11 @@ func New(getConfig func() types.Config, httpClient *http.Client, baseURL string)
 		baseURL = DefaultBaseURL
 	}
 	return &Client{
-		getConfig:  getConfig,
-		httpClient: httpClient,
-		baseURL:    baseURL,
-		now:        time.Now,
+		getConfig:    getConfig,
+		httpClient:   httpClient,
+		baseURL:      baseURL,
+		now:          time.Now,
+		seenMessages: make(map[string]time.Time),
 	}
 }
 
@@ -83,6 +148,91 @@ func (c *Client) SendMonitorWithContext(ctx context.Context, message string) boo
 
 func (c *Client) SendMonitor(message string) bool {
 	return c.SendMonitorWithContext(context.Background(), message)
+}
+
+// SendUserReply 向 QQ 私聊用户回复消息，并在 msgID 非空时引用原消息。
+func (c *Client) SendUserReply(ctx context.Context, userOpenID, message, msgID string) error {
+	return c.sendReply(ctx, target{kind: targetUser, id: userOpenID}, message, msgID)
+}
+
+// SendGroupReply 向 QQ 群聊回复消息，并在 msgID 非空时引用原消息。
+func (c *Client) SendGroupReply(ctx context.Context, groupOpenID, message, msgID string) error {
+	return c.sendReply(ctx, target{kind: targetGroup, id: groupOpenID}, message, msgID)
+}
+
+func (c *Client) sendReply(ctx context.Context, destination target, message, msgID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c == nil || c.getConfig == nil {
+		return errors.New("QQ Bot 客户端不可用")
+	}
+	cfg := c.getConfig()
+	if !cfg.IsQQNotificationsEnabled() {
+		return errors.New("QQ 机器人已关闭")
+	}
+	if strings.TrimSpace(destination.id) == "" {
+		return errors.New("QQ 回复目标为空")
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		token, err := c.getAccessToken(ctx)
+		if err != nil {
+			return err
+		}
+		err = c.postMessageWithToken(ctx, token, destination, message, msgID)
+		if err == nil {
+			return nil
+		}
+		var apiErr *APIError
+		if attempt == 0 && errors.As(err, &apiErr) && apiErr.HTTPStatus == http.StatusUnauthorized {
+			c.invalidateToken(token)
+			continue
+		}
+		return err
+	}
+	return errors.New("QQ access token 刷新失败")
+}
+
+// RunMessageGateway 启动入站命令所需的 Gateway 生命周期。
+// 通道通知仍按需建立 Gateway；命令入口则在配置了用户或群白名单时主动保持连接。
+func (c *Client) RunMessageGateway(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	refresh := time.NewTicker(30 * time.Second)
+	defer refresh.Stop()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if !c.messageGatewayConfigured() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-refresh.C:
+			}
+			continue
+		}
+		token, err := c.getAccessToken(ctx)
+		if err == nil {
+			_ = c.ensureGateway(ctx, token)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-refresh.C:
+		}
+	}
+}
+
+func (c *Client) messageGatewayConfigured() bool {
+	if c == nil || c.getConfig == nil {
+		return false
+	}
+	cfg := c.getConfig()
+	return cfg.IsQQNotificationsEnabled() && strings.TrimSpace(cfg.QQAppID) != "" &&
+		strings.TrimSpace(cfg.QQAppSecret) != "" &&
+		(len(cfg.QQUserOpenIDs) > 0 || len(cfg.QQGroupOpenIDs) > 0)
 }
 
 // SendTest 向所有目标发送测试消息，便于验证三类目标的权限和 ID。
@@ -196,7 +346,7 @@ func (c *Client) postMessage(ctx context.Context, target target, message string)
 		if err != nil {
 			return err
 		}
-		err = c.postMessageWithToken(ctx, token, target, message)
+		err = c.postMessageWithToken(ctx, token, target, message, "")
 		if err == nil {
 			return nil
 		}
@@ -210,7 +360,7 @@ func (c *Client) postMessage(ctx context.Context, target target, message string)
 	return errors.New("QQ access token 刷新失败")
 }
 
-func (c *Client) postMessageWithToken(ctx context.Context, token string, target target, message string) error {
+func (c *Client) postMessageWithToken(ctx context.Context, token string, target target, message, replyToMessageID string) error {
 	path := ""
 	switch target.kind {
 	case targetUser:
@@ -226,6 +376,9 @@ func (c *Client) postMessageWithToken(ctx context.Context, token string, target 
 		return fmt.Errorf("未知 QQ 目标类型 %q", target.kind)
 	}
 	payload := map[string]interface{}{"content": message}
+	if strings.TrimSpace(replyToMessageID) != "" {
+		payload["msg_id"] = strings.TrimSpace(replyToMessageID)
+	}
 	if target.kind != targetChannel {
 		payload["msg_type"] = 0
 	}

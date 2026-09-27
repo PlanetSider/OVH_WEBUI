@@ -20,7 +20,7 @@ const (
 	gatewayWriteTimeout  = 5 * time.Second
 	gatewayReconnectMin  = 1 * time.Second
 	gatewayReconnectMax  = 30 * time.Second
-	gatewayIntents       = 1 // GUILDS；频道主动发送要求 Gateway 在线
+	gatewayIntents       = 1 | (1 << 25) // GUILDS + GROUP_AND_C2C_EVENT
 )
 
 type gatewaySession struct {
@@ -276,6 +276,8 @@ func (c *Client) connectGateway(session *gatewaySession) error {
 			case 0:
 				if payload.T == "READY" {
 					session.setOnline()
+				} else if isMessageEventType(payload.T) {
+					c.dispatchMessageEvent(session.ctx, payload.T, payload.D)
 				}
 			case 1:
 				if err := writeGatewayJSON(conn, gatewayPayload{Op: 11, D: mustJSON(sequence)}); err != nil {
@@ -292,6 +294,70 @@ func (c *Client) connectGateway(session *gatewaySession) error {
 			}
 		}
 	}
+}
+
+func isMessageEventType(eventType string) bool {
+	switch eventType {
+	case EventC2CMessageCreate, EventGroupAtMessageCreate, EventGroupMessageCreate:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) dispatchMessageEvent(ctx context.Context, eventType string, raw json.RawMessage) {
+	handler := c.messageHandlerSnapshot()
+	if handler == nil {
+		return
+	}
+	var payload struct {
+		ID          string `json:"id"`
+		MessageID   string `json:"message_id"`
+		Content     string `json:"content"`
+		UserOpenID  string `json:"user_openid"`
+		GroupOpenID string `json:"group_openid"`
+		Author      struct {
+			UserOpenID   string `json:"user_openid"`
+			MemberOpenID string `json:"member_openid"`
+			OpenID       string `json:"openid"`
+			ID           string `json:"id"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return
+	}
+	messageID := strings.TrimSpace(payload.ID)
+	if messageID == "" {
+		messageID = strings.TrimSpace(payload.MessageID)
+	}
+	userOpenID := strings.TrimSpace(payload.UserOpenID)
+	if userOpenID == "" {
+		userOpenID = strings.TrimSpace(payload.Author.UserOpenID)
+	}
+	if userOpenID == "" {
+		userOpenID = strings.TrimSpace(payload.Author.MemberOpenID)
+	}
+	if userOpenID == "" {
+		userOpenID = strings.TrimSpace(payload.Author.OpenID)
+	}
+	if userOpenID == "" {
+		userOpenID = strings.TrimSpace(payload.Author.ID)
+	}
+	groupOpenID := strings.TrimSpace(payload.GroupOpenID)
+	if messageID == "" || strings.TrimSpace(payload.Content) == "" || (userOpenID == "" && groupOpenID == "") {
+		return
+	}
+	event := MessageEvent{
+		ID:          messageID,
+		EventType:   eventType,
+		Content:     payload.Content,
+		UserOpenID:  userOpenID,
+		GroupOpenID: groupOpenID,
+	}
+	if !c.claimMessageID(event.ID) {
+		return
+	}
+	go handler(ctx, event)
 }
 
 func readGatewayMessages(ctx context.Context, conn *websocket.Conn, results chan<- gatewayReadResult) {

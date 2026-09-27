@@ -525,8 +525,8 @@ function QQSection({ form, set, onSave, saving }: {
           <Field label="AppSecret *" hint={form.qqAppSecretConfigured ? "已保存密钥；留空表示保持原值" : "不会回显已保存的密钥"}>{(id) => <Input id={id} type="password" value={form.qqAppSecret || ""} onChange={(e) => set("qqAppSecret", e.target.value)} placeholder={form.qqAppSecretConfigured ? "已保存，留空保持不变" : "填写 AppSecret"} />}</Field>
         </div>
         <div className="grid gap-4 lg:grid-cols-3">
-          <Field label="用户 OpenID" hint="每行一个；用户目标接收完整通知">{(id) => <Textarea id={id} rows={4} value={userIDs.join("\\n")} onChange={(e) => set("qqUserOpenIds", parseQQIDLines(e.target.value))} placeholder="user_openid" />}</Field>
-          <Field label="群聊 OpenID" hint="每行一个；仅接收独服/VPS 上架和下架提醒">{(id) => <Textarea id={id} rows={4} value={groupIDs.join("\\n")} onChange={(e) => set("qqGroupOpenIds", parseQQIDLines(e.target.value))} placeholder="group_openid" />}</Field>
+          <Field label="管理员用户 OpenID" hint="每行一个；私聊管理员可执行全部机器人命令和中文别名；普通通知也发送到这些用户">{(id) => <Textarea id={id} rows={4} value={userIDs.join("\\n")} onChange={(e) => set("qqUserOpenIds", parseQQIDLines(e.target.value))} placeholder="user_openid" />}</Field>
+          <Field label="命令群聊 OpenID" hint="每行一个；群聊仅接受 /stock、/price、/库存、/价格；监控通知也可发送到这些群">{(id) => <Textarea id={id} rows={4} value={groupIDs.join("\\n")} onChange={(e) => set("qqGroupOpenIds", parseQQIDLines(e.target.value))} placeholder="group_openid" />}</Field>
           <Field label="频道目标" hint="每行 channel_id，或 guild_id/channel_id；仅接收独服/VPS 上架和下架提醒">{(id) => <Textarea id={id} rows={4} value={channelText} onChange={(e) => set("qqChannelTargets", parseQQChannelLines(e.target.value))} placeholder="channel_id\\n guild_id/channel_id" />}</Field>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -535,7 +535,7 @@ function QQSection({ form, set, onSave, saving }: {
         </div>
         {test.error && <div className="text-xs text-destructive break-words">{test.error instanceof Error ? test.error.message : "QQ 测试发送失败，请检查日志"}</div>}
       </div>
-      <p className="text-[11px] text-muted-foreground">普通通知、订单和抢购结果只发送到用户 OpenID；群聊与频道目标只用于独服监控和 VPS 监控的上架/下架提醒。频道主动消息会按需建立 QQ Gateway WebSocket 并维持心跳，仍受 QQ Bot 平台权限、在线状态和频控限制。</p>
+      <p className="text-[11px] text-muted-foreground">QQ Gateway 会接收命令事件。管理员用户 OpenID 的私聊可执行全部命令；命令群聊只接受 /stock、/price、/库存、/价格。普通通知、订单和抢购结果发送到管理员用户，群聊与频道目标接收独服/VPS 监控提醒。频道主动消息和入站命令都受 QQ Bot 平台权限、在线状态和频控限制。</p>
     </Section>
   );
 }

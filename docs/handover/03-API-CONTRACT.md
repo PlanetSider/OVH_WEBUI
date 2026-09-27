@@ -64,7 +64,8 @@
 - `GET/POST /api/settings`：配置 `qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds`、`qqChannelTargets`；读取响应只返回 `qqAppSecretConfigured`，不返回 AppSecret 或 access token
 - `POST /api/qq/test`：向所有已配置 QQ 目标发送测试消息；要求 `X-API-Key`
 - Token：后端调用 `POST https://api.bot.qq.com/app/getAppAccessToken`，使用 `Authorization: QQBot <access_token>`；token 只在服务端内存缓存并在过期前 60 秒刷新
-- 发送端点：用户 `/v2/users/{user_openid}/messages`、群聊 `/v2/groups/{group_openid}/messages` 使用 `{ "msg_type": 0, "content": "..." }`；频道 `/channels/{channel_id}/messages` 使用 `content` 字段。频道发送前后端会调用 `/gateway` 并完成 `QQBot <access_token>` Identify、READY 和心跳保持在线，这是 QQ 官方频道主动消息接口的前置条件
+- 发送端点：用户 `/v2/users/{user_openid}/messages`、群聊 `/v2/groups/{group_openid}/messages` 使用 `{ "msg_type": 0, "content": "..." }`；命令回复额外携带原消息 `msg_id`；频道 `/channels/{channel_id}/messages` 使用 `content` 字段。频道发送和入站命令均按 QQ 官方协议建立 `/gateway` WebSocket，完成 `QQBot <access_token>` Identify、READY 和心跳保持在线。
+- 入站命令：Gateway 订阅 `C2C_MESSAGE_CREATE`、`GROUP_AT_MESSAGE_CREATE`/`GROUP_MESSAGE_CREATE`。`qqUserOpenIds` 是私聊管理员白名单，管理员可执行完整命令；`qqGroupOpenIds` 是群聊白名单，群聊只允许 `/stock`、`/price`、`/库存`、`/价格`。消息回复引用原 `msg_id`；QQ 不向 Bot API 提供普通 QQ 号码，只使用 OpenID。
 - 路由：普通通知只发用户；独服/VPS 上架和下架监控通知发用户、群聊和频道。仅配置群聊/频道时普通通知视为策略性抑制，不进入无限重试
 - 当前版本手动填写 AppID/AppSecret，不提供二维码扫描或自动回填。微信登录、命令和通知 API 已退役；微信 SQLite 历史表和数据保留用于迁移/历史兼容
 

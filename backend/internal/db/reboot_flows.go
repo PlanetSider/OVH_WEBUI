@@ -71,7 +71,27 @@ func (db *DB) GetBotRebootFlow(id, channel, actorID, chatID string) (BotRebootFl
 	return row, true, nil
 }
 
-// TransitionBotRebootFlow 原子推进流程阶段。同一确认卡片被并发或重复点击时，
+// GetLatestBotRebootFlow 返回当前渠道/操作者/会话最近一条仍可继续的流程。
+func (db *DB) GetLatestBotRebootFlow(channel, actorID, chatID string) (BotRebootFlowRow, bool, error) {
+	var row BotRebootFlowRow
+	notBefore := float64(time.Now().Add(-BotRebootFlowTTL).Unix())
+	err := db.Get(&row,
+		`SELECT id, channel, actor_id, chat_id, stage, payload, created_at, updated_at
+		 FROM bot_reboot_flows
+		 WHERE channel = ? AND actor_id = ? AND chat_id = ?
+		   AND stage IN ('account', 'loading', 'server', 'confirm') AND created_at >= ?
+		 ORDER BY updated_at DESC LIMIT 1`,
+		channel, actorID, chatID, notBefore,
+	)
+	if err == sql.ErrNoRows {
+		return row, false, nil
+	}
+	if err != nil {
+		return row, false, fmt.Errorf("get latest bot reboot flow: %w", err)
+	}
+	return row, true, nil
+}
+
 // 只有第一次能从 confirm 推进到 done。
 func (db *DB) TransitionBotRebootFlow(id, channel, actorID, chatID, expectedStage, nextStage, payload string) (bool, error) {
 	if payload == "" {

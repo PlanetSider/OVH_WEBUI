@@ -16,10 +16,14 @@ func isAccountSwitchRequest(args []string) bool {
 }
 
 func accountChannelName(channel string) string {
-	if channel == "feishu" {
+	switch channel {
+	case "feishu":
 		return "飞书"
+	case "qq":
+		return "QQ"
+	default:
+		return "Telegram"
 	}
-	return "Telegram"
 }
 
 func accountDisplayName(account types.OVHAccount) string {

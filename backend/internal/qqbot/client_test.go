@@ -362,3 +362,142 @@ func TestTokenRefreshBeforeExpiry(t *testing.T) {
 		t.Fatalf("token requests = %d, want refresh at 60-second safety window", tokenRequests)
 	}
 }
+
+func TestRunMessageGatewayDispatchesC2CAndGroupEvents(t *testing.T) {
+	cfg := testConfig()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan MessageEvent, 2)
+	var identified gatewayIdentify
+
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade gateway: %v", err)
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteJSON(map[string]any{"op": 10, "d": map[string]any{"heartbeat_interval": 1000}})
+		var identifyPayload gatewayPayload
+		if err := conn.ReadJSON(&identifyPayload); err != nil {
+			return
+		}
+		_ = json.Unmarshal(identifyPayload.D, &identified)
+		_ = conn.WriteJSON(map[string]any{"op": 0, "s": 1, "t": "READY", "d": map[string]any{}})
+		_ = conn.WriteJSON(map[string]any{
+			"op": 0, "t": EventC2CMessageCreate,
+			"d": map[string]any{"id": "c2c-message", "content": "/help", "author": map[string]any{"user_openid": "user-1"}},
+		})
+		_ = conn.WriteJSON(map[string]any{
+			"op": 0, "t": EventGroupAtMessageCreate,
+			"d": map[string]any{"id": "group-message", "content": "/库存 24ska01", "group_openid": "group-1", "author": map[string]any{"member_openid": "member-1"}},
+		})
+		for {
+			var payload gatewayPayload
+			if err := conn.ReadJSON(&payload); err != nil {
+				return
+			}
+			if payload.Op == 1 {
+				_ = conn.WriteJSON(map[string]any{"op": 11, "d": nil})
+			}
+		}
+	}))
+	defer wsServer.Close()
+	gatewayURL := "ws" + strings.TrimPrefix(wsServer.URL, "http")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app/getAppAccessToken":
+			_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":7200,"code":0}`))
+		case "/gateway":
+			_, _ = w.Write([]byte(`{"url":"` + gatewayURL + `"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := New(func() types.Config { return cfg }, server.Client(), server.URL)
+	defer client.Close()
+	client.SetMessageHandler(func(_ context.Context, event MessageEvent) { events <- event })
+	go client.RunMessageGateway(ctx)
+
+	got := make(map[string]MessageEvent)
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for len(got) < 2 {
+		select {
+		case event := <-events:
+			got[event.ID] = event
+		case <-deadline.C:
+			t.Fatalf("received %d gateway events: %#v", len(got), got)
+		}
+	}
+	if identified.Intents != gatewayIntents || identified.Intents&(1<<25) == 0 {
+		t.Fatalf("gateway intents = %d, want GROUP_AND_C2C_EVENT", identified.Intents)
+	}
+	if got["c2c-message"].UserOpenID != "user-1" || got["c2c-message"].GroupOpenID != "" {
+		t.Fatalf("c2c event = %#v", got["c2c-message"])
+	}
+	if got["group-message"].GroupOpenID != "group-1" || got["group-message"].UserOpenID != "member-1" {
+		t.Fatalf("group event = %#v", got["group-message"])
+	}
+}
+
+func TestSendRepliesIncludeTargetAndMessageReference(t *testing.T) {
+	cfg := testConfig()
+	var paths []string
+	var bodies []map[string]any
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app/getAppAccessToken" {
+			_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":7200,"code":0}`))
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode reply body: %v", err)
+		}
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		bodies = append(bodies, body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client := New(func() types.Config { return cfg }, server.Client(), server.URL)
+	if err := client.SendUserReply(context.Background(), "user-1", "private", "message-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendGroupReply(context.Background(), "group-1", "group", "message-2"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 2 || paths[0] != "/v2/users/user-1/messages" || paths[1] != "/v2/groups/group-1/messages" {
+		t.Fatalf("reply paths = %#v", paths)
+	}
+	if bodies[0]["msg_id"] != "message-1" || bodies[1]["msg_id"] != "message-2" {
+		t.Fatalf("reply references = %#v", bodies)
+	}
+	if bodies[0]["msg_type"] != float64(0) || bodies[1]["msg_type"] != float64(0) {
+		t.Fatalf("reply msg types = %#v", bodies)
+	}
+}
+
+func TestClaimMessageIDDeduplicatesWithinWindow(t *testing.T) {
+	cfg := testConfig()
+	client := New(func() types.Config { return cfg }, nil, "http://127.0.0.1")
+	current := time.Unix(1000, 0)
+	client.now = func() time.Time { return current }
+	if !client.claimMessageID("message-1") {
+		t.Fatal("first message claim should succeed")
+	}
+	if client.claimMessageID("message-1") {
+		t.Fatal("duplicate message claim should fail")
+	}
+	current = current.Add(11 * time.Minute)
+	if !client.claimMessageID("message-1") {
+		t.Fatal("message claim should succeed after dedup window")
+	}
+}
