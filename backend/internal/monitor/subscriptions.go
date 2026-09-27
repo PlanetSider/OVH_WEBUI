@@ -49,7 +49,11 @@ func (m *Monitor) SetProxyGuardAutoOrder(accountID string, enabled bool) (int, e
 // autoOrderAccountID:auto_order 触发时用哪个账户下单;空 = 只通知不下单
 func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyAvailable, notifyUnavailable bool,
 	serverName string, lastStatus map[string]string, history []HistoryEntry, autoOrder bool, quantity int,
-	autoOrderAccountID string, memories, storages, networks []string) error {
+	autoOrderAccountID string, memories, storages, networks []string, autoPay ...*bool) error {
+	var pay *bool
+	if len(autoPay) > 0 {
+		pay = autoPay[0]
+	}
 	return m.MutateSubscriptions(func(subscriptions []*Subscription) ([]*Subscription, error) {
 		for _, s := range subscriptions {
 			if s.PlanCode == planCode {
@@ -72,6 +76,9 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 				s.NotifyAvailable = notifyAvailable
 				s.NotifyUnavailable = notifyUnavailable
 				s.AutoOrder = autoOrder
+				if pay != nil {
+					s.AutoPay = *pay
+				}
 				s.ProxyGuardAutoOrderDisabled = false
 				if autoOrder {
 					if quantity < 1 {
@@ -117,6 +124,9 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 			CreatedAt:             time.Now().Format(time.RFC3339Nano),
 			History:               history,
 			AutoOrderAccountID:    autoOrderAccountID,
+		}
+		if pay != nil {
+			sub.AutoPay = *pay
 		}
 		if autoOrder {
 			if quantity < 1 {

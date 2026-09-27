@@ -94,6 +94,7 @@ type Subscription struct {
 	History                     []HistoryEntry      `json:"history"`
 	ServerName                  string              `json:"serverName,omitempty"`
 	AutoOrder                   bool                `json:"autoOrder,omitempty"`
+	AutoPay                     bool                `json:"autoPay"`
 	Quantity                    int                 `json:"quantity,omitempty"`
 	AutoOrderAccountID          string              `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 	ProxyGuardAutoOrderDisabled bool                `json:"proxyGuardAutoOrderDisabled,omitempty"`
@@ -176,7 +177,7 @@ func cloneSubscriptionUnlocked(source *Subscription) *Subscription {
 		ConfirmedStatus: cloneStringMap(source.ConfirmedStatus), PendingOrder: cloneIntMap(source.PendingOrder),
 		PendingNotify: cloneStringMap(source.PendingNotify), CreatedAt: source.CreatedAt, ServerName: source.ServerName,
 		PendingNotifyChannels: cloneStringSliceMap(source.PendingNotifyChannels),
-		AutoOrder:             source.AutoOrder, Quantity: source.Quantity, AutoOrderAccountID: source.AutoOrderAccountID,
+		AutoOrder:             source.AutoOrder, AutoPay: source.AutoPay, Quantity: source.Quantity, AutoOrderAccountID: source.AutoOrderAccountID,
 		ProxyGuardAutoOrderDisabled: source.ProxyGuardAutoOrderDisabled,
 		Discontinued:                source.Discontinued, DiscontinuedNextCheckAt: source.DiscontinuedNextCheckAt,
 	}

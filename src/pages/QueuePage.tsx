@@ -46,6 +46,7 @@ import {
   type PurchaseTiming,
 } from "@/hooks/use-queue";
 import { useServers } from "@/hooks/use-servers";
+import { useSettings } from "@/hooks/use-settings";
 import { OVH_DATACENTERS as OVH_DC_LIST } from "@/lib/datacenters";
 import { AccountSelect } from "@/components/common/AccountSelect";
 import { useAccounts } from "@/hooks/use-accounts";
@@ -264,8 +265,10 @@ function CreateQueueDialog({
   const availQ = useAvailability();
   const variantIndex = useMemo(() => buildVariantIndex(availQ.data), [availQ.data]);
   const create = useCreateQueueItem();
+  const autoPayEnabled = useSettings().data?.queueAutoPayEnabled === true;
   const submitInFlight = useRef(false);
   const [batchResult, setBatchResult] = useState<QueueBatchResult | null>(null);
+  const [autoPay, setAutoPay] = useState(false);
   const [accountId, setAccountId] = useState("");
   const [planCode, setPlanCode] = useState(initialPlanCode || "");
   const [datacenters, setDatacenters] = useState<string[]>([]);
@@ -391,7 +394,7 @@ function CreateQueueDialog({
       toast.error("无法确认下单账户，请重试加载账户列表");
       return;
     }
-    if (!window.confirm(`用账户 ${selectedAccount.name}（${selectedAccount.zone || selectedAccount.endpoint}）创建 ${totalTasks} 个自动抢购任务？每个成功创建的任务将立即启动。`)) return;
+    if (!window.confirm(`用账户 ${selectedAccount.name}（${selectedAccount.zone || selectedAccount.endpoint}）创建 ${totalTasks} 个自动抢购任务？每个成功创建的任务将立即启动。${autoPayEnabled && autoPay ? " 已开启自动购买（付款），将尝试使用 OVH 首选支付方式付款；结账不保证支付成功。" : ""}`)) return;
     submitInFlight.current = true;
     try {
       const result = await create.mutateAsync({
@@ -401,6 +404,7 @@ function CreateQueueDialog({
         quantity: qty,
         retryInterval: Number(retryInterval) || DEFAULT_RETRY_INTERVAL,
         options: parsedOptions,
+        autoPay: autoPayEnabled && autoPay,
       });
       if (result.success === result.total) {
         toast.success(`已创建 ${result.success} 个抢购任务`);
@@ -607,6 +611,12 @@ function CreateQueueDialog({
           </div>
 
 
+          {autoPayEnabled && (
+            <label className="flex items-start gap-2 rounded-xl border border-border p-3 text-sm cursor-pointer">
+              <Checkbox checked={autoPay} onCheckedChange={(value) => setAutoPay(value === true)} />
+              <span>自动购买（付款）<span className="block text-xs text-muted-foreground mt-1">将尝试使用 OVH 首选支付方式付款；结账不保证支付成功，请核实订单与支付状态。</span></span>
+            </label>
+          )}
           {/* 汇总提示 */}
           {validBatch && (
             <div className="border border-border rounded-2xl p-3 text-[12px] text-muted-foreground">
@@ -665,6 +675,10 @@ function QueueEditDialog({
   const availability = useAvailability();
   const variantIndex = useMemo(() => buildVariantIndex(availability.data), [availability.data]);
   const update = useUpdateQueueItem();
+  const settings = useSettings().data;
+  const autoPayEnabled = item?.fromMonitor
+    ? settings?.monitorAutoPayEnabled === true
+    : settings?.queueAutoPayEnabled === true;
   const [accountId, setAccountId] = useState("");
   const [planCode, setPlanCode] = useState("");
   const [datacenters, setDatacenters] = useState<string[]>([]);
@@ -672,6 +686,7 @@ function QueueEditDialog({
   const [retryInterval, setRetryInterval] = useState(String(DEFAULT_RETRY_INTERVAL));
   const [picked, setPicked] = useState<Partial<Record<OptionGroupKey, string>>>({});
   const [rawOptions, setRawOptions] = useState<string[]>([]);
+  const [autoPay, setAutoPay] = useState(false);
   const appliedOptionsForItem = useRef<string | null>(null);
 
   useEffect(() => {
@@ -683,6 +698,7 @@ function QueueEditDialog({
     setRetryInterval(String(item.retryInterval || DEFAULT_RETRY_INTERVAL));
     setPicked({});
     setRawOptions(item.options || []);
+    setAutoPay(item.autoPay === true);
     appliedOptionsForItem.current = null;
   }, [open, item]);
 
@@ -769,7 +785,7 @@ function QueueEditDialog({
       return;
     }
     const total = datacenters.length * editQty;
-    if (total > 1 && !window.confirm(`用账户 ${selectedAccount.name}（${selectedAccount.zone || selectedAccount.endpoint}）将此任务扩展为 ${total} 个自动抢购任务？新增任务将立即启动。`)) return;
+    if ((total > 1 || (autoPayEnabled && autoPay)) && !window.confirm(`用账户 ${selectedAccount.name}（${selectedAccount.zone || selectedAccount.endpoint}）${total > 1 ? `将此任务扩展为 ${total} 个自动抢购任务？新增任务将立即启动。` : `修改此抢购任务？`}${autoPayEnabled && autoPay ? " 已开启自动购买（付款），将尝试使用 OVH 首选支付方式付款；结账不保证支付成功。" : ""}`)) return;
     const options = server
       ? [...(Object.values(picked).filter(Boolean) as string[]), ...rawOptions]
       : rawOptions;
@@ -782,6 +798,7 @@ function QueueEditDialog({
         quantity: editQty,
         retryInterval: Math.max(1, Number(retryInterval) || DEFAULT_RETRY_INTERVAL),
         options,
+        ...(autoPayEnabled ? { autoPay } : {}),
       });
       onOpenChange(false);
     } catch {
@@ -859,6 +876,12 @@ function QueueEditDialog({
                 })}
               </div>
             </div>
+          {autoPayEnabled && (
+            <label className="flex items-start gap-2 rounded-xl border border-border p-3 text-sm cursor-pointer">
+              <Checkbox checked={autoPay} onCheckedChange={(value) => setAutoPay(value === true)} />
+              <span>自动购买（付款）<span className="block text-xs text-muted-foreground mt-1">将尝试使用 OVH 首选支付方式付款；结账不保证支付成功，请核实订单与支付状态。</span></span>
+            </label>
+          )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-[11px] text-muted-foreground mb-1">每个数据中心数量</label>
@@ -938,6 +961,7 @@ function QueueRow({
             <AccountChip accountId={item.accountId} />
             <TimingChip totalMs={timing?.totalMs} phases={timing?.phases} />
             <Chip tone="default">DC {item.datacenter.toUpperCase()}</Chip>
+            {item.autoPay && <Chip tone="warning">已勾选自动付款（受全局开关控制）</Chip>}
             {item.options && item.options.length > 0 && (
               <Chip tone="default">含 {item.options.length} 个可选配置</Chip>
             )}

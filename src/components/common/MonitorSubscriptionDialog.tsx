@@ -23,6 +23,7 @@ import {
   useUpdateMonitorSubscription,
 } from "@/hooks/use-monitor";
 import { useServers, type ServerOption } from "@/hooks/use-servers";
+import { useSettings } from "@/hooks/use-settings";
 import { OVH_DATACENTERS, lookupDcStatus } from "@/lib/datacenters";
 import {
   type OptionGroupKey,
@@ -70,6 +71,7 @@ export function MonitorSubscriptionDialog({
   initialPlanCode?: string;
 }) {
   const servers = useServers();
+  const autoPayEnabled = useSettings().data?.monitorAutoPayEnabled === true;
   const availability = useAvailability();
   const variantIndex = useMemo(() => buildVariantIndex(availability.data), [availability.data]);
   const monitorList = useMonitorList();
@@ -90,6 +92,7 @@ export function MonitorSubscriptionDialog({
   const [notifyAvailable, setNotifyAvailable] = useState(true);
   const [notifyUnavailable, setNotifyUnavailable] = useState(false);
   const [autoOrder, setAutoOrder] = useState(false);
+  const [autoPay, setAutoPay] = useState(false);
   const [quantity, setQuantity] = useState(1);
   const [autoOrderAccountId, setAutoOrderAccountId] = useState("");
 
@@ -112,6 +115,7 @@ export function MonitorSubscriptionDialog({
     setNotifyAvailable(resolved?.notifyAvailable ?? true);
     setNotifyUnavailable(resolved?.notifyUnavailable ?? false);
     setAutoOrder(resolved?.autoOrder ?? false);
+    setAutoPay(resolved?.autoPay === true);
     setQuantity(Math.max(1, resolved?.quantity || 1));
     setAutoOrderAccountId(resolved?.autoOrderAccountId || "");
   }, [open, requestedKey, subscription, initialPlanCode, awaitingLookup, monitorList.data]);
@@ -240,6 +244,7 @@ export function MonitorSubscriptionDialog({
       notifyAvailable,
       notifyUnavailable,
       autoOrder,
+      ...(autoPayEnabled ? { autoPay: autoOrder && autoPay } : {}),
       quantity: autoOrder ? quantity : undefined,
       autoOrderAccountId: autoOrder ? autoOrderAccountId : "",
     };
@@ -420,6 +425,12 @@ export function MonitorSubscriptionDialog({
                   </div>
                 </div>
               </div>
+            )}
+            {autoPayEnabled && autoOrder && (
+              <label className="flex items-start gap-2.5 rounded-xl border border-border p-3 cursor-pointer text-sm">
+                <Checkbox checked={autoPay} onCheckedChange={(value) => setAutoPay(value === true)} />
+                <span>自动购买（付款）<span className="block text-xs text-muted-foreground mt-1">有货自动下单后尝试使用 OVH 首选支付方式付款；结账不保证支付成功，请核实订单与支付状态。</span></span>
+              </label>
             )}
           </div>
           <DialogFooter className="mt-5 border-t border-border pt-4">

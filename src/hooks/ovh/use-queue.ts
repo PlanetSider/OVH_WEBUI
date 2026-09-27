@@ -23,6 +23,8 @@ export interface QueueItem {
   quickOrder?: boolean;
   priority?: number;
   fromTelegram?: boolean;
+  fromMonitor?: boolean;
+  autoPay?: boolean;
   configSniperTaskId?: string;
   discontinued?: boolean;
 }
@@ -76,6 +78,7 @@ export function useCreateQueueItem() {
       options?: string[];
       retryInterval?: number;
       quantity?: number;
+      autoPay?: boolean;
     }) => {
       const qty = payload.quantity ?? 1;
       const dcs = payload.datacenters;
@@ -94,6 +97,7 @@ export function useCreateQueueItem() {
               datacenter: dc,
               retryInterval: payload.retryInterval,
               options: payload.options || [],
+              autoPay: payload.autoPay ?? false,
             });
             success++;
           } catch (e) {
@@ -124,6 +128,7 @@ export function useUpdateQueueItem() {
       options?: string[];
       retryInterval?: number;
       quantity?: number;
+      autoPay?: boolean;
     }) => {
       if (!isValidQueueBatch(payload.quantity ?? 1, payload.datacenters.length)) {
         throw new Error("数量必须为正安全整数，且批次总任务数不能超过 200");

@@ -56,7 +56,9 @@ CREATE TABLE IF NOT EXISTS queue (
   from_telegram          INTEGER NOT NULL DEFAULT 0,
   config_sniper_task_id  TEXT    NOT NULL DEFAULT '',
   discontinued           INTEGER NOT NULL DEFAULT 0,
-  proxy_guard_paused     INTEGER NOT NULL DEFAULT 0
+  proxy_guard_paused     INTEGER NOT NULL DEFAULT 0,
+  auto_pay              INTEGER NOT NULL DEFAULT 0,
+  from_monitor          INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_queue_status     ON queue(status);
 CREATE INDEX IF NOT EXISTS idx_queue_plan_code  ON queue(plan_code);
@@ -166,6 +168,7 @@ CREATE TABLE IF NOT EXISTS monitor_subscriptions (
   auto_order          INTEGER NOT NULL DEFAULT 0,
   quantity            INTEGER NOT NULL DEFAULT 1,
   auto_order_account_id TEXT NOT NULL DEFAULT '',
+  auto_pay              INTEGER NOT NULL DEFAULT 0,
   discontinued        INTEGER NOT NULL DEFAULT 0,
   discontinued_next_check_at REAL NOT NULL DEFAULT 0,
   proxy_guard_auto_order_disabled INTEGER NOT NULL DEFAULT 0

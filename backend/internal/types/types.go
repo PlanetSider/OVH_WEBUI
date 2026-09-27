@@ -35,12 +35,15 @@ type QQChannelTarget struct {
 
 // Config 对应 Python 全局 config dict
 type Config struct {
-	AppKey      string `json:"appKey"`
-	AppSecret   string `json:"appSecret"`
-	ConsumerKey string `json:"consumerKey"`
-	Endpoint    string `json:"endpoint"`
-	TgToken     string `json:"tgToken"`
-	TgChatID    string `json:"tgChatId"`
+	// 自动付款全局许可默认关闭；逐项 opt-in 与此开关必须同时为 true。
+	QueueAutoPayEnabled   *bool  `json:"queueAutoPayEnabled"`
+	MonitorAutoPayEnabled *bool  `json:"monitorAutoPayEnabled"`
+	AppKey                string `json:"appKey"`
+	AppSecret             string `json:"appSecret"`
+	ConsumerKey           string `json:"consumerKey"`
+	Endpoint              string `json:"endpoint"`
+	TgToken               string `json:"tgToken"`
+	TgChatID              string `json:"tgChatId"`
 	// 通知开关使用指针以兼容旧配置：字段缺失时按开启处理，显式 false 才关闭。
 	TgNotificationsEnabled *bool `json:"tgNotificationsEnabled,omitempty"`
 	// TgWebhookSecret 用于 setWebhook(secret_token) + 校验 X-Telegram-Bot-Api-Secret-Token。
@@ -98,7 +101,10 @@ type FeishuBinding struct {
 // DefaultConfig 与 Python 端默认值保持一致
 func DefaultConfig() Config {
 	trueValue := true
+	falseValue := false
 	return Config{
+		QueueAutoPayEnabled:        &falseValue,
+		MonitorAutoPayEnabled:      &falseValue,
 		Endpoint:                   "ovh-eu",
 		IAM:                        "go-ovh-ie",
 		Zone:                       "IE",
@@ -162,6 +168,8 @@ type QueueItem struct {
 	FailureCount       int     `json:"failureCount,omitempty"`
 	MaxRetries         int     `json:"maxRetries,omitempty"`
 	LastCheckTime      float64 `json:"lastCheckTime"`
+	AutoPay            bool    `json:"autoPay"`
+	FromMonitor        bool    `json:"fromMonitor,omitempty"`
 	QuickOrder         bool    `json:"quickOrder,omitempty"`
 	Priority           int     `json:"priority,omitempty"`
 	FromTelegram       bool    `json:"fromTelegram,omitempty"`
@@ -276,6 +284,7 @@ type Subscription struct {
 	History                 []SubscriptionHistoryEntry `json:"history"`
 	ServerName              string                     `json:"serverName,omitempty"`
 	AutoOrder               bool                       `json:"autoOrder,omitempty"`
+	AutoPay                 bool                       `json:"autoPay"`
 	Quantity                int                        `json:"quantity,omitempty"`
 	AutoOrderAccountID      string                     `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 	Discontinued            bool                       `json:"discontinued,omitempty"`

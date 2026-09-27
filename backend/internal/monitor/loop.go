@@ -454,6 +454,7 @@ func (m *Monitor) batchOrder(target, sub *Subscription, configInfo map[string]in
 				ID: uuid.NewString(), AccountID: accountID, PlanCode: planCode, Datacenter: n.dc,
 				Options: append([]string(nil), options...), Status: "running", RetryInterval: 2, MaxRetries: 3,
 				CreatedAt: now, UpdatedAt: now, QuickOrder: true, Priority: 100, Discontinued: sub.Discontinued,
+				FromMonitor: true, AutoPay: sub.AutoPay,
 			})
 		}
 	}
@@ -536,6 +537,7 @@ func sameSubscriptionSettings(left, right *Subscription) bool {
 		left.NotifyAvailable == right.NotifyAvailable &&
 		left.NotifyUnavailable == right.NotifyUnavailable &&
 		left.AutoOrder == right.AutoOrder &&
+		left.AutoPay == right.AutoPay &&
 		left.Quantity == right.Quantity &&
 		left.AutoOrderAccountID == right.AutoOrderAccountID &&
 		left.ProxyGuardAutoOrderDisabled == right.ProxyGuardAutoOrderDisabled &&

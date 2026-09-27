@@ -573,6 +573,10 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		timingOutcome = "cancelled"
 		return false
 	}
+	// 全局设置可在准备购物车期间关闭，因此直到实际发送 checkout 前才读取。
+	// 来源由服务端持久化，默认值 false；仅结账请求授权自动付款，不把结账当已支付。
+	cfg := state.Config.Get()
+	checkoutPayload["autoPayWithPreferredPaymentMethod"] = autoPayAllowed(*item, cfg)
 	if err := client.PostWithContext(ctx, "/order/cart/"+cartID+"/checkout", checkoutPayload, &checkoutResult); err != nil {
 		tl.mark("结账")
 		errMsg := "结账失败，请稍后重试"
@@ -664,6 +668,16 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 	}
 	monitor.FlushNotificationOutbox(state)
 	return true
+}
+
+func autoPayAllowed(item types.QueueItem, cfg types.Config) bool {
+	if !item.AutoPay {
+		return false
+	}
+	if item.FromMonitor {
+		return cfg.MonitorAutoPayEnabled != nil && *cfg.MonitorAutoPayEnabled
+	}
+	return cfg.QueueAutoPayEnabled != nil && *cfg.QueueAutoPayEnabled
 }
 
 func extract(v interface{}) *float64 {

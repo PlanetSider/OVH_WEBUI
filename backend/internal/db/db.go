@@ -120,6 +120,12 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("queue", "failure_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := db.addColumnIfMissing("queue", "auto_pay", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("queue", "from_monitor", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("queue", "proxy_guard_paused", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
@@ -136,6 +142,9 @@ func (db *DB) migrate() error {
 		return err
 	}
 	if err := db.addColumnIfMissing("history", "total_ms", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_pay", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -214,6 +223,8 @@ var allowedMigrationColumns = map[string]map[string]string{
 		"discontinued":       "INTEGER NOT NULL DEFAULT 0",
 		"failure_count":      "INTEGER NOT NULL DEFAULT 0",
 		"proxy_guard_paused": "INTEGER NOT NULL DEFAULT 0",
+		"auto_pay":           "INTEGER NOT NULL DEFAULT 0",
+		"from_monitor":       "INTEGER NOT NULL DEFAULT 0",
 	},
 	"history": {
 		"account_id":      "TEXT NOT NULL DEFAULT ''",
@@ -223,6 +234,7 @@ var allowedMigrationColumns = map[string]map[string]string{
 		"total_ms":        "INTEGER NOT NULL DEFAULT 0",
 	},
 	"monitor_subscriptions": {
+		"auto_pay":                        "INTEGER NOT NULL DEFAULT 0",
 		"auto_order_account_id":           "TEXT NOT NULL DEFAULT ''",
 		"discontinued":                    "INTEGER NOT NULL DEFAULT 0",
 		"discontinued_next_check_at":      "REAL NOT NULL DEFAULT 0",

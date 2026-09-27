@@ -104,6 +104,12 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 
 		prev := state.Config.Get()
 		newCfg := prev
+		if patch.QueueAutoPayEnabled != nil {
+			newCfg.QueueAutoPayEnabled = patch.QueueAutoPayEnabled
+		}
+		if patch.MonitorAutoPayEnabled != nil {
+			newCfg.MonitorAutoPayEnabled = patch.MonitorAutoPayEnabled
+		}
 
 		// 凭据去空白（前端粘贴时常带空格/换行，会导致 OVH 签名失败 "Invalid signature"）
 		patch.AppKey = strings.TrimSpace(patch.AppKey)

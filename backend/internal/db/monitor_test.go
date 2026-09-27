@@ -88,9 +88,9 @@ func monitorSubscription(planCode string) types.Subscription {
 	return types.Subscription{
 		PlanCode: planCode, Datacenters: []string{"gra"}, Memories: []string{},
 		Storages: []string{}, Networks: []string{}, NotifyAvailable: true,
-		LastStatus: map[string]string{"gra|default": "unavailable"},
+		LastStatus:      map[string]string{"gra|default": "unavailable"},
 		ConfirmedStatus: map[string]string{"gra|default": "unavailable"},
-		PendingOrder: map[string]int{}, PendingNotify: map[string]string{},
+		PendingOrder:    map[string]int{}, PendingNotify: map[string]string{},
 		CreatedAt: types.NowISO(), History: []types.SubscriptionHistoryEntry{},
 	}
 }
@@ -117,11 +117,15 @@ func TestEnqueueMonitorOrdersAndSaveSubscriptionCommitsTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	saved := original
+	saved.AutoPay = true
 	saved.PendingOrder = map[string]int{"sbg|cfg": 1}
 	items := []types.QueueItem{
 		monitorQueueItem("monitor-order-1", saved.PlanCode, "gra"),
 		monitorQueueItem("monitor-order-2", saved.PlanCode, "gra"),
 	}
+
+	items[0].AutoPay, items[0].FromMonitor = true, true
+	items[1].FromMonitor = true
 
 	if err := database.EnqueueMonitorOrdersAndSaveSubscription(saved, items, 200); err != nil {
 		t.Fatalf("enqueue monitor orders: %v", err)
@@ -133,12 +137,18 @@ func TestEnqueueMonitorOrdersAndSaveSubscriptionCommitsTogether(t *testing.T) {
 	if len(queue) != 2 {
 		t.Fatalf("queue length = %d, want 2", len(queue))
 	}
+	if !queue[0].FromMonitor || !queue[0].AutoPay || !queue[1].FromMonitor || queue[1].AutoPay {
+		t.Fatalf("queue payment flags changed: %#v", queue)
+	}
 	subscriptions, err := database.ListMonitorSubscriptions()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(subscriptions) != 1 || !reflect.DeepEqual(subscriptions[0].PendingOrder, saved.PendingOrder) {
 		t.Fatalf("saved pending orders = %#v, want %#v", subscriptions, saved.PendingOrder)
+	}
+	if !subscriptions[0].AutoPay {
+		t.Fatal("monitor subscription lost auto-pay opt-in")
 	}
 }
 

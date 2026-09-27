@@ -36,6 +36,7 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			NotifyAvailable    *bool    `json:"notifyAvailable"`
 			NotifyUnavailable  *bool    `json:"notifyUnavailable"`
 			AutoOrder          bool     `json:"autoOrder"`
+			AutoPay            *bool    `json:"autoPay"`
 			Quantity           int      `json:"quantity"`
 			AutoOrderAccountID string   `json:"autoOrderAccountId"` // 空 = 触发时只通知不下单
 		}
@@ -81,7 +82,7 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 
 		if err := mon.AddSubscription(body.PlanCode, body.Datacenters, notifyAvailable, notifyUnavailable,
 			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID,
-			body.Memories, body.Storages, body.Networks); err != nil {
+			body.Memories, body.Storages, body.Networks, body.AutoPay); err != nil {
 			state.Logger.Error("保存服务器订阅失败", "monitor")
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "保存订阅失败"})
 			return
@@ -122,6 +123,7 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			Storages           []string `json:"storages"`
 			Networks           []string `json:"networks"`
 			AutoOrder          bool     `json:"autoOrder"`
+			AutoPay            *bool    `json:"autoPay"`
 			AutoOrderAccountID string   `json:"autoOrderAccountId"`
 		}
 		if !bindJSONOrBadRequest(c, &body) {
@@ -174,7 +176,7 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 					LastStatus: map[string]string{}, ConfirmedStatus: map[string]string{},
 					PendingOrder: map[string]int{}, PendingNotify: map[string]string{}, PendingNotifyChannels: map[string][]string{},
 					CreatedAt: types.NowISO(), History: []monitor.HistoryEntry{}, ServerName: server.Name,
-					AutoOrder: body.AutoOrder, Quantity: quantity, AutoOrderAccountID: body.AutoOrderAccountID,
+					AutoOrder: body.AutoOrder, AutoPay: body.AutoPay != nil && *body.AutoPay, Quantity: quantity, AutoOrderAccountID: body.AutoOrderAccountID,
 				})
 				existing[pc] = struct{}{}
 				added++
@@ -253,6 +255,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			NotifyAvailable    *bool     `json:"notifyAvailable"`
 			NotifyUnavailable  *bool     `json:"notifyUnavailable"`
 			AutoOrder          *bool     `json:"autoOrder"`
+			AutoPay            *bool     `json:"autoPay"`
 			Quantity           *int      `json:"quantity"`
 			AutoOrderAccountID *string   `json:"autoOrderAccountId"`
 		}
@@ -303,6 +306,9 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 				if body.AutoOrder != nil {
 					sub.AutoOrder = *body.AutoOrder
 					sub.ProxyGuardAutoOrderDisabled = false
+				}
+				if body.AutoPay != nil {
+					sub.AutoPay = *body.AutoPay
 				}
 				if body.Quantity != nil {
 					sub.Quantity = *body.Quantity

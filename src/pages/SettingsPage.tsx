@@ -1,6 +1,6 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Radar, Network, AlertCircle } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Radar, Network, AlertCircle, ShoppingCart } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -49,6 +49,7 @@ function endpointForZone(zone: string): string {
 const SECTIONS = [
   { id: "password", icon: KeyRound, label: "访问密码" },
   { id: "accounts", icon: Globe, label: "OVH 账户" },
+  { id: "ordering", icon: ShoppingCart, label: "下单设置" },
   { id: "telegram", icon: Send, label: "Telegram" },
   { id: "feishu", icon: MessageSquare, label: "飞书" },
   { id: "qq", icon: MessageSquare, label: "QQ 机器人" },
@@ -193,7 +194,20 @@ function SettingsPage() {
                 </Section>
               ) : active === "accounts" ? (
                 <AccountsSection />
-              ) : active === "telegram" ? (
+              ) : active === "ordering" ? (
+                 <Section title="下单设置">
+                   <p className="text-xs text-muted-foreground">全局开关默认关闭；修改后需点击页面右上角“保存设置”才会生效。</p>
+                   <label className="flex items-start gap-3 rounded-xl border border-border p-4 cursor-pointer">
+                     <Checkbox checked={form.queueAutoPayEnabled === true} onCheckedChange={(value) => set("queueAutoPayEnabled", value === true)} />
+                     <span><span className="block text-sm font-medium">允许抢购队列自动购买（付款）</span><span className="block text-xs text-muted-foreground mt-1">启用后，创建和修改抢购任务时可逐项选择是否在下单后尝试付款。</span></span>
+                   </label>
+                   <label className="flex items-start gap-3 rounded-xl border border-border p-4 cursor-pointer">
+                     <Checkbox checked={form.monitorAutoPayEnabled === true} onCheckedChange={(value) => set("monitorAutoPayEnabled", value === true)} />
+                     <span><span className="block text-sm font-medium">允许独服监控自动购买（付款）</span><span className="block text-xs text-muted-foreground mt-1">启用后，独服监控任务可逐项选择是否在触发下单后尝试付款；不影响 VPS 监控。</span></span>
+                   </label>
+                   <p className="text-xs text-amber-600">付款使用 OVH 账户的首选支付方式；完成结账不保证支付成功，请及时在 OVH 核实订单与支付结果。</p>
+                 </Section>
+               ) : active === "telegram" ? (
                 <TelegramSection form={form} set={set} onSaveToken={onSave} saving={save.isPending} webhookUrlEdited={webhookUrlEdited} />
               ) : active === "feishu" ? (
                 <FeishuSection form={form} set={set} onSave={onSave} saving={save.isPending} />

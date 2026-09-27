@@ -31,6 +31,8 @@ export interface SettingsConfig {
   feishuEncryptKey?: string;
   feishuVerificationTokenConfigured?: boolean;
   feishuEncryptKeyConfigured?: boolean;
+  queueAutoPayEnabled?: boolean;
+  monitorAutoPayEnabled?: boolean;
   qqAppId?: string;
   qqAppSecret?: string;
   qqAppSecretConfigured?: boolean;

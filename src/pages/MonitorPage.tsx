@@ -241,6 +241,7 @@ function SubRow({
               {sub.networks?.length ? <Chip tone="default">网络: {sub.networks.join(" / ")}</Chip> : null}
               {sub.notifyAvailable && <Chip tone="success">有货提醒</Chip>}
               {sub.notifyUnavailable && <Chip tone="warning">无货提醒</Chip>}
+              {sub.autoPay && <Chip tone="warning">已勾选自动付款（受全局开关控制）</Chip>}
               {sub.autoOrder && sub.autoOrderAccountId ? (
                 <>
                   <Chip tone="solid">

@@ -7,11 +7,36 @@ import (
 	"reflect"
 	"testing"
 
-	ovhsdk "github.com/ovh/go-ovh/ovh"
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/types"
+	ovhsdk "github.com/ovh/go-ovh/ovh"
 )
+
+func TestAutoPayAllowed(t *testing.T) {
+	on, off := true, false
+	for _, tc := range []struct {
+		name           string
+		item           types.QueueItem
+		queue, monitor *bool
+		want           bool
+	}{
+		{"old queue record", types.QueueItem{}, &on, &on, false},
+		{"old settings", types.QueueItem{AutoPay: true}, nil, nil, false},
+		{"queue authorized", types.QueueItem{AutoPay: true}, &on, &off, true},
+		{"queue global disabled", types.QueueItem{AutoPay: true}, &off, &on, false},
+		{"monitor authorized", types.QueueItem{AutoPay: true, FromMonitor: true}, &off, &on, true},
+		{"monitor global disabled", types.QueueItem{AutoPay: true, FromMonitor: true}, &on, &off, false},
+		{"monitor task not opted in", types.QueueItem{FromMonitor: true}, &on, &on, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := types.Config{QueueAutoPayEnabled: tc.queue, MonitorAutoPayEnabled: tc.monitor}
+			if got := autoPayAllowed(tc.item, cfg); got != tc.want {
+				t.Fatalf("autoPayAllowed() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestCheckoutFailureIsDefinitive(t *testing.T) {
 	tests := []struct {

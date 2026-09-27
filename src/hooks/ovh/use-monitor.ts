@@ -13,6 +13,7 @@ export interface MonitorSubscription {
   notifyAvailable: boolean;
   notifyUnavailable: boolean;
   autoOrder?: boolean;
+  autoPay?: boolean;
   quantity?: number;
   /** 触发 auto-order 时用哪个 OVH 账户下单;空 = 只通知 */
   autoOrderAccountId?: string;

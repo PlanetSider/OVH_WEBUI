@@ -47,6 +47,7 @@ func AddQueueItem(state *app.State) gin.HandlerFunc {
 			Datacenter    string   `json:"datacenter"`
 			Options       []string `json:"options"`
 			RetryInterval int      `json:"retryInterval"`
+			AutoPay       bool     `json:"autoPay"`
 		}
 		if !bindJSONOrBadRequest(c, &body) {
 			return
@@ -96,6 +97,7 @@ func AddQueueItem(state *app.State) gin.HandlerFunc {
 			CreatedAt:     types.NowISO(),
 			UpdatedAt:     types.NowISO(),
 			RetryInterval: body.RetryInterval,
+			AutoPay:       body.AutoPay,
 			RetryCount:    0,
 			MaxRetries:    0, // 0 = 无限抢购（与 Telegram 一致）；quick-order 路径单独设上限
 			LastCheckTime: 0,
@@ -261,6 +263,7 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 			Options       *[]string `json:"options"`
 			RetryInterval *int      `json:"retryInterval"`
 			Quantity      *int      `json:"quantity"`
+			AutoPay       *bool     `json:"autoPay"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "请求处理失败"})
@@ -371,6 +374,9 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 			queue[index].Datacenter = dcs[0]
 			queue[index].Options = append([]string{}, options...)
 			queue[index].RetryInterval = retryInterval
+			if body.AutoPay != nil {
+				queue[index].AutoPay = *body.AutoPay
+			}
 			queue[index].RetryCount = 0
 			queue[index].FailureCount = 0
 			queue[index].LastCheckTime = 0
@@ -388,6 +394,7 @@ func UpdateQueueItem(state *app.State) gin.HandlerFunc {
 						Options: append([]string{}, options...), Status: "running", CreatedAt: now, UpdatedAt: now,
 						RetryInterval: retryInterval, MaxRetries: item.MaxRetries, Priority: item.Priority,
 						QuickOrder: item.QuickOrder, FromTelegram: item.FromTelegram,
+						AutoPay: queue[index].AutoPay, FromMonitor: item.FromMonitor,
 						ConfigSniperTaskID: item.ConfigSniperTaskID, Discontinued: discontinued,
 					})
 				}
