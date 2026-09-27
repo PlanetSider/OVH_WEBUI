@@ -76,6 +76,33 @@ export interface FeishuRegistrationStatus {
   error?: string;
 }
 
+export interface QQRegistrationSession {
+  success: boolean;
+  sessionId: string;
+  verificationUriComplete: string;
+  expiresIn: number;
+  interval: number;
+}
+
+export interface QQRegistrationStatus {
+  success: boolean;
+  status: "pending" | "complete" | "expired" | "error";
+  retryAfter?: number;
+  appId?: string;
+  appSecretConfigured?: boolean;
+  userOpenId?: string;
+  bound?: boolean;
+  error?: string;
+}
+
+export async function startQQRegistration() {
+  return (await api.post<QQRegistrationSession>("/qq/registration/start")).data;
+}
+
+export async function pollQQRegistration(sessionId: string) {
+  return (await api.get<QQRegistrationStatus>(`/qq/registration/${encodeURIComponent(sessionId)}`)).data;
+}
+
 export async function startFeishuRegistration() {
   return (await api.post<FeishuRegistrationSession>("/feishu/registration/start")).data;
 }

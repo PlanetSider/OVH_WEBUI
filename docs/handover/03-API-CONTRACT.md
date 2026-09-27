@@ -63,6 +63,8 @@
 
 - `GET/POST /api/settings`：配置 `qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds`、`qqChannelTargets`；读取响应只返回 `qqAppSecretConfigured`，不返回 AppSecret 或 access token
 - `POST /api/qq/test`：向所有已配置 QQ 目标发送测试消息；要求 `X-API-Key`
+- `POST /api/qq/registration/start`：创建 QQ 官方扫码绑定会话，服务端向 `q.qq.com/lite/create_bind_task` 请求任务；响应返回 `sessionId`、官方二维码 URL、`expiresIn` 和 `interval`，不返回绑定密钥或 AppSecret
+- `GET /api/qq/registration/:sessionId`：服务端轮询 `q.qq.com/lite/poll_bind_result`；完成后服务端使用 AES-256-GCM 解密并保存 AppID/AppSecret，将扫码者 `user_openid` 去重加入管理员白名单并启用 QQ 通知。响应只返回 `appId`、`appSecretConfigured`、`userOpenId` 和绑定状态，不返回 AppSecret
 - `POST /api/qq/quick-order`：QQ 下单页面直接执行与 QQ Bot 相同的 `/stock`、`/queue`、`/buy`、`/monitor`、`/price` 命令语义；要求完整 API 请求签名，不向 QQ 发送网页执行回执。请求体沿用 `{ "mode": "stock", "planCode": "24ska01", "datacenter": "gra", "quantity": 1, "options": [] }` 字段；响应返回 `success`、`message`/`error`、`mode` 和生成的 `command`。
 - Token：后端调用 `POST https://api.bot.qq.com/app/getAppAccessToken`，使用 `Authorization: QQBot <access_token>`；token 只在服务端内存缓存并在过期前 60 秒刷新
 - 发送端点：用户 `/v2/users/{user_openid}/messages`、群聊 `/v2/groups/{group_openid}/messages` 使用 `{ "msg_type": 0, "content": "..." }`；命令回复额外携带原消息 `msg_id`；频道 `/channels/{channel_id}/messages` 使用 `content` 字段。频道发送和入站命令均按 QQ 官方协议建立 `/gateway` WebSocket，完成 `QQBot <access_token>` Identify、READY 和心跳保持在线。

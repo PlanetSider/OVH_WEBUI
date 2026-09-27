@@ -120,6 +120,22 @@ func New(getConfig func() types.Config, httpClient *http.Client, baseURL string)
 	}
 }
 
+func (c *Client) Reconfigure() {
+	if c == nil {
+		return
+	}
+	c.gatewayMu.Lock()
+	if c.gateway != nil {
+		c.gateway.cancel()
+		c.gateway = nil
+	}
+	c.gatewayMu.Unlock()
+	c.tokenMu.Lock()
+	c.accessToken = ""
+	c.tokenExpiresAt = time.Time{}
+	c.tokenMu.Unlock()
+}
+
 func (c *Client) Configured() bool {
 	if c == nil || c.getConfig == nil {
 		return false

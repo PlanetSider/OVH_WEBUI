@@ -32,7 +32,8 @@ OVH_WEBUI 是一个前后端一体的 OVH 自托管控制台：
 - `POST /api/qq/quick-order` 是受 API 请求签名保护的网页直执行入口，复用 `buildTelegramCommandArgs` 和 `dispatchBotCommand(..., "qq")`；请求体沿用 Telegram quick-order 的 `mode`、`planCode`、`datacenter`、`quantity`、`options` 字段，网页直接返回结果，不向 QQ 发送回执，也不绕过 Gateway 入站权限模型。
 - 独服监控弹窗 `MonitorSubscriptionDialog` 读取 `useSettings().data?.monitorAutoPayEnabled`。仅当系统允许自动付款且已开启“有货时自动下单”时，才把 `autoPay` 作为同级提醒项显示在其右侧；关闭设置时保持自动下单跨列。`autoPay` 提交字段和后端权限校验不得因布局调整而改变。
 
-## 通知通道约定
+- QQ Bot v2 的网页扫码注册必须由后端代理 `q.qq.com/lite/create_bind_task` 和 `q.qq.com/lite/poll_bind_result`；浏览器只展示官方二维码 URL 和非敏感状态。绑定密钥、`bot_encrypt_secret` 解密、AppSecret 持久化只能在服务端完成，响应、日志和前端状态不得包含 AppSecret、绑定密钥或密文。
+- 扫码成功后服务端保存 AppID/AppSecret，去重追加扫码者 `user_openid` 到 `qqUserOpenIds` 并启用 QQ 通知；必须保留现有群聊/频道目标和手动凭据配置路径。更新 QQ 凭据后要清理旧 access token/Gateway 会话，避免继续使用旧应用。
 
 - QQ Bot v2 的唯一发送 owner 是 `backend/internal/qqbot/`；配置字段为 `qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds` 和 `qqChannelTargets`。`qqUserOpenIds` 同时是私聊管理员 OpenID 白名单；`qqGroupOpenIds` 是群聊命令白名单。
 - QQ Gateway 入站命令只为 `qqUserOpenIds` 中的私聊用户执行完整命令；群聊仅放行 `/stock`、`/price`、`/库存`、`/价格`，并引用原消息回复。关闭 QQ 通知开关时入站命令也必须失效。

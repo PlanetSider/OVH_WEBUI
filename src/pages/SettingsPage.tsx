@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/common/Skeleton";
 import { Chip } from "@/components/common/Chip";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { useSettings, useSaveSettings, useCacheInfo, useClearCache, useTelegramWebhookInfo, useSetTelegramWebhook, useFeishuBinding, useSendFeishuTestCard, startFeishuRegistration, pollFeishuRegistration, useSendQQTest, type SettingsConfig } from "@/hooks/use-settings";
+import { useSettings, useSaveSettings, useCacheInfo, useClearCache, useTelegramWebhookInfo, useSetTelegramWebhook, useFeishuBinding, useSendFeishuTestCard, startFeishuRegistration, pollFeishuRegistration, startQQRegistration, pollQQRegistration, useSendQQTest, type SettingsConfig } from "@/hooks/use-settings";
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { createQRCodeDataURL } from "@/vendor/qrcode";
@@ -497,6 +497,90 @@ function QQSection({ form, set, onSave, saving }: {
   const userIDs = form.qqUserOpenIds || [];
   const groupIDs = form.qqGroupOpenIds || [];
   const channelTargets = form.qqChannelTargets || [];
+  const setFieldRef = useRef(set);
+  const userIDsRef = useRef(userIDs);
+  const [registration, setRegistration] = useState<{ sessionId: string; url: string; expiresAt: number; interval: number } | null>(null);
+  const [registrationStatus, setRegistrationStatus] = useState<"idle" | "starting" | "pending" | "complete" | "error">("idle");
+  const [registrationError, setRegistrationError] = useState("");
+  const [qrCodeDataURL, setQRCodeDataURL] = useState("");
+
+  useEffect(() => {
+    setFieldRef.current = set;
+  }, [set]);
+
+  useEffect(() => {
+    userIDsRef.current = userIDs;
+  }, [form.qqUserOpenIds]);
+
+  const startRegistration = async () => {
+    setRegistrationStatus("starting");
+    setRegistrationError("");
+    try {
+      const result = await startQQRegistration();
+      setRegistration({
+        sessionId: result.sessionId,
+        url: result.verificationUriComplete,
+        expiresAt: Date.now() + result.expiresIn * 1000,
+        interval: Math.max(2, result.interval || 2),
+      });
+      setQRCodeDataURL("");
+      void createQRCodeDataURL(result.verificationUriComplete)
+        .then(setQRCodeDataURL)
+        .catch((error) => {
+          setRegistrationStatus("error");
+          setRegistrationError(error instanceof Error ? error.message : "生成二维码失败");
+        });
+      setRegistrationStatus("pending");
+    } catch (error) {
+      setRegistrationStatus("error");
+      setRegistrationError(error instanceof Error ? error.message : "创建扫码会话失败");
+    }
+  };
+
+  useEffect(() => {
+    if (!registration || registrationStatus !== "pending") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      if (Date.now() >= registration.expiresAt) {
+        if (!cancelled) {
+          setRegistrationStatus("error");
+          setRegistrationError("二维码已过期，请重新生成");
+        }
+        return;
+      }
+      try {
+        const result = await pollQQRegistration(registration.sessionId);
+        if (cancelled) return;
+        if (result.status === "complete" && result.appId) {
+          setFieldRef.current("qqAppId", result.appId);
+          setFieldRef.current("qqAppSecretConfigured", result.appSecretConfigured === true);
+          setFieldRef.current("qqNotificationsEnabled", true);
+          if (result.userOpenId) {
+            setFieldRef.current("qqUserOpenIds", Array.from(new Set([...userIDsRef.current, result.userOpenId])));
+          }
+          setRegistrationStatus("complete");
+          toast.success("QQ Bot 已创建并绑定，凭据已由服务端安全保存");
+          return;
+        }
+        if (result.status !== "pending") {
+          setRegistrationStatus("error");
+          setRegistrationError(result.error || "扫码创建机器人失败");
+          return;
+        }
+        timer = setTimeout(poll, Math.max(2, result.retryAfter || registration.interval) * 1000);
+      } catch (error) {
+        if (!cancelled) {
+          setRegistrationStatus("error");
+          setRegistrationError(error instanceof Error ? error.message : "查询扫码状态失败");
+        }
+      }
+    };
+    timer = setTimeout(poll, registration.interval * 1000);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // setFieldRef keeps the latest form setter without restarting the poll loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registration, registrationStatus]);
   const configured = Boolean(
     form.qqAppId?.trim() &&
     (form.qqAppSecret?.trim() || form.qqAppSecretConfigured) &&
@@ -510,7 +594,7 @@ function QQSection({ form, set, onSave, saving }: {
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-[13px] font-medium">QQ Bot v2 凭据</h3>
-            <p className="text-[11px] text-muted-foreground mt-1">手动填写开放平台的 AppID 和 AppSecret，密钥只在服务端加密保存。</p>
+            <p className="text-[11px] text-muted-foreground mt-1">可扫码自动创建官方 QQ Bot，也可手动填写开放平台的 AppID 和 AppSecret；密钥只在服务端加密保存。</p>
           </div>
           <div className="flex items-center gap-3">
             <NotificationStatusSelect
@@ -519,6 +603,34 @@ function QQSection({ form, set, onSave, saving }: {
             />
             <Chip tone={configured ? "success" : "warning"}>{configured ? "已配置" : "未配置"}</Chip>
           </div>
+        </div>
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-[13px] font-medium flex items-center gap-2"><QrCode className="h-4 w-4" />扫码创建并绑定 QQ Bot</h3>
+              <p className="text-[11px] text-muted-foreground mt-1">使用手机 QQ 扫描官方二维码即可创建机器人。扫码者 OpenID 会自动加入管理员白名单，AppSecret 不会回显。</p>
+            </div>
+            <Button type="button" size="sm" variant="outline" onClick={() => void startRegistration()} disabled={registrationStatus === "starting" || registrationStatus === "pending"}>
+              {registrationStatus === "starting" ? <Loader2 className="h-4 w-4 animate-spin" /> : <QrCode className="h-4 w-4" />}
+              {registrationStatus === "pending" ? "等待扫码" : "生成二维码"}
+            </Button>
+          </div>
+          {registration && registrationStatus === "pending" && (
+            <div className="rounded-lg bg-background border p-4 text-center space-y-3">
+              {qrCodeDataURL ? (
+                <img src={qrCodeDataURL} alt="QQ Bot 创建二维码" className="h-64 w-64 max-w-full mx-auto rounded-lg bg-white p-2" />
+              ) : (
+                <div className="h-64 w-64 max-w-full mx-auto rounded-lg bg-white flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>
+              )}
+              <p className="text-xs text-muted-foreground">请使用手机 QQ 扫描上方二维码并确认创建机器人。二维码完全在浏览器本地生成。</p>
+              <Button asChild type="button" variant="terminal" size="sm">
+                <a href={registration.url} target="_blank" rel="noreferrer">打开 QQ 官方绑定页 <ExternalLink className="h-3.5 w-3.5" /></a>
+              </Button>
+              <div className="flex items-center justify-center gap-2 text-xs text-primary"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在等待 QQ 返回机器人凭据…</div>
+            </div>
+          )}
+          {registrationStatus === "complete" && <div className="text-xs text-primary flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />创建并绑定成功，App ID 和管理员 OpenID 已回填；AppSecret 已安全保存且不会回显。</div>}
+          {registrationStatus === "error" && <div className="text-xs text-destructive">{registrationError}</div>}
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="AppID *" hint="QQ 开放平台机器人 ID">{(id) => <Input id={id} value={form.qqAppId || ""} onChange={(e) => set("qqAppId", e.target.value)} placeholder="例如 102xxxxxxxx" />}</Field>

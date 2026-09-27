@@ -249,9 +249,11 @@ func main() {
 		api.POST("/telegram/quick-order", handlers.TelegramQuickOrder(state, mon))
 		api.POST("/telegram/register-commands", handlers.RegisterTelegramCommands(state))
 
-		// QQ Bot v2（手填 AppID/AppSecret，继续要求 X-API-Key）
+		// QQ Bot v2（支持扫码创建/绑定或手填 AppID/AppSecret，继续要求 X-API-Key）
 		api.POST("/qq/test", handlers.TestQQ(state))
 		api.POST("/qq/quick-order", handlers.QQQuickOrder(state, mon))
+		api.POST("/qq/registration/start", handlers.StartQQRegistration(state))
+		api.GET("/qq/registration/:sessionId", handlers.PollQQRegistration(state))
 
 		// Servers / availability / cache
 		api.GET("/servers", handlers.GetServers(state, mon))
