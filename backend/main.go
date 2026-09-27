@@ -251,6 +251,7 @@ func main() {
 
 		// QQ Bot v2（手填 AppID/AppSecret，继续要求 X-API-Key）
 		api.POST("/qq/test", handlers.TestQQ(state))
+		api.POST("/qq/quick-order", handlers.QQQuickOrder(state, mon))
 
 		// Servers / availability / cache
 		api.GET("/servers", handlers.GetServers(state, mon))

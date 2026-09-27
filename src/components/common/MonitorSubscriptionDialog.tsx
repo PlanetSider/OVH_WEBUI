@@ -404,7 +404,15 @@ export function MonitorSubscriptionDialog({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <ToggleCard checked={notifyAvailable} onChange={setNotifyAvailable} label="有货时提醒" />
                 <ToggleCard checked={notifyUnavailable} onChange={setNotifyUnavailable} label="无货时提醒" />
-                <ToggleCard checked={autoOrder} onChange={setAutoOrder} label="有货时自动下单" className="sm:col-span-2" />
+                <ToggleCard
+                  checked={autoOrder}
+                  onChange={setAutoOrder}
+                  label="有货时自动下单"
+                  className={autoPayEnabled && autoOrder ? "" : "sm:col-span-2"}
+                />
+                {autoPayEnabled && autoOrder && (
+                  <ToggleCard checked={autoPay} onChange={setAutoPay} label="自动购买（付款）" />
+                )}
               </div>
             </div>
 
@@ -425,12 +433,6 @@ export function MonitorSubscriptionDialog({
                   </div>
                 </div>
               </div>
-            )}
-            {autoPayEnabled && autoOrder && (
-              <label className="flex items-start gap-2.5 rounded-xl border border-border p-3 cursor-pointer text-sm">
-                <Checkbox checked={autoPay} onCheckedChange={(value) => setAutoPay(value === true)} />
-                <span>自动购买（付款）<span className="block text-xs text-muted-foreground mt-1">有货自动下单后尝试使用 OVH 首选支付方式付款；结账不保证支付成功，请核实订单与支付状态。</span></span>
-              </label>
             )}
           </div>
           <DialogFooter className="mt-5 border-t border-border pt-4">

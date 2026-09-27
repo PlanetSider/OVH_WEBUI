@@ -597,7 +597,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(order),
     }),
-  /** 向 Telegram 注册 Bot 命令菜单（setMyCommands） */
+  /** 网页端按 QQ Bot 相同语义直接执行 /stock /queue /buy /monitor /price，不发送 QQ 消息 */
+  qqQuickOrder: (order: Record<string, unknown>) =>
+    apiRequest<{
+      success: boolean;
+      message?: string;
+      error?: string;
+      mode?: string;
+      command?: string;
+    }>("/api/qq/quick-order", {
+      method: "POST",
+      body: JSON.stringify(order),
+    }),
   registerTelegramCommands: () =>
     apiRequest<any>("/api/telegram/register-commands", {
       method: "POST",

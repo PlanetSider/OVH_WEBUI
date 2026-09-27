@@ -24,6 +24,7 @@ import ContactChangePage from "./pages/ContactChangePage";
 import PerformancePage from "./pages/PerformancePage";
 import TelegramOrderPage from "./pages/TelegramOrderPage";
 import FeishuOrderPage from "./pages/FeishuOrderPage";
+import QQOrderPage from "./pages/QQOrderPage";
 import RealtimeAvailabilityPage from "./pages/RealtimeAvailabilityPage";
 import PreaddedServersPage from "./pages/PreaddedServersPage";
 
@@ -70,6 +71,7 @@ const App = () => (
                 <Route path="/performance" element={<PerformancePage />} />
                 <Route path="/telegram-order" element={<TelegramOrderPage />} />
                 <Route path="/feishu-order" element={<FeishuOrderPage />} />
+                <Route path="/qq-order" element={<QQOrderPage />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </OvhCredsGate>

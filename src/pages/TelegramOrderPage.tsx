@@ -113,11 +113,113 @@ const orderModes: OrderMode[] = [
   }
 ];
 
-const HISTORY_STORAGE_KEY = 'telegram_command_history';
+interface CommandReference {
+  command: string;
+  format: string;
+  description: string;
+  example: string;
+  color: string;
+}
+
+const commandReferences: CommandReference[] = [
+  {
+    command: "型号查询",
+    format: "<服务器型号>",
+    description: "直接发送服务器型号，查询对应的 PlanCode 和配置详情",
+    example: "KS-1",
+    color: "text-cyan-500",
+  },
+  {
+    command: "/start · /开始",
+    format: "/start",
+    description: "启动机器人并显示帮助入口",
+    example: "/start",
+    color: "text-emerald-500",
+  },
+  {
+    command: "/help · /帮助",
+    format: "/help",
+    description: "查看全部命令和参数说明",
+    example: "/help",
+    color: "text-sky-500",
+  },
+  {
+    command: "/account · /账户",
+    format: "/account [switch]",
+    description: "查看当前 OVH 账户；添加 switch 打开账户切换菜单",
+    example: "/account switch",
+    color: "text-purple-500",
+  },
+  {
+    command: "/account switch · /切换账户",
+    format: "/account switch",
+    description: "进入 OVH 账户切换流程",
+    example: "/切换账户",
+    color: "text-violet-500",
+  },
+  {
+    command: "/reboot · /重启",
+    format: "/reboot",
+    description: "通过账号、服务器和确认流程安全重启独立服务器",
+    example: "/reboot",
+    color: "text-red-500",
+  },
+  {
+    command: "/stock · /库存",
+    format: "/stock <planCode>",
+    description: "查询指定服务器的实时库存状态",
+    example: "/stock 24ska01",
+    color: "text-blue-500",
+  },
+  {
+    command: "/queue · /抢购",
+    format: "/queue <planCode> [datacenter] [quantity] [options]",
+    description: "将服务器加入抢购队列",
+    example: "/queue 24ska01 gra 1",
+    color: "text-orange-500",
+  },
+  {
+    command: "/buy · /下单",
+    format: "/buy <planCode> [datacenter] [quantity] [options]",
+    description: "立即尝试购买指定服务器",
+    example: "/buy 24ska01 gra",
+    color: "text-red-500",
+  },
+  {
+    command: "/monitor · /监控",
+    format: "/monitor <planCode> [datacenter ...]",
+    description: "添加服务器库存监控，有货时推送通知",
+    example: "/monitor 24ska01 gra",
+    color: "text-green-500",
+  },
+  {
+    command: "/price · /价格",
+    format: "/price <planCode> <datacenter>",
+    description: "查询服务器在指定机房的价格",
+    example: "/price 24ska01 gra",
+    color: "text-yellow-500",
+  },
+  {
+    command: "/order · /订单",
+    format: "/order [数量|unpaid]",
+    description: "查看最近一个月订单，或按数量/未付款状态筛选",
+    example: "/order unpaid",
+    color: "text-indigo-500",
+  },
+  {
+    command: "/pay · /支付",
+    format: "/pay <订单号>",
+    description: "使用 OVH 首选支付方式提交订单付款",
+    example: "/pay 123456789",
+    color: "text-pink-500",
+  },
+];
+
+const HISTORY_STORAGE_KEY = "telegram_command_history";
 const MAX_HISTORY_ITEMS = 20;
 
 interface TelegramOrderPageProps {
-  channel?: 'telegram' | 'feishu';
+  channel?: 'telegram' | 'feishu' | 'qq';
 }
 
 interface OrderResult {
@@ -134,9 +236,14 @@ function errorMessage(error: unknown): string {
 
 const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => {
   const isFeishu = channel === 'feishu';
-  const historyStorageKey = isFeishu ? 'feishu_command_history' : HISTORY_STORAGE_KEY;
+  const isQQ = channel === 'qq';
+  const historyStorageKey = isFeishu
+    ? 'feishu_command_history'
+    : isQQ
+      ? 'qq_command_history'
+      : HISTORY_STORAGE_KEY;
   const { data: servers } = useServers();
-  const settings = useSettings(isFeishu);
+  const settings = useSettings(isFeishu || isQQ);
   const [selectedMode, setSelectedMode] = useState<OrderMode['mode']>('stock');
   const [planCode, setPlanCode] = useState('');
   const [datacenter, setDatacenter] = useState('');
@@ -174,8 +281,8 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
 
   // Load webhook info on mount
   useEffect(() => {
-    if (!isFeishu) void loadWebhookInfo();
-  }, [isFeishu]);
+    if (!isFeishu && !isQQ) void loadWebhookInfo();
+  }, [isFeishu, isQQ]);
 
   const loadWebhookInfo = async () => {
     setIsLoadingWebhook(true);
@@ -278,7 +385,11 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
     const command = generateCommand();
     setIsSubmitting(true);
     try {
-      const execute = isFeishu ? api.feishuQuickOrder : api.telegramQuickOrder;
+      const execute = isFeishu
+        ? api.feishuQuickOrder
+        : isQQ
+          ? api.qqQuickOrder
+          : api.telegramQuickOrder;
       const result = await execute({
         mode: selectedMode,
         planCode,
@@ -328,11 +439,18 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
     settings.data?.feishuEnabled && settings.data?.feishuAppId && settings.data?.feishuAppSecret
   );
   const isFeishuConnected = isFeishuConfigured && Boolean(feishuBinding.data?.bound);
+  const isQQConfigured = Boolean(
+    settings.data?.qqNotificationsEnabled !== false
+      && settings.data?.qqAppId
+      && settings.data?.qqAppSecretConfigured
+  );
   const connectionLoading = isFeishu
     ? settings.isLoading || feishuBinding.isLoading
-    : isLoadingWebhook;
-  const isConnected = isFeishu ? isFeishuConnected : isWebhookConnected;
-  const channelName = isFeishu ? "飞书" : "Telegram";
+    : isQQ
+      ? settings.isLoading
+      : isLoadingWebhook;
+  const isConnected = isFeishu ? isFeishuConnected : isQQ ? isQQConfigured : isWebhookConnected;
+  const channelName = isFeishu ? "飞书" : isQQ ? "QQ" : "Telegram";
 
   return (
     <>
@@ -355,7 +473,9 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                 <p className="text-xs sm:text-sm text-muted-foreground mt-1">
                   {isFeishu
                     ? "通过飞书私聊命令和流式交互卡片执行下单（使用系统当前默认 OVH 账户）"
-                    : "通过 Telegram 消息快速执行下单（需先配置 Webhook 并注册命令菜单）"}
+                    : isQQ
+                      ? "按 QQ Bot 命令语义直接执行下单（结果显示在此页面，不发送 QQ 消息）"
+                      : "通过 Telegram 消息快速执行下单（需先配置 Webhook 并注册命令菜单）"}
                 </p>
               </div>
               {/* Bot Connection Status */}
@@ -404,7 +524,27 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                     </Link>
                   </Button>
                 </>
-              ) : <>
+              ) : isQQ ? (
+                <>
+                   <Button
+                     variant="outline"
+                     size="sm"
+                     onClick={() => void settings.refetch()}
+                     disabled={settings.isFetching}
+                     className="h-8 text-xs"
+                   >
+                     <RefreshCw className={cn("h-3 w-3 sm:h-4 sm:w-4 mr-1", settings.isFetching && "animate-spin")} />
+                     刷新配置
+                   </Button>
+                   <Button asChild variant="terminal" size="sm" className="h-8 text-xs">
+                     <Link to="/settings?section=qq">
+                       <Settings2 className="h-3 w-3 sm:h-4 sm:w-4 mr-1" />
+                       QQ 配置
+                     </Link>
+                   </Button>
+                 </>
+               ) : <>
+
                 <Button variant="outline" size="sm" onClick={loadWebhookInfo} disabled={isLoadingWebhook} className="h-8 text-xs">
                   <RefreshCw className={cn("h-3 w-3 sm:h-4 sm:w-4 mr-1", isLoadingWebhook && "animate-spin")} />
                   刷新
@@ -756,36 +896,7 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                   </tr>
                 </thead>
                 <tbody>
-                  {[
-                    {
-                      command: "型号查询",
-                      format: "<服务器型号>",
-                      description: "直接发送服务器型号，查询对应的 PlanCode 和配置详情",
-                      example: "KS-1",
-                      color: "text-cyan-500",
-                    },
-                    {
-                      command: "/account",
-                      format: "/account [switch]",
-                      description: "查看当前 OVH 账户；添加 switch 可打开账户切换菜单",
-                      example: "/account switch",
-                      color: "text-purple-500",
-                    },
-                    {
-                      command: "/reboot",
-                      format: "/reboot",
-                      description: "通过账号、服务器和确认卡片安全重启独立服务器",
-                      example: "/reboot",
-                      color: "text-red-500",
-                    },
-                    ...orderModes.map((mode) => ({
-                      command: `/${mode.mode}`,
-                      format: `/${mode.mode} <planCode> [datacenter] [quantity]`,
-                      description: mode.description,
-                      example: mode.example,
-                      color: mode.color,
-                    })),
-                  ].map((reference) => (
+                  {commandReferences.map((reference) => (
                     <tr 
                       key={reference.command}
                       className="border-b border-border/50 hover:bg-muted/30 transition-colors"

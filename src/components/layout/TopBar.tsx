@@ -37,6 +37,7 @@ const pathNames: Record<string, string> = {
   "/performance": "性能监控",
   "/telegram-order": "Telegram 下单",
   "/feishu-order": "飞书下单",
+  "/qq-order": "QQ 下单",
   "/settings": "系统设置",
   "/logs": "系统日志",
 };

@@ -72,7 +72,62 @@ func TelegramQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 	}
 }
 
-// FeishuQuickOrder POST /api/feishu/quick-order
+// QQQuickOrder POST /api/qq/quick-order
+// 网页「QQ 下单」页直接执行与 QQ Bot 相同的命令语义，结果返回网页，不发送 QQ 消息。
+func QQQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Mode       string   `json:"mode"`
+			PlanCode   string   `json:"planCode"`
+			Datacenter string   `json:"datacenter"`
+			Quantity   int      `json:"quantity"`
+			Options    []string `json:"options"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "无效的请求体"})
+			return
+		}
+		mode := strings.ToLower(strings.TrimSpace(body.Mode))
+		planCode := strings.TrimSpace(body.PlanCode)
+		dc := strings.ToLower(strings.TrimSpace(body.Datacenter))
+		if mode == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 mode"})
+			return
+		}
+		if mode == "help" || mode == "start" {
+			c.JSON(http.StatusOK, gin.H{"success": true, "message": telegram.HelpMessage()})
+			return
+		}
+		if planCode == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 planCode"})
+			return
+		}
+		args, errMsg := buildTelegramCommandArgs(mode, planCode, dc, body.Quantity, body.Options)
+		if errMsg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": errMsg})
+			return
+		}
+		cmd := &telegram.BotCommand{
+			Name: mode,
+			Args: args,
+			Raw:  "/" + mode + " " + strings.Join(args, " "),
+		}
+		reply := dispatchBotCommand(state, mon, cmd, telegram.DefaultAccountID(state), "qq")
+		success := !strings.HasPrefix(strings.TrimSpace(reply), "❌")
+		errField := ""
+		if !success {
+			errField = reply
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": success,
+			"message": reply,
+			"error":   errField,
+			"mode":    mode,
+			"command": cmd.Raw,
+		})
+	}
+}
+
 // 网页「飞书下单」页按当前默认 OVH 账户执行与机器人相同的命令语义。
 func FeishuQuickOrder(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
