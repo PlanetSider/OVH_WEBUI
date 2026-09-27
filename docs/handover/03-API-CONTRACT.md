@@ -63,6 +63,7 @@
 
 - `GET/POST /api/settings`：配置 `qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds`、`qqChannelTargets`；读取响应只返回 `qqAppSecretConfigured`，不返回 AppSecret 或 access token
 - `POST /api/qq/test`：向所有已配置 QQ 目标发送测试消息；要求 `X-API-Key`
+- `POST /api/qq/quick-order`：QQ 下单页面直接执行与 QQ Bot 相同的 `/stock`、`/queue`、`/buy`、`/monitor`、`/price` 命令语义；要求完整 API 请求签名，不向 QQ 发送网页执行回执。请求体沿用 `{ "mode": "stock", "planCode": "24ska01", "datacenter": "gra", "quantity": 1, "options": [] }` 字段；响应返回 `success`、`message`/`error`、`mode` 和生成的 `command`。
 - Token：后端调用 `POST https://api.bot.qq.com/app/getAppAccessToken`，使用 `Authorization: QQBot <access_token>`；token 只在服务端内存缓存并在过期前 60 秒刷新
 - 发送端点：用户 `/v2/users/{user_openid}/messages`、群聊 `/v2/groups/{group_openid}/messages` 使用 `{ "msg_type": 0, "content": "..." }`；命令回复额外携带原消息 `msg_id`；频道 `/channels/{channel_id}/messages` 使用 `content` 字段。频道发送和入站命令均按 QQ 官方协议建立 `/gateway` WebSocket，完成 `QQBot <access_token>` Identify、READY 和心跳保持在线。
 - 入站命令：Gateway 订阅 `C2C_MESSAGE_CREATE`、`GROUP_AT_MESSAGE_CREATE`/`GROUP_MESSAGE_CREATE`。`qqUserOpenIds` 是私聊管理员白名单，管理员可执行完整命令；`qqGroupOpenIds` 是群聊白名单，群聊只允许 `/stock`、`/price`、`/库存`、`/价格`。消息回复引用原 `msg_id`；QQ 不向 Bot API 提供普通 QQ 号码，只使用 OpenID。

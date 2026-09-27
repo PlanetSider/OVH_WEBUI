@@ -25,6 +25,13 @@ OVH_WEBUI 是一个前后端一体的 OVH 自托管控制台：
 - `scripts/`：初始化、启动和烟测脚本；优先复用脚本，不要复制一套临时流程。
 - `docs/`：部署、安全、架构、API 合同和交接记录。
 
+## 网页下单与监控界面
+
+- Telegram、飞书和 QQ 下单页面共用 `src/pages/TelegramOrderPage.tsx`；`FeishuOrderPage.tsx` 和 `QQOrderPage.tsx` 只负责渠道包装。对应路由为 `/telegram-order`、`/feishu-order`、`/qq-order`，抢购导航顺序保持 Telegram、飞书、QQ。
+- 三个下单页面的“命令参考”必须来自同一份当前命令清单，覆盖 `/start`、`/help`、`/account`、`/reboot`、`/stock`、`/queue`、`/buy`、`/monitor`、`/price`、`/order`、`/pay` 及现有中文别名。新增或移除 Bot 命令时，同步更新共用参考，不要为渠道复制三份文案。
+- `POST /api/qq/quick-order` 是受 API 请求签名保护的网页直执行入口，复用 `buildTelegramCommandArgs` 和 `dispatchBotCommand(..., "qq")`；请求体沿用 Telegram quick-order 的 `mode`、`planCode`、`datacenter`、`quantity`、`options` 字段，网页直接返回结果，不向 QQ 发送回执，也不绕过 Gateway 入站权限模型。
+- 独服监控弹窗 `MonitorSubscriptionDialog` 读取 `useSettings().data?.monitorAutoPayEnabled`。仅当系统允许自动付款且已开启“有货时自动下单”时，才把 `autoPay` 作为同级提醒项显示在其右侧；关闭设置时保持自动下单跨列。`autoPay` 提交字段和后端权限校验不得因布局调整而改变。
+
 ## 通知通道约定
 
 - QQ Bot v2 的唯一发送 owner 是 `backend/internal/qqbot/`；配置字段为 `qqAppId`、`qqAppSecret`、`qqNotificationsEnabled`、`qqUserOpenIds`、`qqGroupOpenIds` 和 `qqChannelTargets`。`qqUserOpenIds` 同时是私聊管理员 OpenID 白名单；`qqGroupOpenIds` 是群聊命令白名单。
@@ -107,7 +114,9 @@ python scripts/smoke_test.py
 - 历史 Git 提交与推送：提交 `25b66aa fix: harden monitoring purchase and account workflows` 已推送至 `origin/main`。
 - 使用免安装 Go 1.25 执行 `go test ./... -count=1`：全部后端测试包通过，包含 `internal/qqbot` 的用户/群聊/频道路由、Gateway 握手/重连、token 刷新和错误解析测试。
 - `go test ./internal/qqbot -run 'TestClientRoutesDefaultAndMonitorMessages|TestGatewayReconnectsForSubsequentChannelMessage|TestTokenResponseCodeErrorOnHTTP200|TestOpenAPIErrorUsesErrCode' -count=1`：通过。
-- `npx tsc -b`：通过；`npm run build`：通过。
+- `npx tsc -b`：通过；`npm run build`：通过；本次构建仅有既有 npm 配置警告和 chunk 大小提示。
+- 本次 QQ 下单界面改动执行 `go test ./... -count=1`、`go vet ./...`、`npx tsc -b`、`npm run build`、`git diff --check`：均通过；未使用真实 QQ 凭据或执行真实 OVH 下单/付款。
+- 本次改动提交 `d3a7513 feat: add QQ order UI and monitor auto-pay layout` 已推送至 `origin/main`，提交后的工作区干净。
 - 本次验证未使用真实 QQ 凭据发送外部消息；部署后应在设置页分别验证用户、群聊和频道权限及频道频控。
 - 执行 `go build .`：Go 编译完成，但当前 Windows 环境拒绝写入默认输出 `backend/server.exe`；改用可写临时路径执行 `go build -o D:\Codex\OVH\server-go-build-test.exe .` 通过，临时文件已清理。
 - `.env`、`backend/.env`、`backend/data/` 和 SQLite 文件不得进入 Git；验证时只检查文件名、忽略规则和跟踪状态，不输出真实密钥或账户信息。
@@ -129,7 +138,7 @@ python scripts/smoke_test.py
 - Go 后端：完整 `go test ./... -count=1` 已通过；`go test -race ./internal/qqbot` 在当前 Windows ThreadSanitizer 环境因地址空间分配失败（`error code: 87`）未能完成，不能据此宣称竞态检查通过。
 - 后端运行时：当前未启动 `127.0.0.1:19998`，因此 smoke/full functional 测试尚未完成；启动后端并取得明确测试账户授权后再执行。
 - 标准前端构建：`npm run build` 已通过；`npx tsc -b` 已通过。
-- ESLint：`npm run lint` 当前仍有 198 项基线问题（177 errors、21 warnings），主要涉及 `any`、Hook 依赖、`require()` 等；本次 QQ 相关前端文件单独检查为 0 errors、1 个既有 Hook warning，除非用户明确要求，不扩大为无关重构。
+- ESLint：`npm run lint` 当前有 197 项基线问题（177 errors、20 warnings），主要涉及 `any`、Hook 依赖、`require()` 等；本次新增页面、路由和布局代码未出现新增 ESLint error，`MonitorSubscriptionDialog.tsx` 保留 3 个既有 Hook warning，`src/lib/api.ts` 保留既有 `no-explicit-any` 错误。除非用户明确要求，不扩大为无关重构。
 - Docker 与依赖审计：Docker 未安装；npm registry 审计接口不可达，不能据此推断镜像或依赖安全结论。
 - 账户删除、PurchaseServer、队列公平性和监控恢复路径：当前 Go 单元测试已完成；真实 OVH 抢购、重装、电源、网络等副作用操作不得自动执行。
 - 通知 outbox：当前保证至少一次投递，多进程或进程崩溃后可能重复通知；若要求跨进程去重/恰好一次效果，需要单独设计 claim/lease、幂等键和状态迁移。
