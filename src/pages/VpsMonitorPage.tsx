@@ -13,7 +13,7 @@ import {
   Plus,
   AlertTriangle,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -381,7 +381,8 @@ function AddVPSDialog({
   const [notifyAvailable, setNotifyAvailable] = useState(true);
   const [notifyUnavailable, setNotifyUnavailable] = useState(false);
   const modelsQuery = useVPSModels(ovhSubsidiary);
-  const models = modelsQuery.data?.models ?? [];
+  const queriedModels = modelsQuery.data?.models;
+  const models = useMemo(() => queriedModels ?? [], [queriedModels]);
   const selectedModel = models.find((model) => model.planCode === vpsModel) || models[0];
 
   useEffect(() => {
