@@ -40,6 +40,7 @@ func toDBSub(s *Subscription) types.Subscription {
 	pendingNotify := cloneStringMap(s.PendingNotify)
 	pendingNotifyChannels := cloneStringSliceMap(s.PendingNotifyChannels)
 	return types.Subscription{
+		ID:                          s.ID,
 		PlanCode:                    s.PlanCode,
 		Datacenters:                 dcs,
 		Memories:                    cloneStrings(s.Memories),
@@ -94,6 +95,7 @@ func fromDBSub(s types.Subscription) *Subscription {
 		}
 	}
 	return &Subscription{
+		ID:                          s.ID,
 		PlanCode:                    s.PlanCode,
 		Datacenters:                 dcs,
 		Memories:                    cloneStrings(s.Memories),
@@ -316,8 +318,8 @@ func cloneStringSliceMap(source map[string][]string) map[string][]string {
 }
 
 // SubscriptionAsJSON 帮助 handler 返回订阅
-func (m *Monitor) SubscriptionAsJSON(planCode string) ([]byte, bool) {
-	sub := m.FindSubscription(planCode)
+func (m *Monitor) SubscriptionAsJSON(id string) ([]byte, bool) {
+	sub := m.FindSubscription(id)
 	if sub == nil {
 		return nil, false
 	}

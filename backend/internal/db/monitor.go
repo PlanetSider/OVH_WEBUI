@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/ovh-webui/server/internal/types"
 )
 
 type monitorSubRow struct {
+	ID                          string         `db:"id"`
 	PlanCode                    string         `db:"plan_code"`
 	DatacentersJSON             sql.NullString `db:"datacenters"`
 	MemoriesJSON                sql.NullString `db:"memories"`
@@ -32,6 +34,109 @@ type monitorSubRow struct {
 	Discontinued                int            `db:"discontinued"`
 	DiscontinuedNextCheckAt     float64        `db:"discontinued_next_check_at"`
 	ProxyGuardAutoOrderDisabled int            `db:"proxy_guard_auto_order_disabled"`
+}
+
+func (db *DB) migrateMonitorSubscriptionIDs() error {
+	var columns []struct {
+		CID  int    `db:"cid"`
+		Name string `db:"name"`
+		PK   int    `db:"pk"`
+	}
+	if err := db.Unsafe().Select(&columns, `PRAGMA table_info(monitor_subscriptions)`); err != nil {
+		return fmt.Errorf("inspect monitor subscription schema: %w", err)
+	}
+	hasID, idIsPrimary, planIsPrimary := false, false, false
+	for _, column := range columns {
+		switch column.Name {
+		case "id":
+			hasID = true
+			idIsPrimary = column.PK == 1
+		case "plan_code":
+			planIsPrimary = column.PK == 1
+		}
+	}
+	if hasID && idIsPrimary && !planIsPrimary {
+		_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_monitor_plan_code ON monitor_subscriptions(plan_code)`)
+		return err
+	}
+
+	var rows []monitorSubRow
+	selectColumns := `plan_code, datacenters, memories, storages, networks,
+		notify_available, notify_unavailable, last_status, confirmed_status,
+		pending_order, pending_notify, pending_notify_channels, created_at, history, server_name,
+		auto_order, auto_pay, quantity, auto_order_account_id, discontinued, discontinued_next_check_at,
+		proxy_guard_auto_order_disabled`
+	if hasID {
+		selectColumns = `id, ` + selectColumns
+	}
+	if err := db.Select(&rows, `SELECT `+selectColumns+` FROM monitor_subscriptions ORDER BY created_at`); err != nil {
+		return fmt.Errorf("read monitor subscriptions for migration: %w", err)
+	}
+
+	tx, err := db.Beginx()
+	if err != nil {
+		return fmt.Errorf("begin monitor subscription migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS monitor_subscriptions_new`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE monitor_subscriptions_new (
+		id TEXT PRIMARY KEY,
+		plan_code TEXT NOT NULL,
+		datacenters TEXT NOT NULL DEFAULT '[]',
+		memories TEXT NOT NULL DEFAULT '[]',
+		storages TEXT NOT NULL DEFAULT '[]',
+		networks TEXT NOT NULL DEFAULT '[]',
+		notify_available INTEGER NOT NULL DEFAULT 1,
+		notify_unavailable INTEGER NOT NULL DEFAULT 0,
+		last_status TEXT NOT NULL DEFAULT '{}',
+		confirmed_status TEXT NOT NULL DEFAULT '{}',
+		pending_order TEXT NOT NULL DEFAULT '{}',
+		pending_notify TEXT NOT NULL DEFAULT '{}',
+		pending_notify_channels TEXT NOT NULL DEFAULT '{}',
+		created_at TEXT NOT NULL,
+		history TEXT NOT NULL DEFAULT '[]',
+		server_name TEXT NOT NULL DEFAULT '',
+		auto_order INTEGER NOT NULL DEFAULT 0,
+		quantity INTEGER NOT NULL DEFAULT 1,
+		auto_order_account_id TEXT NOT NULL DEFAULT '',
+		auto_pay INTEGER NOT NULL DEFAULT 0,
+		discontinued INTEGER NOT NULL DEFAULT 0,
+		discontinued_next_check_at REAL NOT NULL DEFAULT 0,
+		proxy_guard_auto_order_disabled INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		return fmt.Errorf("create monitor subscription migration table: %w", err)
+	}
+	insertSQL := `INSERT INTO monitor_subscriptions_new
+		(id, plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
+		 created_at, history, server_name, auto_order, auto_pay, quantity, auto_order_account_id, discontinued, discontinued_next_check_at,
+		 proxy_guard_auto_order_disabled)
+		VALUES
+		(:id, :plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
+		 :created_at, :history, :server_name, :auto_order, :auto_pay, :quantity, :auto_order_account_id, :discontinued, :discontinued_next_check_at,
+		 :proxy_guard_auto_order_disabled)`
+	for _, row := range rows {
+		if strings.TrimSpace(row.ID) == "" {
+			row.ID = uuid.NewString()
+		}
+		if _, err := tx.NamedExec(insertSQL, row); err != nil {
+			return fmt.Errorf("copy monitor subscription %s: %w", row.PlanCode, err)
+		}
+	}
+	if _, err := tx.Exec(`DROP TABLE monitor_subscriptions`); err != nil {
+		return fmt.Errorf("drop old monitor subscriptions: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE monitor_subscriptions_new RENAME TO monitor_subscriptions`); err != nil {
+		return fmt.Errorf("rename monitor subscriptions: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_monitor_plan_code ON monitor_subscriptions(plan_code)`); err != nil {
+		return fmt.Errorf("index monitor plan code: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit monitor subscription migration: %w", err)
+	}
+	return nil
 }
 
 func decodeMonitorJSON(value sql.NullString, target interface{}, field, planCode string) error {
@@ -125,6 +230,7 @@ func rowToMonitorSub(r monitorSubRow) (types.Subscription, error) {
 		hist = []types.SubscriptionHistoryEntry{}
 	}
 	return types.Subscription{
+		ID:                          r.ID,
 		PlanCode:                    r.PlanCode,
 		Datacenters:                 dcs,
 		Memories:                    memories,
@@ -151,6 +257,9 @@ func rowToMonitorSub(r monitorSubRow) (types.Subscription, error) {
 }
 
 func monitorSubToRow(s types.Subscription) (monitorSubRow, error) {
+	if strings.TrimSpace(s.ID) == "" {
+		s.ID = uuid.NewString()
+	}
 	if s.Datacenters == nil {
 		s.Datacenters = []string{}
 	}
@@ -228,6 +337,7 @@ func monitorSubToRow(s types.Subscription) (monitorSubRow, error) {
 		return 0
 	}
 	return monitorSubRow{
+		ID:                          s.ID,
 		PlanCode:                    s.PlanCode,
 		DatacentersJSON:             sql.NullString{String: string(dcsJSON), Valid: true},
 		MemoriesJSON:                sql.NullString{String: string(memoriesJSON), Valid: true},
@@ -291,7 +401,7 @@ func decodePendingOrder(value sql.NullString, planCode string) (map[string]int, 
 func (db *DB) ListMonitorSubscriptions() ([]types.Subscription, error) {
 	var rows []monitorSubRow
 	if err := db.Select(&rows, `
-		SELECT plan_code, datacenters, memories, storages, networks,
+		SELECT id, plan_code, datacenters, memories, storages, networks,
 		       notify_available, notify_unavailable, last_status, confirmed_status,
 		       pending_order, pending_notify, pending_notify_channels, created_at, history, server_name,
 		       auto_order, auto_pay, quantity, auto_order_account_id, discontinued, discontinued_next_check_at,
@@ -311,7 +421,7 @@ func (db *DB) ListMonitorSubscriptions() ([]types.Subscription, error) {
 	return out, nil
 }
 
-// UpsertMonitorSubscription 按 plan_code upsert
+// UpsertMonitorSubscription 按订阅实例 ID upsert；plan_code 仅用于业务筛选。
 func (db *DB) UpsertMonitorSubscription(s types.Subscription) error {
 	r, err := monitorSubToRow(s)
 	if err != nil {
@@ -319,14 +429,14 @@ func (db *DB) UpsertMonitorSubscription(s types.Subscription) error {
 	}
 	_, err = db.NamedExec(`
 		INSERT INTO monitor_subscriptions
-		(plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
+		(id, plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
 		 created_at, history, server_name, auto_order, auto_pay, quantity, auto_order_account_id, discontinued, discontinued_next_check_at,
 		       proxy_guard_auto_order_disabled)
 		VALUES
-		(:plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
+		(:id, :plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
 		 :created_at, :history, :server_name, :auto_order, :auto_pay, :quantity, :auto_order_account_id, :discontinued, :discontinued_next_check_at,
 			 :proxy_guard_auto_order_disabled)
-		ON CONFLICT(plan_code) DO UPDATE SET
+		ON CONFLICT(id) DO UPDATE SET
 		  datacenters        = excluded.datacenters,
 		  memories           = excluded.memories,
 		  storages           = excluded.storages,
@@ -371,11 +481,11 @@ func (db *DB) ReplaceMonitorSubscriptions(subs []types.Subscription) error {
 		}
 		_, err = tx.NamedExec(`
 			INSERT INTO monitor_subscriptions
-			(plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
+			(id, plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
 			 created_at, history, server_name, auto_order, auto_pay, quantity, auto_order_account_id, discontinued, discontinued_next_check_at,
 		       proxy_guard_auto_order_disabled)
 			VALUES
-			(:plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
+			(:id, :plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
 			 :created_at, :history, :server_name, :auto_order, :auto_pay, :quantity, :auto_order_account_id, :discontinued, :discontinued_next_check_at,
 			 :proxy_guard_auto_order_disabled)
 		`, r)
@@ -413,11 +523,11 @@ func (db *DB) ReplaceMonitorSubscriptionsAndKnownServers(subs []types.Subscripti
 	for _, row := range rows {
 		if _, err := tx.NamedExec(`
 			INSERT INTO monitor_subscriptions
-			(plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
+			(id, plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
 			 created_at, history, server_name, auto_order, auto_pay, quantity, auto_order_account_id, discontinued, discontinued_next_check_at,
 		       proxy_guard_auto_order_disabled)
 			VALUES
-			(:plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
+			(:id, :plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
 			 :created_at, :history, :server_name, :auto_order, :auto_pay, :quantity, :auto_order_account_id, :discontinued, :discontinued_next_check_at,
 			 :proxy_guard_auto_order_disabled)
 		`, row); err != nil {
@@ -465,9 +575,9 @@ func (db *DB) SaveKnownServersAndNotifications(knownServers []string, entries []
 	return nil
 }
 
-// DeleteMonitorSubscription 按 plan_code 删除
-func (db *DB) DeleteMonitorSubscription(planCode string) error {
-	_, err := db.Exec(`DELETE FROM monitor_subscriptions WHERE plan_code = ?`, planCode)
+// DeleteMonitorSubscription 按实例 ID 删除
+func (db *DB) DeleteMonitorSubscription(id string) error {
+	_, err := db.Exec(`DELETE FROM monitor_subscriptions WHERE id = ?`, id)
 	return err
 }
 

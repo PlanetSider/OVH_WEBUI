@@ -45,7 +45,7 @@ function MonitorPage() {
   const remove = useRemoveMonitorSubscription();
   const clear = useClearMonitor();
   const [confirmClear, setConfirmClear] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<MonitorSubscription | null>(null);
   const [openAdd, setOpenAdd] = useState(false);
   const [editing, setEditing] = useState<MonitorSubscription | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -130,13 +130,13 @@ function MonitorPage() {
         <div className="space-y-3">
           {subs.map((s) => (
             <SubRow
-              key={s.planCode}
+              key={s.id}
               sub={s}
-              expanded={expanded === s.planCode}
+              expanded={expanded === s.id}
               onToggleExpand={() =>
-                setExpanded((curr) => (curr === s.planCode ? null : s.planCode))
+                setExpanded((curr) => (curr === s.id ? null : s.id))
               }
-               onDelete={() => setConfirmRemove(s.planCode)}
+               onDelete={() => setConfirmRemove(s)}
                onEdit={() => setEditing(s)}
             />
           ))}
@@ -152,7 +152,7 @@ function MonitorPage() {
           <DialogHeader>
             <DialogTitle>取消订阅</DialogTitle>
             <DialogDescription>
-              确定要取消订阅 <span className="font-mono">{confirmRemove}</span> 吗？
+              确定要取消订阅 <span className="font-mono">{confirmRemove?.planCode}</span> 吗？
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -162,7 +162,7 @@ function MonitorPage() {
             <Button
               variant="destructive"
               onClick={() => {
-                if (confirmRemove) remove.mutate(confirmRemove);
+                if (confirmRemove) remove.mutate(confirmRemove.id);
                 setConfirmRemove(null);
               }}
             >
@@ -280,7 +280,7 @@ function SubRow({
 
         {expanded && (
           <div className="mt-4 pt-4 border-t border-border">
-            <HistoryPanel planCode={sub.planCode} />
+            <HistoryPanel id={sub.id} />
           </div>
         )}
       </CardContent>
@@ -288,8 +288,8 @@ function SubRow({
   );
 }
 
-function HistoryPanel({ planCode }: { planCode: string }) {
-  const history = useMonitorHistory(planCode);
+function HistoryPanel({ id }: { id: string }) {
+  const history = useMonitorHistory(id);
 
   if (history.isPending) {
     return (

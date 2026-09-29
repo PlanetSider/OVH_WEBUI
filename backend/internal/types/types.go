@@ -281,6 +281,7 @@ type SubscriptionHistoryEntry struct {
 
 // Subscription 监控订阅（跨账户共享列表;auto-order 触发时按 AutoOrderAccountID 下单）
 type Subscription struct {
+	ID                      string                     `json:"id"`
 	PlanCode                string                     `json:"planCode"`
 	Datacenters             []string                   `json:"datacenters"`
 	Memories                []string                   `json:"memories,omitempty"`

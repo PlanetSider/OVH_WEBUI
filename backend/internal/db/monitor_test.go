@@ -86,6 +86,7 @@ func TestDecodePendingOrderRejectsInvalidEntry(t *testing.T) {
 
 func monitorSubscription(planCode string) types.Subscription {
 	return types.Subscription{
+		ID:       "monitor-" + planCode,
 		PlanCode: planCode, Datacenters: []string{"gra"}, Memories: []string{},
 		Storages: []string{}, Networks: []string{}, NotifyAvailable: true,
 		LastStatus:      map[string]string{"gra|default": "unavailable"},
@@ -95,12 +96,169 @@ func monitorSubscription(planCode string) types.Subscription {
 	}
 }
 
+func TestMonitorSubscriptionsAllowSamePlanCodeWithDifferentIDs(t *testing.T) {
+	database, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	first := monitorSubscription("24sk10")
+	first.ID = "monitor-a"
+	first.Memories = []string{"32G"}
+	second := monitorSubscription("24sk10")
+	second.ID = "monitor-b"
+	second.Memories = []string{"64G"}
+	second.AutoPay = true
+	if err := database.UpsertMonitorSubscription(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertMonitorSubscription(second); err != nil {
+		t.Fatal(err)
+	}
+
+	subscriptions, err := database.ListMonitorSubscriptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subscriptions) != 2 {
+		t.Fatalf("subscription count = %d, want 2: %#v", len(subscriptions), subscriptions)
+	}
+	byID := make(map[string]types.Subscription, len(subscriptions))
+	for _, subscription := range subscriptions {
+		byID[subscription.ID] = subscription
+	}
+	if got := byID["monitor-a"].Memories; !reflect.DeepEqual(got, []string{"32G"}) {
+		t.Fatalf("first subscription was overwritten: %#v", got)
+	}
+	if !byID["monitor-b"].AutoPay || !reflect.DeepEqual(byID["monitor-b"].Memories, []string{"64G"}) {
+		t.Fatalf("second subscription was not preserved: %#v", byID["monitor-b"])
+	}
+
+	if err := database.DeleteMonitorSubscription("monitor-a"); err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err = database.ListMonitorSubscriptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subscriptions) != 1 || subscriptions[0].ID != "monitor-b" {
+		t.Fatalf("ID-scoped delete removed the wrong rows: %#v", subscriptions)
+	}
+}
+
+func TestMigrateLegacyMonitorSubscriptionsAssignsIDs(t *testing.T) {
+	database, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	if _, err := database.Exec(`DROP TABLE monitor_subscriptions`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`CREATE TABLE monitor_subscriptions (
+		plan_code TEXT PRIMARY KEY,
+		datacenters TEXT NOT NULL DEFAULT '[]',
+		memories TEXT NOT NULL DEFAULT '[]',
+		storages TEXT NOT NULL DEFAULT '[]',
+		networks TEXT NOT NULL DEFAULT '[]',
+		notify_available INTEGER NOT NULL DEFAULT 1,
+		notify_unavailable INTEGER NOT NULL DEFAULT 0,
+		last_status TEXT NOT NULL DEFAULT '{}',
+		confirmed_status TEXT NOT NULL DEFAULT '{}',
+		pending_order TEXT NOT NULL DEFAULT '{}',
+		pending_notify TEXT NOT NULL DEFAULT '{}',
+		pending_notify_channels TEXT NOT NULL DEFAULT '{}',
+		created_at TEXT NOT NULL,
+		history TEXT NOT NULL DEFAULT '[]',
+		server_name TEXT NOT NULL DEFAULT '',
+		auto_order INTEGER NOT NULL DEFAULT 0,
+		quantity INTEGER NOT NULL DEFAULT 1,
+		auto_order_account_id TEXT NOT NULL DEFAULT '',
+		auto_pay INTEGER NOT NULL DEFAULT 0,
+		discontinued INTEGER NOT NULL DEFAULT 0,
+		discontinued_next_check_at REAL NOT NULL DEFAULT 0,
+		proxy_guard_auto_order_disabled INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO monitor_subscriptions (plan_code, datacenters, created_at) VALUES ('legacy-plan', '["gra"]', '2024-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.migrateMonitorSubscriptionIDs(); err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := database.ListMonitorSubscriptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subscriptions) != 1 || subscriptions[0].PlanCode != "legacy-plan" || subscriptions[0].ID == "" {
+		t.Fatalf("legacy subscription migration = %#v", subscriptions)
+	}
+}
 func monitorQueueItem(id, planCode, datacenter string) types.QueueItem {
 	now := types.NowISO()
 	return types.QueueItem{
 		ID: id, AccountID: "account-1", PlanCode: planCode, Datacenter: datacenter,
 		Options: []string{}, Status: "running", CreatedAt: now, UpdatedAt: now,
 		RetryInterval: 2, MaxRetries: 3, QuickOrder: true, Priority: 100,
+	}
+}
+
+func TestEnqueueMonitorOrdersDoesNotOverwriteSamePlanInstance(t *testing.T) {
+	database, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	first := monitorSubscription("24sk10")
+	first.ID = "monitor-a"
+	first.Memories = []string{"32G"}
+	first.PendingOrder = map[string]int{"gra|cfg": 1}
+	second := monitorSubscription("24sk10")
+	second.ID = "monitor-b"
+	second.Memories = []string{"64G"}
+	second.PendingOrder = map[string]int{"sbg|cfg": 1}
+	for _, sub := range []types.Subscription{first, second} {
+		if err := database.UpsertMonitorSubscription(sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	saved := second
+	saved.AutoPay = true
+	saved.PendingOrder = map[string]int{}
+	if err := database.EnqueueMonitorOrdersAndSaveSubscription(saved, []types.QueueItem{
+		monitorQueueItem("same-plan-order", saved.PlanCode, "sbg"),
+	}, 200); err != nil {
+		t.Fatal(err)
+	}
+
+	subscriptions, err := database.ListMonitorSubscriptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subscriptions) != 2 {
+		t.Fatalf("subscription count = %d, want 2: %#v", len(subscriptions), subscriptions)
+	}
+	byID := make(map[string]types.Subscription, len(subscriptions))
+	for _, sub := range subscriptions {
+		byID[sub.ID] = sub
+	}
+	if !reflect.DeepEqual(byID[first.ID].Memories, first.Memories) ||
+		!reflect.DeepEqual(byID[first.ID].PendingOrder, first.PendingOrder) || byID[first.ID].AutoPay {
+		t.Fatalf("first subscription changed: %#v", byID[first.ID])
+	}
+	if !reflect.DeepEqual(byID[second.ID].Memories, second.Memories) ||
+		len(byID[second.ID].PendingOrder) != 0 || !byID[second.ID].AutoPay {
+		t.Fatalf("second subscription was not updated by ID: %#v", byID[second.ID])
+	}
+	queue, err := database.ListQueue()
+	if err != nil || len(queue) != 1 || queue[0].ID != "same-plan-order" {
+		t.Fatalf("queue = %#v, err = %v", queue, err)
 	}
 }
 

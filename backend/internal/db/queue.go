@@ -199,14 +199,14 @@ func (db *DB) EnqueueMonitorOrdersAndSaveSubscription(sub types.Subscription, it
 
 	if _, err := tx.NamedExec(`
 		INSERT INTO monitor_subscriptions
-		(plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
+		(id, plan_code, datacenters, memories, storages, networks, notify_available, notify_unavailable, last_status, confirmed_status, pending_order, pending_notify, pending_notify_channels,
 		 created_at, history, server_name, auto_order, auto_pay, quantity, auto_order_account_id, discontinued, discontinued_next_check_at,
 			 proxy_guard_auto_order_disabled)
 		VALUES
-		(:plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
+		(:id, :plan_code, :datacenters, :memories, :storages, :networks, :notify_available, :notify_unavailable, :last_status, :confirmed_status, :pending_order, :pending_notify, :pending_notify_channels,
 		 :created_at, :history, :server_name, :auto_order, :auto_pay, :quantity, :auto_order_account_id, :discontinued, :discontinued_next_check_at,
 			 :proxy_guard_auto_order_disabled)
-		ON CONFLICT(plan_code) DO UPDATE SET
+		ON CONFLICT(id) DO UPDATE SET
 		  datacenters = excluded.datacenters, memories = excluded.memories, storages = excluded.storages,
 		  networks = excluded.networks, notify_available = excluded.notify_available,
 		  notify_unavailable = excluded.notify_unavailable, last_status = excluded.last_status,

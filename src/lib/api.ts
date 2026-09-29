@@ -288,8 +288,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(sub),
     }),
-  removeSubscription: (planCode: string) =>
-    apiRequest<Record<string, any>>(`/api/monitor/subscriptions/${encodeURIComponent(planCode)}`, {
+  removeSubscription: (id: string) =>
+    apiRequest<Record<string, any>>(`/api/monitor/subscriptions/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
   clearSubscriptions: () =>
@@ -299,9 +299,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(options || {}),
     }),
-  getSubscriptionHistory: (planCode: string) =>
+  getSubscriptionHistory: (id: string) =>
     apiRequest<Record<string, any>>(
-      `/api/monitor/subscriptions/${encodeURIComponent(planCode)}/history`
+      `/api/monitor/subscriptions/${encodeURIComponent(id)}/history`
     ),
   startMonitor: () => apiRequest("/api/monitor/start", { method: "POST" }),
   stopMonitor: () => apiRequest("/api/monitor/stop", { method: "POST" }),
@@ -558,8 +558,8 @@ export const api = {
   },
   manualCheckDedicated: (planCode: string) =>
     apiRequest(`/api/availability/${encodeURIComponent(planCode)}`, { method: "POST" }),
-  updateSubscription: (planCode: string, options: Record<string, unknown>) =>
-    apiRequest<any>(`/api/monitor/subscriptions/${encodeURIComponent(planCode)}`, {
+  updateSubscription: (id: string, options: Record<string, unknown>) =>
+    apiRequest<any>(`/api/monitor/subscriptions/${encodeURIComponent(id)}`, {
       method: "PUT",
       body: JSON.stringify(options),
     }),

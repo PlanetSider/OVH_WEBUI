@@ -19,7 +19,6 @@ import { Input } from "@/components/ui/input";
 import {
   type MonitorSubscription,
   useCreateMonitorSubscription,
-  useMonitorList,
   useUpdateMonitorSubscription,
 } from "@/hooks/use-monitor";
 import { useServers, type ServerOption } from "@/hooks/use-servers";
@@ -74,11 +73,9 @@ export function MonitorSubscriptionDialog({
   const autoPayEnabled = useSettings().data?.monitorAutoPayEnabled === true;
   const availability = useAvailability();
   const variantIndex = useMemo(() => buildVariantIndex(availability.data), [availability.data]);
-  const monitorList = useMonitorList();
   const create = useCreateMonitorSubscription();
   const update = useUpdateMonitorSubscription();
-  const requestedKey = subscription?.planCode || initialPlanCode;
-  const awaitingLookup = open && !!initialPlanCode && !subscription && !monitorList.data && !monitorList.isSuccess;
+  const requestedKey = subscription?.id || (subscription ? "" : initialPlanCode);
   // 同一目标在一次打开期间只取一次快照；列表 refetch 不重填用户草稿。
   const initialized = useRef<{ key: string; editing: boolean } | null>(null);
   const [session, setSession] = useState<{ key: string; editing: boolean } | null>(null);
@@ -102,8 +99,8 @@ export function MonitorSubscriptionDialog({
       setSession(null);
       return;
     }
-    if (initialized.current?.key === requestedKey || awaitingLookup) return;
-    const resolved = subscription || monitorList.data?.find((item) => item.planCode === initialPlanCode);
+    if (initialized.current?.key === requestedKey) return;
+    const resolved = subscription;
     const next = { key: requestedKey, editing: !!resolved };
     initialized.current = next;
     setSession(next);
@@ -118,7 +115,7 @@ export function MonitorSubscriptionDialog({
     setAutoPay(resolved?.autoPay === true);
     setQuantity(Math.max(1, resolved?.quantity || 1));
     setAutoOrderAccountId(resolved?.autoOrderAccountId || "");
-  }, [open, requestedKey, subscription, initialPlanCode, awaitingLookup, monitorList.data]);
+  }, [open, requestedKey, subscription, initialPlanCode]);
 
   const server = useMemo(
     () => (servers.data || []).find((item) => item.planCode === planCode),
@@ -249,7 +246,7 @@ export function MonitorSubscriptionDialog({
       autoOrderAccountId: autoOrder ? autoOrderAccountId : "",
     };
     if (editing) {
-      await update.mutateAsync(payload);
+      await update.mutateAsync({ id: subscription!.id, ...payload });
     } else {
       await create.mutateAsync(payload);
     }
@@ -268,13 +265,10 @@ export function MonitorSubscriptionDialog({
         {!sessionReady ? (
           <div className="flex flex-1 flex-col justify-between gap-5" role="status">
             <div className="text-sm text-muted-foreground">
-              {awaitingLookup && monitorList.isError ? "加载订阅失败，请重试。" : "正在加载监控任务…"}
+              正在加载监控任务…
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-              {awaitingLookup && monitorList.isError && (
-                <Button type="button" onClick={() => void monitorList.refetch()}>重试</Button>
-              )}
             </DialogFooter>
           </div>
         ) : (

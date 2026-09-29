@@ -528,6 +528,7 @@ func (m *Monitor) commitWorkingSubscription(target, working *Subscription) bool 
 
 func sameSubscriptionSettings(left, right *Subscription) bool {
 	return left != nil && right != nil &&
+		left.ID == right.ID &&
 		left.PlanCode == right.PlanCode &&
 		left.ServerName == right.ServerName &&
 		sameStringSlice(left.Datacenters, right.Datacenters) &&

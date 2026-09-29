@@ -62,6 +62,7 @@ export interface MonitorStatus {
 }
 
 export interface Subscription {
+  id: string;
   planCode: string;
   datacenters?: string[];
   memories?: string[];

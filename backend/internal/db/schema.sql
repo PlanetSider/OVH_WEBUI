@@ -150,7 +150,8 @@ CREATE TABLE IF NOT EXISTS servers (
 -- monitor_subscriptions: 服务器补货监控订阅
 -- ===========================================
 CREATE TABLE IF NOT EXISTS monitor_subscriptions (
-  plan_code           TEXT PRIMARY KEY,
+  id                  TEXT PRIMARY KEY,
+  plan_code           TEXT NOT NULL,
   datacenters         TEXT NOT NULL DEFAULT '[]',  -- JSON []string
   memories            TEXT NOT NULL DEFAULT '[]',  -- JSON []string; empty = all
   storages            TEXT NOT NULL DEFAULT '[]',  -- JSON []string; empty = all
@@ -173,6 +174,7 @@ CREATE TABLE IF NOT EXISTS monitor_subscriptions (
   discontinued_next_check_at REAL NOT NULL DEFAULT 0,
   proxy_guard_auto_order_disabled INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_monitor_plan_code ON monitor_subscriptions(plan_code);
 
 -- ===========================================
 -- vps_subscriptions: VPS 补货监控订阅

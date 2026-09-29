@@ -4,6 +4,7 @@ import { qk } from "@/lib/query";
 import { toast } from "sonner";
 
 export interface MonitorSubscription {
+  id: string;
   planCode: string;
   serverName?: string;
   datacenters: string[];
@@ -63,16 +64,16 @@ export function useMonitorStatus() {
 }
 
 /** 某订阅的变化历史（后端直接返回数组，倒序最新在前） */
-export function useMonitorHistory(planCode: string | null) {
+export function useMonitorHistory(id: string | null) {
   return useQuery({
-    queryKey: qk.monitor.history(planCode || ""),
+    queryKey: qk.monitor.history(id || ""),
     queryFn: async () =>
-      (await api.get<MonitorHistoryEntry[]>(`/monitor/subscriptions/${planCode}/history`)).data,
-    enabled: !!planCode,
+      (await api.get<MonitorHistoryEntry[]>(`/monitor/subscriptions/${encodeURIComponent(id || "")}/history`)).data,
+    enabled: !!id,
   });
 }
 
-/** 新增订阅（POST；已存在时后端会更新配置） */
+/** 新增订阅（POST；每次请求都会创建独立实例） */
 export function useUpsertMonitorSubscription() {
   const qc = useQueryClient();
   return useMutation({
@@ -96,10 +97,10 @@ export function useUpdateMonitorSubscription() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({
-      planCode,
+      id,
       ...patch
-    }: Partial<MonitorSubscription> & { planCode: string }) =>
-      (await api.put(`/monitor/subscriptions/${encodeURIComponent(planCode)}`, patch)).data,
+    }: Partial<MonitorSubscription> & { id: string }) =>
+      (await api.put(`/monitor/subscriptions/${encodeURIComponent(id)}`, patch)).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.monitor.list() });
       qc.invalidateQueries({ queryKey: qk.monitor.status() });
@@ -114,8 +115,8 @@ export function useUpdateMonitorSubscription() {
 export function useRemoveMonitorSubscription() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (planCode: string) =>
-      (await api.delete(`/monitor/subscriptions/${encodeURIComponent(planCode)}`)).data,
+    mutationFn: async (id: string) =>
+      (await api.delete(`/monitor/subscriptions/${encodeURIComponent(id)}`)).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.monitor.list() });
       qc.invalidateQueries({ queryKey: qk.monitor.status() });

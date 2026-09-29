@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/ovh-webui/server/internal/db"
 )
 
@@ -55,50 +56,6 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 		pay = autoPay[0]
 	}
 	return m.MutateSubscriptions(func(subscriptions []*Subscription) ([]*Subscription, error) {
-		for _, s := range subscriptions {
-			if s.PlanCode == planCode {
-				m.state.Logger.Warn(fmt.Sprintf("订阅已存在: %s，将更新配置", planCode), "monitor")
-				filtersChanged := !sameStringSlice(s.Datacenters, datacenters) ||
-					!sameStringSlice(s.Memories, memories) ||
-					!sameStringSlice(s.Storages, storages) ||
-					!sameStringSlice(s.Networks, networks)
-				accountChanged := s.AutoOrderAccountID != autoOrderAccountID
-				if datacenters == nil {
-					datacenters = []string{}
-				}
-				s.Datacenters = cloneStrings(datacenters)
-				s.Memories = cloneStrings(memories)
-				s.Storages = cloneStrings(storages)
-				s.Networks = cloneStrings(networks)
-				if filtersChanged || accountChanged {
-					resetTracking(s)
-				}
-				s.NotifyAvailable = notifyAvailable
-				s.NotifyUnavailable = notifyUnavailable
-				s.AutoOrder = autoOrder
-				if pay != nil {
-					s.AutoPay = *pay
-				}
-				s.ProxyGuardAutoOrderDisabled = false
-				if autoOrder {
-					if quantity < 1 {
-						quantity = 1
-					}
-					s.Quantity = quantity
-				} else {
-					s.Quantity = 0
-					s.PendingOrder = map[string]int{}
-				}
-				clearDisabledPendingNotify(s, notifyAvailable, notifyUnavailable)
-				s.ServerName = serverName
-				s.AutoOrderAccountID = autoOrderAccountID
-				if s.History == nil {
-					s.History = []HistoryEntry{}
-				}
-				return subscriptions, nil
-			}
-		}
-
 		if datacenters == nil {
 			datacenters = []string{}
 		}
@@ -109,6 +66,7 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 			history = []HistoryEntry{}
 		}
 		sub := &Subscription{
+			ID:                   uuid.NewString(),
 			PlanCode:              planCode,
 			Datacenters:           datacenters,
 			Memories:              cloneStrings(memories),
@@ -209,16 +167,16 @@ func cloneStrings(values []string) []string {
 }
 
 // RemoveSubscription 对应 Python: remove_subscription
-func (m *Monitor) RemoveSubscription(planCode string) error {
+func (m *Monitor) RemoveSubscription(id string) error {
 	return m.MutateSubscriptions(func(subscriptions []*Subscription) ([]*Subscription, error) {
 		kept := make([]*Subscription, 0, len(subscriptions))
 		for _, s := range subscriptions {
-			if s.PlanCode != planCode {
+			if s.ID != id {
 				kept = append(kept, s)
 			}
 		}
 		if len(kept) < len(subscriptions) {
-			m.state.Logger.Info("删除订阅: "+planCode, "monitor")
+			m.state.Logger.Info("删除订阅: "+id, "monitor")
 			return kept, nil
 		}
 		return nil, errors.New("订阅不存在")
@@ -236,12 +194,12 @@ func (m *Monitor) ClearSubscriptions() (int, error) {
 	return count, err
 }
 
-// FindSubscription 按 planCode 查找
-func (m *Monitor) FindSubscription(planCode string) *Subscription {
+// FindSubscription 按实例 ID 查找
+func (m *Monitor) FindSubscription(id string) *Subscription {
 	m.subsMu.Lock()
 	defer m.subsMu.Unlock()
 	for _, s := range m.subscriptions {
-		if s.PlanCode == planCode {
+		if s.ID == id {
 			return cloneSubscription(s)
 		}
 	}

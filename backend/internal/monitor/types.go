@@ -93,6 +93,7 @@ type CachedMessage struct {
 type Subscription struct {
 	mu                          sync.Mutex          `json:"-"`
 	checkMu                     sync.Mutex          `json:"-"`
+	ID                          string              `json:"id"`
 	PlanCode                    string              `json:"planCode"`
 	Datacenters                 []string            `json:"datacenters"`
 	Memories                    []string            `json:"memories,omitempty"`
@@ -206,7 +207,7 @@ func cloneSubscriptionUnlocked(source *Subscription) *Subscription {
 		return nil
 	}
 	out := &Subscription{
-		PlanCode: source.PlanCode, Datacenters: cloneStrings(source.Datacenters),
+		ID: source.ID, PlanCode: source.PlanCode, Datacenters: cloneStrings(source.Datacenters),
 		Memories: cloneStrings(source.Memories), Storages: cloneStrings(source.Storages),
 		Networks: cloneStrings(source.Networks), NotifyAvailable: source.NotifyAvailable,
 		NotifyUnavailable: source.NotifyUnavailable, LastStatus: cloneStringMap(source.LastStatus),

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/ovh-webui/server/internal/app"
 	"github.com/ovh-webui/server/internal/monitor"
@@ -170,7 +171,7 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 					quantity = 1
 				}
 				subscriptions = append(subscriptions, &monitor.Subscription{
-					PlanCode: pc, Datacenters: []string{}, Memories: append([]string{}, body.Memories...),
+					ID: uuid.NewString(), PlanCode: pc, Datacenters: []string{}, Memories: append([]string{}, body.Memories...),
 					Storages: append([]string{}, body.Storages...), Networks: append([]string{}, body.Networks...),
 					NotifyAvailable: notifyAvailable, NotifyUnavailable: notifyUnavailable,
 					LastStatus: map[string]string{}, ConfirmedStatus: map[string]string{},
@@ -207,13 +208,13 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	}
 }
 
-// RemoveSubscription DELETE /api/monitor/subscriptions/:planCode
+// RemoveSubscription DELETE /api/monitor/subscriptions/:id
 func RemoveSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		planCode := c.Param("planCode")
-		if err := mon.RemoveSubscription(planCode); err == nil {
-			state.Logger.Info("删除服务器订阅: "+planCode, "")
-			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已取消订阅 " + planCode})
+		id := c.Param("id")
+		if err := mon.RemoveSubscription(id); err == nil {
+			state.Logger.Info("删除服务器订阅: "+id, "")
+			c.JSON(http.StatusOK, gin.H{"status": "success", "message": "已取消订阅"})
 			return
 		} else if err.Error() != "订阅不存在" {
 			state.Logger.Error("删除服务器订阅失败", "monitor")
@@ -238,13 +239,13 @@ func ClearSubscriptions(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 	}
 }
 
-// UpdateSubscription PUT /api/monitor/subscriptions/:planCode
+// UpdateSubscription PUT /api/monitor/subscriptions/:id
 // 原地更新已有订阅（通知开关 / 机房 / 自动下单 / 数量 / 账户），不重置 lastStatus 与 history。
 func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		planCode := c.Param("planCode")
-		if planCode == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "缺少 planCode"})
+		id := c.Param("id")
+		if id == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "缺少订阅 ID"})
 			return
 		}
 		var body struct {
@@ -273,7 +274,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		found := false
 		if err := mon.MutateSubscriptions(func(subscriptions []*monitor.Subscription) ([]*monitor.Subscription, error) {
 			for _, sub := range subscriptions {
-				if sub.PlanCode != planCode {
+				if sub.ID != id {
 					continue
 				}
 				found = true
@@ -337,8 +338,8 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "订阅不存在"})
 			return
 		}
-		state.Logger.Info("更新服务器订阅: "+planCode, "monitor")
-		c.JSON(http.StatusOK, gin.H{"status": "success", "message": "订阅已更新", "planCode": planCode})
+		state.Logger.Info("更新服务器订阅: "+id, "monitor")
+		c.JSON(http.StatusOK, gin.H{"status": "success", "message": "订阅已更新", "id": id})
 	}
 }
 
@@ -354,12 +355,12 @@ func sameStringSlice(a, b []string) bool {
 	return true
 }
 
-// GetSubscriptionHistory GET /api/monitor/subscriptions/:planCode/history
+// GetSubscriptionHistory GET /api/monitor/subscriptions/:id/history
 // 返回该订阅的历史记录数组（倒序，最新在前）。
 func GetSubscriptionHistory(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		planCode := c.Param("planCode")
-		sub := mon.FindSubscription(planCode)
+		id := c.Param("id")
+		sub := mon.FindSubscription(id)
 		if sub == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "订阅不存在"})
 			return
