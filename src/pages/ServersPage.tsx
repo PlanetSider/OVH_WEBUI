@@ -15,10 +15,9 @@ import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { useServers, type ServerPlan } from "@/hooks/use-servers";
-import { useAccountInfo } from "@/hooks/use-account";
 import { useCreateQueueItem } from "@/hooks/use-queue";
 import { useCacheInfo } from "@/hooks/use-settings";
-import { useAccounts } from "@/hooks/use-accounts";
+import { useAccounts, useDefaultAccount } from "@/hooks/use-accounts";
 import { isValidQueueBatch, MAX_QUEUE_BATCH_TASKS, subsidiaryForQueueAccount } from "@/lib/purchase-guards";
 import { AccountSelect } from "@/components/common/AccountSelect";
 import { useEffect } from "react";
@@ -59,9 +58,11 @@ function ServersPage() {
   // FQN 级索引,抢购对话框按当前选配实时算 DC 可用 + option 绿红点
   const variantIndex = useMemo(() => buildVariantIndex(availQ.data), [availQ.data]);
 
-  // OVH 账户信息：拿 ovhSubsidiary 作为默认价格地区
-  const account = useAccountInfo();
-  const accountSub = account.data?.ovhSubsidiary;
+  // /servers and the purchase guard both use the configured default account.
+  // Do not use /me.ovhSubsidiary from the active control account here: that account
+  // can be different from the account that owns this server catalog.
+  const defaultAccount = useDefaultAccount();
+  const accountSub = subsidiaryForQueueAccount(defaultAccount) || undefined;
 
   // 价格地区（默认跟账户走；用户手动改过后用本地存的）
   const [subsidiary, setSubsidiary] = useState<string>(() => {
