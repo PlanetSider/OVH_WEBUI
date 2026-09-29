@@ -43,17 +43,21 @@ type QuickOrderDialogProps = {
 
 type PriceQuote = {
   duration?: string;
-  prices?: { withTax?: unknown; currencyCode?: unknown };
+  prices?: { withTax?: unknown; withoutTax?: unknown; currencyCode?: unknown };
 };
 
-function formatWithTax(priceInfo: PriceQuote): string {
-  const raw = priceInfo.prices?.withTax;
-  const value = raw && typeof raw === "object" && "value" in raw ? raw.value : raw;
+function formatWithoutTax(priceInfo: PriceQuote): string {
+  const raw = priceInfo.prices?.withoutTax;
+  const value = raw && typeof raw === "object" && "value" in raw
+    ? (raw as { value?: unknown }).value
+    : raw;
   const amount = typeof value === "number" || (typeof value === "string" && value.trim() !== "")
     ? Number(value)
     : NaN;
   const currency = priceInfo.prices?.currencyCode ||
-    (raw && typeof raw === "object" && "currencyCode" in raw ? raw.currencyCode : undefined);
+    (raw && typeof raw === "object" && "currencyCode" in raw
+      ? (raw as { currencyCode?: unknown }).currencyCode
+      : undefined);
   return formatCurrencyAmount(amount, currency);
 }
 
@@ -303,7 +307,7 @@ export function QuickOrderDialog({ open, onOpenChange }: QuickOrderDialogProps) 
                   </>
                 ) : priceInfo ? (
                   <span className="truncate">
-                    预估含税{priceInfo.duration && priceInfo.duration !== "P1M" ? `（${priceInfo.duration}）` : ""}：{formatWithTax(priceInfo)}
+                    预估价格{priceInfo.duration && priceInfo.duration !== "P1M" ? `（${priceInfo.duration}）` : ""}：{formatWithoutTax(priceInfo)}
                   </span>
                 ) : (
                   <span className="truncate">选择账户和机房后显示价格</span>

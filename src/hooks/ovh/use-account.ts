@@ -20,7 +20,8 @@ export interface RefundRecord {
   refundId: string;
   orderId: string;
   date: string;
-  priceWithTax: { value: number; text: string; currencyCode: string };
+  priceWithoutTax?: { value?: number; text?: string; currencyCode?: string };
+  priceWithTax?: { value: number; text: string; currencyCode: string };
   pdfUrl?: string;
 }
 
@@ -82,8 +83,8 @@ export function useOrders(limit = 30) {
       );
       const data = res.data;
       if (Array.isArray(data)) return data;
-      if (data && typeof data === "object" && Array.isArray((data as any).orders)) {
-        return (data as any).orders as OrderRecord[];
+      if (data && typeof data === "object" && "orders" in data && Array.isArray(data.orders)) {
+        return data.orders;
       }
       return [] as OrderRecord[];
     },

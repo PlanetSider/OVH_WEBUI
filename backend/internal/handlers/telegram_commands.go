@@ -280,11 +280,10 @@ func cmdPrice(state *app.State, args []string, accountID string) string {
 		return "❌ 价格查询失败，请稍后重试"
 	}
 
-	var withTax, withoutTax interface{}
+	var withoutTax interface{}
 	currency := ""
 	if result.Price != nil {
 		if result.Price.Prices != nil {
-			withTax = result.Price.Prices["withTax"]
 			withoutTax = result.Price.Prices["withoutTax"]
 			if code, ok := result.Price.Prices["currencyCode"].(string); ok {
 				currency = strings.ToUpper(strings.TrimSpace(code))
@@ -300,17 +299,20 @@ func cmdPrice(state *app.State, args []string, accountID string) string {
 		optsText = strings.Join(options, ", ")
 	}
 
+	return formatPriceQueryResponse(planCode, dc, optsText, currency, withoutTax)
+}
+
+func formatPriceQueryResponse(planCode, dc, optsText, currency string, withoutTax interface{}) string {
+	if strings.TrimSpace(currency) == "" {
+		currency = "币种未知"
+	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("💰 价格查询: %s @ %s\n\n", planCode, strings.ToUpper(dc)))
 	b.WriteString("配置: " + optsText + "\n")
-	if withTax != nil {
-		b.WriteString(fmt.Sprintf("含税: %v %s\n", withTax, currency))
-	}
 	if withoutTax != nil {
-		b.WriteString(fmt.Sprintf("未税: %v %s\n", withoutTax, currency))
-	}
-	if withTax == nil && withoutTax == nil {
-		b.WriteString("（未返回具体金额，请在网页端查看详情）\n")
+		b.WriteString(fmt.Sprintf("价格: %v %s\n", withoutTax, currency))
+	} else {
+		b.WriteString("价格: 暂不可用\n")
 	}
 	b.WriteString("\n下单: /buy " + planCode + " " + dc)
 	return b.String()

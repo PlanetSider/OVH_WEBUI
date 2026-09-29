@@ -81,11 +81,11 @@ func TestFetchBotOrdersMonthFilterStatusAndUnpaid(t *testing.T) {
 			_ = json.NewEncoder(w).Encode([]int64{1001, 1002})
 		case "/me/order/1001":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"date": "2026-09-10T10:00:00+00:00", "priceWithTax": map[string]interface{}{"text": "10.00 €"},
+				"date": "2026-09-10T10:00:00+00:00", "priceWithTax": map[string]interface{}{"text": "12.00 €"}, "priceWithoutTax": map[string]interface{}{"text": "10.00 €"},
 			})
 		case "/me/order/1002":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"date": "2026-09-11T10:00:00+00:00", "priceWithTax": map[string]interface{}{"text": "20.00 €"},
+				"date": "2026-09-11T10:00:00+00:00", "priceWithTax": map[string]interface{}{"text": "24.00 €"}, "priceWithoutTax": map[string]interface{}{"text": "20.00 €"},
 			})
 		case "/me/order/1001/status":
 			_ = json.NewEncoder(w).Encode("paid")
@@ -166,5 +166,13 @@ func TestPayBotOrderRejectsMissingDefaultPaymentMethod(t *testing.T) {
 	})
 	if err := payBotOrderWithDefaultPaymentMethod(client, "1002"); err == nil || !strings.Contains(err.Error(), "默认支付方式") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestFormatOrderPriceDoesNotFallbackToWithTax(t *testing.T) {
+	if got := formatOrderPrice(map[string]interface{}{
+		"priceWithTax": map[string]interface{}{"text": "24.00 €"},
+	}); got != "价格暂不可用" {
+		t.Fatalf("formatOrderPrice() = %q, want unavailable without-tax price", got)
 	}
 }

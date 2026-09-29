@@ -105,11 +105,11 @@ func (m *Monitor) getCatalogPriceInfoTextWithContext(ctx context.Context, accoun
 		return ""
 	}
 	installText := "无"
-	if display.InstallWithTax > 0 {
-		installText = formatCurrency(display.InstallWithTax, display.Currency)
+	if display.InstallWithoutTax > 0 {
+		installText = formatCurrency(display.InstallWithoutTax, display.Currency)
 	}
 	return fmt.Sprintf("月费: %s/月\n安装费: %s\n首月总价: 暂不可用",
-		formatCurrency(display.MonthlyWithTax, display.Currency), installText)
+		formatCurrency(display.MonthlyWithoutTax, display.Currency), installText)
 }
 
 // GetPriceInfoText 进程内询价并格式化为通知文案
@@ -137,42 +137,42 @@ func (m *Monitor) getPriceInfoTextWithContext(ctx context.Context, accountID, pl
 }
 
 // formatNotificationPrice 统一生成监控通知中的价格块。
-// 月费与安装费来自 catalog 的含税价格；首月总价优先使用购物车 summary 的含税总价。
+// 月费与安装费来自 catalog 的未税价格；首月总价优先使用购物车 summary 返回的实际未税总价。
 func formatNotificationPrice(display price.DisplayPrice) string {
 	if display.Duration != "" && display.Duration != "P1M" {
-		return formatPriceWithTotalLabel(display, "购物车含税总价（"+display.Duration+"）")
+		return formatPriceWithTotalLabel(display, "购物车总价（"+display.Duration+"）")
 	}
 	return formatPriceWithTotalLabel(display, "首月总价")
 }
 
 func formatPriceWithTotalLabel(display price.DisplayPrice, totalLabel string) string {
 	if !display.BreakdownKnown {
-		if !display.TotalKnown {
-			return ""
+		if !display.TotalWithoutTaxKnown {
+			return fmt.Sprintf("%s: 暂不可用", totalLabel)
 		}
-		return fmt.Sprintf("%s: %s", totalLabel, formatCurrency(display.TotalWithTax, display.Currency))
+		return fmt.Sprintf("%s: %s", totalLabel, formatCurrency(display.TotalWithoutTax, display.Currency))
 	}
 
 	installText := "无"
-	if display.InstallWithTax > 0 {
-		installText = formatCurrency(display.InstallWithTax, display.Currency)
+	if display.InstallWithoutTax > 0 {
+		installText = formatCurrency(display.InstallWithoutTax, display.Currency)
 	}
-	total := display.TotalWithTax
-	if !display.TotalKnown {
-		total = display.MonthlyWithTax + display.InstallWithTax
+	total := display.MonthlyWithoutTax + display.InstallWithoutTax
+	if display.TotalWithoutTaxKnown {
+		total = display.TotalWithoutTax
 	}
 	return fmt.Sprintf("月费: %s/月\n安装费: %s\n%s: %s",
-		formatCurrency(display.MonthlyWithTax, display.Currency),
+		formatCurrency(display.MonthlyWithoutTax, display.Currency),
 		installText,
 		totalLabel,
 		formatCurrency(total, display.Currency))
 }
 
-// FormatDisplayPrice 保持服务器型号卡片的既有“总价”字段格式。
+// FormatDisplayPrice 保持服务器型号卡片的既有字段结构，但金额统一显示未税值。
 // 监控通知请使用内部 formatNotificationPrice，避免改变卡片兼容性。
 func FormatDisplayPrice(display price.DisplayPrice) string {
 	if display.Duration != "" && display.Duration != "P1M" {
-		return formatPriceWithTotalLabel(display, "购物车含税总价（"+display.Duration+"）")
+		return formatPriceWithTotalLabel(display, "购物车总价（"+display.Duration+"）")
 	}
 	return formatPriceWithTotalLabel(display, "总价")
 }

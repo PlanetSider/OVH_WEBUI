@@ -17,15 +17,19 @@ import (
 const publicCatalogTTL = 2 * time.Hour
 
 // DisplayPrice 是通知需要的价格拆分。
-// 月费、安装费都使用含税金额；总价优先使用购物车 summary 返回的实际含税总价。
+// 用户可见金额优先使用未税字段；含税字段保留给校验、诊断和兼容调用方。
 type DisplayPrice struct {
-	MonthlyWithTax float64
-	InstallWithTax float64
-	TotalWithTax   float64
-	Currency       string
-	Duration       string
-	TotalKnown     bool
-	BreakdownKnown bool
+	MonthlyWithTax       float64
+	InstallWithTax       float64
+	TotalWithTax         float64
+	MonthlyWithoutTax    float64
+	InstallWithoutTax    float64
+	TotalWithoutTax      float64
+	TotalWithoutTaxKnown bool
+	Currency             string
+	Duration             string
+	TotalKnown           bool
+	BreakdownKnown       bool
 }
 
 type publicCatalog struct {
@@ -140,11 +144,17 @@ func getDisplayFromCatalog(ctx context.Context, state *app.State, accountID, pla
 	}
 	display.MonthlyWithTax = monthly.price + monthly.tax
 	display.InstallWithTax = install.price + install.tax
+	display.MonthlyWithoutTax = monthly.price
+	display.InstallWithoutTax = install.price
 	display.Currency = currency
 	display.BreakdownKnown = true
 	if !display.TotalKnown {
 		display.TotalWithTax = display.MonthlyWithTax + display.InstallWithTax
 		display.TotalKnown = true
+	}
+	if !display.TotalWithoutTaxKnown {
+		display.TotalWithoutTax = display.MonthlyWithoutTax + display.InstallWithoutTax
+		display.TotalWithoutTaxKnown = true
 	}
 	return display, nil
 }
@@ -161,6 +171,10 @@ func displayPriceFromSummary(info *PriceInfo) DisplayPrice {
 	if total, ok := numconv.ToFloat64(info.Prices["withTax"]); ok {
 		display.TotalWithTax = total
 		display.TotalKnown = true
+	}
+	if total, ok := numconv.ToFloat64(info.Prices["withoutTax"]); ok {
+		display.TotalWithoutTax = total
+		display.TotalWithoutTaxKnown = true
 	}
 	return display
 }

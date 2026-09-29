@@ -16,7 +16,17 @@ import {
   useOrders,
   type EmailHistoryEntry,
 } from "@/hooks/use-account";
-import { currencyLabel } from "@/lib/currency";
+import { formatCurrencyAmount } from "@/lib/currency";
+
+type AccountPrice = { value?: number; text?: string; currencyCode?: string };
+
+function formatWithoutTax(price?: AccountPrice): string {
+  if (price?.text && price.text.trim() !== "") return price.text;
+  if (price?.value != null && Number.isFinite(price.value)) {
+    return formatCurrencyAmount(price.value, price.currencyCode);
+  }
+  return "价格不可用";
+}
 
 /** 账户管理：顶部 3 张 KPI + Tabs (邮件 / 订单 / 退款) */
 function AccountPage() {
@@ -262,11 +272,7 @@ function OrdersTab() {
           <div className="divide-y divide-border">
             {(orders.data || []).map((o, idx) => {
               const id = o.orderId != null ? o.orderId : idx;
-              const priceText =
-                o.priceWithTax?.text ||
-                (o.priceWithTax?.value != null
-                  ? `${o.priceWithTax.value} ${currencyLabel(o.priceWithTax.currencyCode)}`
-                  : "—");
+              const priceText = formatWithoutTax(o.priceWithoutTax);
               const dateStr = o.date ? new Date(String(o.date)).toLocaleString("zh-CN") : "—";
               return (
                 <div
@@ -353,7 +359,7 @@ function RefundsTab() {
                   <p className="text-[11px] text-muted-foreground">{new Date(r.date).toLocaleString("zh-CN")}</p>
                 </div>
                 <div className="text-right flex-shrink-0">
-                  <p className="text-lg font-bold text-success">{r.priceWithTax.text}</p>
+                  <p className="text-lg font-bold text-success">{formatWithoutTax(r.priceWithoutTax)}</p>
                   {r.pdfUrl && (
                     <a href={r.pdfUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-foreground hover:underline">
                       下载 PDF

@@ -18,9 +18,9 @@ func TestFormatTaskBroadcastItem(t *testing.T) {
 		Storage:     "2x 480GB SSD",
 		Bandwidth:   "1Gbps",
 		Datacenters: "GRA",
-		Monthly:     "€12.40/月",
-		Install:     "€3.10",
-		Total:       "€15.50",
+		Monthly:     "€10.00/月",
+		Install:     "€2.50",
+		Total:       "€12.50",
 		Extra: []broadcastField{
 			{Label: "抢购数量", Value: "GRA 2 台"},
 		},
@@ -34,9 +34,9 @@ func TestFormatTaskBroadcastItem(t *testing.T) {
 		"数据盘：2x 480GB SSD",
 		"带宽：1Gbps",
 		"数据中心：GRA",
-		"月费：€12.40/月",
-		"安装费：€3.10",
-		"总价：€15.50",
+		"月费：€10.00/月",
+		"安装费：€2.50",
+		"总价：€12.50",
 		"抢购数量：GRA 2 台",
 		"自动付款：是",
 	}, "\n")
@@ -219,10 +219,11 @@ func TestTaskBroadcastSelectionsAreIndependent(t *testing.T) {
 
 func TestFormatBattleReportGroupsByAccount(t *testing.T) {
 	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-	priceOne, priceTwo := 12.5, 30.0
+	priceOne, priceTwo := 10.0, 20.0
+	withTaxOne, withTaxTwo := 12.5, 25.0
 	history := []types.PurchaseHistoryEntry{
-		{AccountID: "a", Status: "success", PurchaseTime: now.Add(-2 * time.Hour).Format(time.RFC3339), OrderID: "o1", OrderStatus: "notPaid", Price: &types.PriceInfo{WithTax: &priceOne, CurrencyCode: "EUR"}},
-		{AccountID: "a", Status: "success", PurchaseTime: now.Add(-3 * time.Hour).Format(time.RFC3339), OrderID: "o2", OrderStatus: "delivered", Price: &types.PriceInfo{WithTax: &priceTwo, CurrencyCode: "EUR"}},
+		{AccountID: "a", Status: "success", PurchaseTime: now.Add(-2 * time.Hour).Format(time.RFC3339), OrderID: "o1", OrderStatus: "notPaid", Price: &types.PriceInfo{WithTax: &withTaxOne, WithoutTax: &priceOne, CurrencyCode: "EUR"}},
+		{AccountID: "a", Status: "success", PurchaseTime: now.Add(-3 * time.Hour).Format(time.RFC3339), OrderID: "o2", OrderStatus: "delivered", Price: &types.PriceInfo{WithTax: &withTaxTwo, WithoutTax: &priceTwo, CurrencyCode: "EUR"}},
 		{AccountID: "b", Status: "success", PurchaseTime: now.Add(-25 * time.Hour).Format(time.RFC3339), OrderID: "o3", OrderStatus: "delivered", Price: &types.PriceInfo{WithTax: &priceTwo, CurrencyCode: "EUR"}},
 	}
 	got := formatBattleReport(history, now, map[string]string{"a": "主账号", "b": "备用账号"})
@@ -231,9 +232,9 @@ func TestFormatBattleReportGroupsByAccount(t *testing.T) {
 		"OVH 账号：主账号",
 		"过去 24 小时成功下单：2",
 		"未支付订单：1 单",
-		"未支付金额：€12.50",
+		"未支付金额：€10.00",
 		"已支付订单：1 单",
-		"已支付金额：€30.00",
+		"已支付金额：€20.00",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("report %q missing %q", got, want)

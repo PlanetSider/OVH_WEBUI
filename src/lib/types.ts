@@ -44,7 +44,13 @@ export interface HistoryEntry {
   errorMessage?: string | null;
   purchaseTime: string;
   attemptCount?: number;
-  price?: { withTax?: number; currency?: string };
+  price?: {
+    withTax?: number;
+    withoutTax?: number;
+    tax?: number;
+    currencyCode?: string;
+    currency?: string;
+  };
   orderStatus?: string;
   orderStatusAt?: string;
 }

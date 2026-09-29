@@ -45,6 +45,13 @@ function getExpirationMs(item: PurchaseHistory): number {
   return new Date(item.purchaseTime).getTime() + ORDER_VALIDITY_MS;
 }
 
+function formatHistoryPrice(item: PurchaseHistory): string {
+  const amount = item.price?.withoutTax;
+  return amount != null
+    ? formatCurrencyAmount(amount, item.price?.currencyCode)
+    : "价格不可用";
+}
+
 function orderStatusLabel(status?: string): string {
   const normalized = status?.trim().toLowerCase();
   if (!normalized) return "状态查询中";
@@ -222,6 +229,7 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
   const isExpired = showCountdown && remainingMs <= 0;
   // 24 小时内进入告警色
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
+  const priceText = formatHistoryPrice(item);
   return (
     <tr className={`text-[13px] hover:bg-muted ${isExpired ? "opacity-60" : ""}`}>
       <td className={`px-4 py-3 font-mono font-semibold ${isExpired ? "line-through" : ""}`}>
@@ -236,9 +244,9 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
         {item.options && item.options.length > 0 ? item.options.join(", ") : "默认配置"}
       </td>
       <td className="px-4 py-3">
-        {item.price?.withTax != null ? (
+        {priceText !== "" ? (
           <span className={`font-mono font-medium text-success ${isExpired ? "line-through" : ""}`}>
-            {formatCurrencyAmount(item.price.withTax, item.price.currencyCode)}
+            {formatHistoryPrice(item)}
           </span>
         ) : (
           <span className="text-muted-foreground">—</span>
@@ -322,6 +330,7 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
   const remainingMs = showCountdown ? getExpirationMs(item) - now : 0;
   const isExpired = showCountdown && remainingMs <= 0;
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
+  const priceText = formatHistoryPrice(item);
   return (
     <Card className={isExpired ? "opacity-60" : ""}>
       <CardContent className="p-3 space-y-2">
@@ -354,9 +363,9 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
           <span className="text-muted-foreground font-mono">
             {new Date(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
           </span>
-          {item.price?.withTax != null ? (
+          {priceText !== "" ? (
             <span className={`font-mono font-medium text-success ${isExpired ? "line-through" : ""}`}>
-              {formatCurrencyAmount(item.price.withTax, item.price.currencyCode)}
+              {formatHistoryPrice(item)}
             </span>
           ) : null}
         </div>

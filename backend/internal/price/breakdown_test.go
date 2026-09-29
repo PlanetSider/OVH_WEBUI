@@ -38,11 +38,12 @@ func TestGetDisplayFromResultKeepsNonMonthlyCartTotal(t *testing.T) {
 		Duration: "P12M",
 		Prices: map[string]interface{}{
 			"withTax":      240.00,
+			"withoutTax":   200.00,
 			"currencyCode": "USD",
 		},
 	}}
 	display, err := GetDisplayFromResultWithContext(context.Background(), nil, "account", "plan", nil, result)
-	if err != nil || !display.TotalKnown || display.BreakdownKnown || display.TotalWithTax != 240 || display.Duration != "P12M" || display.Currency != "USD" {
+	if err != nil || !display.TotalKnown || !display.TotalWithoutTaxKnown || display.BreakdownKnown || display.TotalWithTax != 240 || display.TotalWithoutTax != 200 || display.Duration != "P12M" || display.Currency != "USD" {
 		t.Fatalf("non-monthly display = %+v, err %v", display, err)
 	}
 }
@@ -150,9 +151,10 @@ func TestNormalizeOptionCodesTrimsAndSkipsBlank(t *testing.T) {
 func TestDisplayPriceFromSummaryParsesTaxInclusiveTotal(t *testing.T) {
 	display := displayPriceFromSummary(&PriceInfo{Prices: map[string]interface{}{
 		"withTax":      "12.50",
+		"withoutTax":   "10.00",
 		"currencyCode": "EUR",
 	}})
-	if !display.TotalKnown || math.Abs(display.TotalWithTax-12.5) > 1e-9 || display.Currency != "EUR" {
+	if !display.TotalKnown || math.Abs(display.TotalWithTax-12.5) > 1e-9 || !display.TotalWithoutTaxKnown || math.Abs(display.TotalWithoutTax-10) > 1e-9 || display.Currency != "EUR" {
 		t.Fatalf("displayPriceFromSummary() = %+v", display)
 	}
 }
@@ -166,6 +168,17 @@ func TestDisplayPriceFromSummaryRejectsMissingTotal(t *testing.T) {
 		t.Fatalf("displayPriceFromSummary() marked invalid total as known: %+v", display)
 	}
 }
+
+func TestDisplayPriceFromSummaryRejectsInvalidWithoutTax(t *testing.T) {
+	display := displayPriceFromSummary(&PriceInfo{Prices: map[string]interface{}{
+		"withTax":    12.5,
+		"withoutTax": "not-a-number",
+	}})
+	if !display.TotalKnown || display.TotalWithoutTaxKnown {
+		t.Fatalf("displayPriceFromSummary() = %+v, want inclusive known and exclusive unknown", display)
+	}
+}
+
 func TestDisplayPriceFromSummaryPreservesUnknownCurrency(t *testing.T) {
 	display := displayPriceFromSummary(&PriceInfo{Prices: map[string]interface{}{
 		"withTax": 12.5,

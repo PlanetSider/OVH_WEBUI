@@ -267,21 +267,19 @@ func orderDate(detail map[string]interface{}) time.Time {
 }
 
 func formatOrderPrice(detail map[string]interface{}) string {
-	for _, key := range []string{"priceWithTax", "priceWithoutTax"} {
-		value, ok := detail[key].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if text := orderMapString(value, "text"); text != "" {
-			return text
-		}
-		amount := orderMapString(value, "value")
-		currency := orderMapString(value, "currencyCode")
-		if amount != "" {
-			return strings.TrimSpace(amount + " " + currency)
-		}
+	value, ok := detail["priceWithoutTax"].(map[string]interface{})
+	if !ok {
+		return "价格暂不可用"
 	}
-	return "未知"
+	if text := orderMapString(value, "text"); text != "" {
+		return text
+	}
+	amount := orderMapString(value, "value")
+	currency := orderMapString(value, "currencyCode")
+	if amount != "" {
+		return strings.TrimSpace(amount + " " + currency)
+	}
+	return "价格暂不可用"
 }
 
 func orderMapString(values map[string]interface{}, keys ...string) string {

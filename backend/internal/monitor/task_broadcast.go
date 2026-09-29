@@ -371,18 +371,18 @@ func (m *Monitor) priceParts(ctx context.Context, accountID, planCode string, op
 func displayPriceParts(display price.DisplayPrice) (string, string, string) {
 	monthly, install, total := "暂不可用", "暂不可用", "暂不可用"
 	if display.BreakdownKnown {
-		monthly = formatCurrency(display.MonthlyWithTax, display.Currency) + "/月"
+		monthly = formatCurrency(display.MonthlyWithoutTax, display.Currency) + "/月"
 		install = "无"
-		if display.InstallWithTax > 0 {
-			install = formatCurrency(display.InstallWithTax, display.Currency)
+		if display.InstallWithoutTax > 0 {
+			install = formatCurrency(display.InstallWithoutTax, display.Currency)
 		}
-		totalValue := display.TotalWithTax
-		if !display.TotalKnown {
-			totalValue = display.MonthlyWithTax + display.InstallWithTax
+		if display.TotalWithoutTaxKnown {
+			total = formatCurrency(display.TotalWithoutTax, display.Currency)
+		} else {
+			total = formatCurrency(display.MonthlyWithoutTax+display.InstallWithoutTax, display.Currency)
 		}
-		total = formatCurrency(totalValue, display.Currency)
-	} else if display.TotalKnown {
-		total = formatCurrency(display.TotalWithTax, display.Currency)
+	} else if display.TotalWithoutTaxKnown {
+		total = formatCurrency(display.TotalWithoutTax, display.Currency)
 	}
 	return monthly, install, total
 }
@@ -806,18 +806,18 @@ func formatBattleReport(history []types.PurchaseHistoryEntry, now time.Time, acc
 		account.Successful++
 		if isUnpaidBattleStatus(entry.OrderStatus) {
 			account.Unpaid++
-			if entry.Price == nil || entry.Price.WithTax == nil {
+			if entry.Price == nil || entry.Price.WithoutTax == nil {
 				account.UnpaidKnown = false
 			} else {
-				account.UnpaidAmount += *entry.Price.WithTax
+				account.UnpaidAmount += *entry.Price.WithoutTax
 				account.UnpaidCurrency = mergeCurrency(account.UnpaidCurrency, entry.Price.CurrencyCode)
 			}
 		} else {
 			account.Paid++
-			if entry.Price == nil || entry.Price.WithTax == nil {
+			if entry.Price == nil || entry.Price.WithoutTax == nil {
 				account.PaidKnown = false
 			} else {
-				account.PaidAmount += *entry.Price.WithTax
+				account.PaidAmount += *entry.Price.WithoutTax
 				account.PaidCurrency = mergeCurrency(account.PaidCurrency, entry.Price.CurrencyCode)
 			}
 		}

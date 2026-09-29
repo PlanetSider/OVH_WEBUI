@@ -28,6 +28,7 @@ import {
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { formatCurrencyAmount } from "@/lib/currency";
 import { toast } from "sonner";
 import {
   Select,
@@ -226,8 +227,24 @@ interface OrderResult {
   success: boolean;
   message?: string;
   error?: string;
-  price?: { prices?: { withTax?: number } } | number;
+  price?: { prices?: { withTax?: unknown; withoutTax?: unknown; currencyCode?: unknown } } | number;
   orderId?: string;
+}
+
+function formatOrderResultPrice(price: NonNullable<OrderResult["price"]>): string {
+  if (typeof price === "number") return "价格不可用";
+  const raw = price.prices?.withoutTax;
+  const value = raw && typeof raw === "object" && "value" in raw
+    ? (raw as { value?: unknown }).value
+    : raw;
+  const amount = typeof value === "number" || (typeof value === "string" && value.trim() !== "")
+    ? Number(value)
+    : NaN;
+  const currency = price.prices?.currencyCode ||
+    (raw && typeof raw === "object" && "currencyCode" in raw
+      ? (raw as { currencyCode?: unknown }).currencyCode
+      : undefined);
+  return formatCurrencyAmount(amount, currency);
 }
 
 function errorMessage(error: unknown): string {
@@ -800,9 +817,9 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                     <div className="p-3 bg-muted/50 rounded-sm border border-border">
                       <p className="text-sm text-muted-foreground mb-1">价格信息</p>
                       <p className="text-lg font-bold font-mono text-accent">
-                        {typeof lastResult.price === "number"
-                          ? lastResult.price.toFixed(2)
-                          : lastResult.price.prices?.withTax?.toFixed(2) || "--"} €
+                        {lastResult.price !== null
+                          ? formatOrderResultPrice(lastResult.price)
+                          : formatOrderResultPrice(lastResult.price)}
                       </p>
                     </div>
                   )}

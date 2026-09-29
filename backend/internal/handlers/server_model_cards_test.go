@@ -11,12 +11,12 @@ import (
 
 func testServerPlan() types.ServerPlan {
 	return types.ServerPlan{
-		PlanCode:   "24sk102",
-		Name:       "KS-1 | Intel Xeon",
-		CPU:        "Intel Xeon",
-		Memory:     "32 GB",
-		Storage:    "2x 480GB SSD",
-		Bandwidth:  "250 Mbps",
+		PlanCode:  "24sk102",
+		Name:      "KS-1 | Intel Xeon",
+		CPU:       "Intel Xeon",
+		Memory:    "32 GB",
+		Storage:   "2x 480GB SSD",
+		Bandwidth: "250 Mbps",
 		Datacenters: []types.Datacenter{
 			{Datacenter: "gra", Availability: "1H-low"},
 			{Datacenter: "rbx", Availability: "unavailable"},
