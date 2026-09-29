@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +11,6 @@ import (
 
 func TestFormatTaskBroadcastItem(t *testing.T) {
 	item := taskBroadcastItem{
-		Title:       "🛒 抢购任务",
 		Account:     "主账号",
 		Model:       "KS-1",
 		PlanCode:    "24sk10",
@@ -28,9 +28,6 @@ func TestFormatTaskBroadcastItem(t *testing.T) {
 	}
 	got := formatTaskBroadcastItem(item)
 	want := strings.Join([]string{
-		"🛒 抢购任务",
-		"",
-		"OVH 账号：主账号",
 		"型号：KS-1",
 		"Plan Code：24sk10",
 		"内存：64GB",
@@ -46,25 +43,124 @@ func TestFormatTaskBroadcastItem(t *testing.T) {
 	if got != want {
 		t.Fatalf("formatted task = %q, want %q", got, want)
 	}
-	if strings.Contains(got, "数据中心：GRA\n\n") || strings.Contains(got, "月费：€12.40/月\n\n") {
-		t.Fatal("task fields contain an unexpected internal blank line")
+}
+
+func TestFormatTaskBroadcastCategoryGroupsTasksByAccount(t *testing.T) {
+	newItem := func(accountID, account, planCode string) taskBroadcastItem {
+		return taskBroadcastItem{
+			AccountID: accountID, Account: account, Model: "型号", PlanCode: planCode,
+			Memory: "64GB", Storage: "2x SSD", Bandwidth: "1Gbps", Datacenters: "GRA",
+			Monthly: "€1/月", Install: "无", Total: "€1", AutoPay: false,
+		}
+	}
+	items := []taskBroadcastItem{
+		newItem("acct-1", "主账号", "plan-1"),
+		newItem("acct-2", "备用账号", "plan-2"),
+		newItem("acct-1", "主账号", "plan-3"),
+	}
+	messages := formatTaskBroadcastCategory("🛒 抢购任务", items)
+	if len(messages) != 1 {
+		t.Fatalf("message count = %d, want one short category message", len(messages))
+	}
+	got := messages[0]
+	if !strings.HasPrefix(got, "🛒 抢购任务\n\n正在执行任务数：3\n\n") {
+		t.Fatalf("category heading/count formatting is incorrect: %q", got)
+	}
+	wantOrder := []string{
+		"OVH 账号：主账号", "任务1：", "Plan Code：plan-1",
+		"任务2：", "Plan Code：plan-3",
+		"OVH 账号：备用账号", "任务1：", "Plan Code：plan-2",
+	}
+	position := 0
+	for _, want := range wantOrder {
+		next := strings.Index(got[position:], want)
+		if next < 0 {
+			t.Fatalf("category %q missing or misordered %q", got, want)
+		}
+		position += next + len(want)
+	}
+	if strings.Count(got, "任务1：") != 2 || strings.Count(got, "任务2：") != 1 {
+		t.Fatalf("account task numbers are incorrect: %q", got)
+	}
+	if !strings.Contains(got, "自动付款：否\n\n任务2：") {
+		t.Fatalf("tasks for one account are not separated by one blank line: %q", got)
+	}
+	if !strings.Contains(got, "自动付款：否\n\nOVH 账号：备用账号") {
+		t.Fatalf("account groups are not separated by one blank line: %q", got)
 	}
 }
 
-func TestFormatTaskBroadcastCategoryCombinesTasks(t *testing.T) {
-	item := taskBroadcastItem{Account: "账号", Model: "型号", PlanCode: "plan", Datacenters: "GRA", Monthly: "€1", Install: "无", Total: "€1"}
-	got := formatTaskBroadcastCategory("🛒 抢购任务", []taskBroadcastItem{item, item})
-	if strings.Count(got, "🛒 抢购任务") != 1 {
-		t.Fatalf("category title count = %d, want 1", strings.Count(got, "🛒 抢购任务"))
+func TestFormatTaskBroadcastCategorySplitsLongMessagesWithoutLosingTasks(t *testing.T) {
+	items := make([]taskBroadcastItem, 0, 9)
+	for accountIndex := 1; accountIndex <= 3; accountIndex++ {
+		for taskIndex := 1; taskIndex <= 3; taskIndex++ {
+			items = append(items, taskBroadcastItem{
+				AccountID: fmt.Sprintf("account-%d", accountIndex),
+				Account:   fmt.Sprintf("账号%d", accountIndex),
+				Model:     strings.Repeat("M", 900),
+				PlanCode:  fmt.Sprintf("plan-%d-%d", accountIndex, taskIndex),
+				Memory:    "64GB", Storage: "2x SSD", Bandwidth: "1Gbps", Datacenters: "GRA",
+				Monthly: "€1/月", Install: "无", Total: "€1", AutoPay: false,
+			})
+		}
 	}
-	if !strings.HasPrefix(got, "🛒 抢购任务\n\n") {
-		t.Fatalf("category does not have exactly one title blank line: %q", got)
+
+	messages := formatTaskBroadcastCategory("🛒 抢购任务", items)
+	if len(messages) < 2 {
+		t.Fatalf("message count = %d, want long category to be split", len(messages))
 	}
-	if strings.Count(got, "OVH 账号：账号") != 2 {
-		t.Fatalf("task count = %d, want 2", strings.Count(got, "OVH 账号：账号"))
+	all := strings.Join(messages, "\n")
+	for i, message := range messages {
+		if len(message) > taskBroadcastMessageMaxBytes {
+			t.Fatalf("message %d is %d bytes, over limit %d", i+1, len(message), taskBroadcastMessageMaxBytes)
+		}
+		wantHeader := fmt.Sprintf("🛒 抢购任务（%d/%d）\n\n正在执行任务数：9\n\nOVH 账号：", i+1, len(messages))
+		if !strings.HasPrefix(message, wantHeader) {
+			t.Fatalf("message %d has an incorrect continuation header: %q", i+1, message)
+		}
 	}
-	if strings.Contains(got, "🛒 抢购任务\n\n\n") {
-		t.Fatal("category has more than one blank line after title")
+	for accountIndex := 1; accountIndex <= 3; accountIndex++ {
+		for taskIndex := 1; taskIndex <= 3; taskIndex++ {
+			planCode := fmt.Sprintf("Plan Code：plan-%d-%d", accountIndex, taskIndex)
+			if strings.Count(all, planCode) != 1 {
+				t.Fatalf("%q appears %d times; want once", planCode, strings.Count(all, planCode))
+			}
+		}
+	}
+	if strings.Count(all, "任务1：") != 3 || strings.Count(all, "任务2：") != 3 || strings.Count(all, "任务3：") != 3 {
+		t.Fatalf("task numbering was not preserved across chunks: %q", all)
+	}
+}
+
+func TestFormatTaskBroadcastCategorySplitsOversizedTaskOnUTF8Boundaries(t *testing.T) {
+	longModel := strings.Repeat("界", 4000)
+	messages := formatTaskBroadcastCategory("🛒 抢购任务", []taskBroadcastItem{{
+		AccountID: "acct-1", Account: "主账号", Model: longModel, PlanCode: "plan-1",
+		Memory: "64GB", Storage: "2x SSD", Bandwidth: "1Gbps", Datacenters: "GRA",
+		Monthly: "€1/月", Install: "无", Total: "€1", AutoPay: false,
+	}})
+	if len(messages) < 2 {
+		t.Fatalf("message count = %d, want oversized task to continue across messages", len(messages))
+	}
+	all := strings.Join(messages, "\n")
+	if got := strings.Count(all, "界"); got != len([]rune(longModel)) {
+		t.Fatalf("long model rune count = %d, want %d", got, len([]rune(longModel)))
+	}
+	for i, message := range messages {
+		if len(message) > taskBroadcastMessageMaxBytes {
+			t.Fatalf("message %d is %d bytes, over limit %d", i+1, len(message), taskBroadcastMessageMaxBytes)
+		}
+		if !strings.Contains(message, "OVH 账号：主账号") {
+			t.Fatalf("message %d is missing the account label", i+1)
+		}
+	}
+	if !strings.Contains(messages[0], "任务1：") {
+		t.Fatalf("first message is missing the task label: %q", messages[0][:min(len(messages[0]), 100)])
+	}
+	for i, message := range messages[1:] {
+		if !strings.Contains(message, "任务1（续）：") {
+			t.Fatalf("continuation message %d is missing its continuation label", i+2)
+		}
 	}
 }
 

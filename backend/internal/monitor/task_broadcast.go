@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ovh-webui/server/internal/catalog"
 	"github.com/ovh-webui/server/internal/price"
@@ -20,7 +21,7 @@ type broadcastField struct {
 }
 
 type taskBroadcastItem struct {
-	Title       string
+	AccountID   string
 	Account     string
 	Model       string
 	PlanCode    string
@@ -45,9 +46,6 @@ type queueTaskGroup struct {
 
 func formatTaskBroadcastItem(item taskBroadcastItem) string {
 	lines := []string{
-		strings.TrimSpace(item.Title),
-		"",
-		"OVH 账号：" + displayOrUnavailable(item.Account),
 		"型号：" + displayOrUnavailable(item.Model),
 		"Plan Code：" + displayOrUnavailable(item.PlanCode),
 		"内存：" + displayOrUnavailable(item.Memory),
@@ -68,19 +66,125 @@ func formatTaskBroadcastItem(item taskBroadcastItem) string {
 	return strings.Join(lines, "\n")
 }
 
-func formatTaskBroadcastCategory(title string, items []taskBroadcastItem) string {
-	if len(items) == 0 {
-		return ""
+const taskBroadcastMessageMaxBytes = 2500
+const taskBroadcastPartTitleReserveBytes = 32
+
+func splitTaskBroadcastText(text string, maxBytes int) []string {
+	if maxBytes < 1 {
+		return []string{text}
 	}
-	lines := []string{strings.TrimSpace(title), ""}
+	chunks := make([]string, 0, len(text)/maxBytes+1)
+	for start := 0; start < len(text); {
+		end := start
+		for end < len(text) {
+			_, size := utf8.DecodeRuneInString(text[end:])
+			if end > start && end-start+size > maxBytes {
+				break
+			}
+			end += size
+		}
+		chunks = append(chunks, text[start:end])
+		start = end
+	}
+	return chunks
+}
+
+func taskBroadcastCategoryHeader(title string, taskCount, part, total int) string {
+	title = strings.TrimSpace(title)
+	if total > 1 {
+		title = fmt.Sprintf("%s（%d/%d）", title, part, total)
+	}
+	return fmt.Sprintf("%s\n\n正在执行任务数：%d\n\n", title, taskCount)
+}
+
+func formatTaskBroadcastCategory(title string, items []taskBroadcastItem) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	type accountGroup struct {
+		key   string
+		name  string
+		items []taskBroadcastItem
+	}
+	groups := make([]accountGroup, 0)
+	groupIndexes := make(map[string]int)
 	for _, item := range items {
-		formatted := formatTaskBroadcastItem(item)
-		fields := strings.Split(formatted, "\n")
-		if len(fields) > 2 {
-			lines = append(lines, fields[2:]...)
+		accountID := strings.TrimSpace(item.AccountID)
+		groupKey := "id:" + accountID
+		if accountID == "" {
+			groupKey = "name:" + strings.TrimSpace(item.Account)
+		}
+		index, ok := groupIndexes[groupKey]
+		if !ok {
+			index = len(groups)
+			groupIndexes[groupKey] = index
+			groups = append(groups, accountGroup{key: groupKey, name: item.Account})
+		}
+		groups[index].items = append(groups[index].items, item)
+	}
+
+	baseHeader := taskBroadcastCategoryHeader(title, len(items), 0, 0)
+	maxBodyBytes := taskBroadcastMessageMaxBytes - len(baseHeader) - taskBroadcastPartTitleReserveBytes
+	bodies := make([]string, 0, 1)
+	currentBody := ""
+	currentAccountKey := ""
+	for _, group := range groups {
+		accountLine := "OVH 账号：" + displayOrUnavailable(group.name)
+		for taskIndex, item := range group.items {
+			taskLabel := fmt.Sprintf("任务%d：", taskIndex+1)
+			taskText := formatTaskBroadcastItem(item)
+			task := taskLabel + "\n" + taskText
+			fullTaskBlock := accountLine + "\n" + task
+			block := task
+			if currentBody == "" || currentAccountKey != group.key {
+				block = fullTaskBlock
+			}
+			if len(fullTaskBlock) > maxBodyBytes {
+				if currentBody != "" {
+					bodies = append(bodies, currentBody)
+					currentBody = ""
+				}
+				firstPrefix := taskLabel + "\n"
+				continuationPrefix := fmt.Sprintf("任务%d（续）：\n", taskIndex+1)
+				firstChunkBytes := maxBodyBytes - len(accountLine) - 1 - len(firstPrefix)
+				continuationChunkBytes := maxBodyBytes - len(accountLine) - 1 - len(continuationPrefix)
+				chunks := splitTaskBroadcastText(taskText, firstChunkBytes)
+				if len(chunks) > 1 {
+					chunks = append([]string{chunks[0]}, splitTaskBroadcastText(strings.Join(chunks[1:], ""), continuationChunkBytes)...)
+				}
+				for chunkIndex, chunk := range chunks {
+					prefix := firstPrefix
+					if chunkIndex > 0 {
+						prefix = continuationPrefix
+					}
+					bodies = append(bodies, accountLine+"\n"+prefix+chunk)
+				}
+				currentAccountKey = ""
+				continue
+			}
+			candidate := block
+			if currentBody != "" {
+				candidate = currentBody + "\n\n" + block
+			}
+			if len(candidate) > maxBodyBytes {
+				bodies = append(bodies, currentBody)
+				currentBody = accountLine + "\n" + task
+			} else {
+				currentBody = candidate
+			}
+			currentAccountKey = group.key
 		}
 	}
-	return strings.Join(lines, "\n")
+	if currentBody != "" {
+		bodies = append(bodies, currentBody)
+	}
+
+	messages := make([]string, 0, len(bodies))
+	for i, body := range bodies {
+		header := taskBroadcastCategoryHeader(title, len(items), i+1, len(bodies))
+		messages = append(messages, header+body)
+	}
+	return messages
 }
 
 type TaskBroadcastSelection struct {
@@ -125,8 +229,8 @@ func (m *Monitor) buildQueueBroadcastMessages(ctx context.Context) []string {
 		dcs := sortedDatacenterCounts(group.DatacenterCounts)
 		monthly, install, total := m.priceParts(ctx, group.AccountID, group.PlanCode, group.Options, dcs)
 		entries = append(entries, taskBroadcastItem{
-			Account: m.accountName(group.AccountID),
-			Model:   planName(plan, group.PlanCode), PlanCode: group.PlanCode,
+			AccountID: group.AccountID, Account: m.accountName(group.AccountID),
+			Model: planName(plan, group.PlanCode), PlanCode: group.PlanCode,
 			Memory: memory, Storage: storage, Bandwidth: bandwidth,
 			Datacenters: strings.Join(dcs, "，"), Monthly: monthly, Install: install, Total: total,
 			Extra: []broadcastField{{Label: "抢购数量", Value: formatDatacenterCounts(group.DatacenterCounts)}}, AutoPay: group.AutoPay,
@@ -135,7 +239,7 @@ func (m *Monitor) buildQueueBroadcastMessages(ctx context.Context) []string {
 	if len(entries) == 0 {
 		return nil
 	}
-	return []string{formatTaskBroadcastCategory("🛒 抢购任务", entries)}
+	return formatTaskBroadcastCategory("🛒 抢购任务", entries)
 }
 
 func (m *Monitor) buildMonitorBroadcastMessages(ctx context.Context) []string {
@@ -161,8 +265,8 @@ func (m *Monitor) buildMonitorBroadcastMessages(ctx context.Context) []string {
 		accountID := m.resolvePriceAccount(sub)
 		monthly, install, total := m.priceParts(ctx, accountID, sub.PlanCode, nil, dcs)
 		entries = append(entries, taskBroadcastItem{
-			Account: m.accountName(accountID),
-			Model:   firstNonEmpty(sub.ServerName, planName(plan, sub.PlanCode)), PlanCode: sub.PlanCode,
+			AccountID: accountID, Account: m.accountName(accountID),
+			Model: firstNonEmpty(sub.ServerName, planName(plan, sub.PlanCode)), PlanCode: sub.PlanCode,
 			Memory: memory, Storage: storage, Bandwidth: network,
 			Datacenters: displayDatacenters(dcs), Monthly: monthly, Install: install, Total: total,
 			Extra: []broadcastField{
@@ -176,7 +280,7 @@ func (m *Monitor) buildMonitorBroadcastMessages(ctx context.Context) []string {
 	if len(entries) == 0 {
 		return nil
 	}
-	return []string{formatTaskBroadcastCategory("🖥️ 独服监控", entries)}
+	return formatTaskBroadcastCategory("🖥️ 独服监控", entries)
 }
 
 func (m *Monitor) buildVPSBroadcastMessages(ctx context.Context) []string {
@@ -199,8 +303,8 @@ func (m *Monitor) buildVPSBroadcastMessages(ctx context.Context) []string {
 			quantity = 1
 		}
 		entries = append(entries, taskBroadcastItem{
-			Account: m.accountName(accountID),
-			Model:   firstNonEmpty(model.Name, sub.PlanCode), PlanCode: sub.PlanCode,
+			AccountID: accountID, Account: m.accountName(accountID),
+			Model: firstNonEmpty(model.Name, sub.PlanCode), PlanCode: sub.PlanCode,
 			Memory: model.Memory, Storage: model.Storage, Bandwidth: model.Bandwidth,
 			Datacenters: displayDatacenters(dcs), Monthly: model.Monthly, Install: model.Install, Total: model.Total,
 			Extra: []broadcastField{
@@ -217,7 +321,7 @@ func (m *Monitor) buildVPSBroadcastMessages(ctx context.Context) []string {
 	if len(entries) == 0 {
 		return nil
 	}
-	return []string{formatTaskBroadcastCategory("🖥️ VPS 监控", entries)}
+	return formatTaskBroadcastCategory("🖥️ VPS 监控", entries)
 }
 
 func (m *Monitor) BuildBattleReport() string {
