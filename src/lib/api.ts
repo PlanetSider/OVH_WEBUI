@@ -119,11 +119,27 @@ async function saveSettings(config: Settings): Promise<{ status: string }> {
   });
 }
 
-async function getOvhAccountInfo(): Promise<{
-  success: boolean;
-  account?: AccountInfo;
+type ExchangeStatus = {
+  status: string;
+  provider?: string;
+  displayMode?: "original" | "cny";
+  active: boolean;
+  rates?: { eurCny?: number; usdCny?: number; cadCny?: number };
+  updatedAt?: string;
   error?: string;
-}> {
+  historicalConfigured?: boolean;
+};
+
+export type HistoricalExchangeRate = {
+  status: string;
+  available: boolean;
+  date: string;
+  base: string;
+  quote: string;
+  rate?: number;
+  error?: string;
+};
+async function getOvhAccountInfo(): Promise<{ success: boolean; account?: AccountInfo; error?: string }> {
   const raw = await apiRequest<Record<string, unknown>>("/api/ovh/account/info");
   if (raw && typeof raw === "object" && "success" in raw) {
     return raw as { success: boolean; account?: AccountInfo; error?: string };
@@ -159,6 +175,10 @@ export const api = {
   saveSettings,
   /** @deprecated 使用 saveSettings */
   saveConfig: saveSettings,
+
+  exchangeStatus: () => apiRequest<ExchangeStatus>("/api/exchange/status"),
+  exchangeRate: (from: string, to: string) => apiRequest<{ available: boolean; rate?: number }>(`/api/exchange/rate?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
+  historicalExchangeRate: (date: string, base: string, quote: string) => apiRequest<HistoricalExchangeRate>(`/api/exchange/historical-rate?date=${encodeURIComponent(date)}&base=${encodeURIComponent(base)}&quote=${encodeURIComponent(quote)}`),
 
   verifyAuth: () =>
     apiRequest<{ valid: boolean }>("/api/verify-auth", { method: "POST", body: "{}" }),

@@ -28,7 +28,7 @@ import {
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
-import { formatCurrencyAmount } from "@/lib/currency";
+import { formatDisplayPrice, type ExchangeDisplaySettings } from "@/lib/currency";
 import { toast } from "sonner";
 import {
   Select,
@@ -231,7 +231,7 @@ interface OrderResult {
   orderId?: string;
 }
 
-function formatOrderResultPrice(price: NonNullable<OrderResult["price"]>): string {
+function formatOrderResultPrice(price: NonNullable<OrderResult["price"]>, zone?: string, settings?: ExchangeDisplaySettings): string {
   if (typeof price === "number") return "价格不可用";
   const raw = price.prices?.withoutTax;
   const value = raw && typeof raw === "object" && "value" in raw
@@ -244,7 +244,7 @@ function formatOrderResultPrice(price: NonNullable<OrderResult["price"]>): strin
     (raw && typeof raw === "object" && "currencyCode" in raw
       ? (raw as { currencyCode?: unknown }).currencyCode
       : undefined);
-  return formatCurrencyAmount(amount, currency);
+  return formatDisplayPrice(amount, currency, zone, settings || {});
 }
 
 function errorMessage(error: unknown): string {
@@ -818,8 +818,8 @@ const TelegramOrderPage = ({ channel = 'telegram' }: TelegramOrderPageProps) => 
                       <p className="text-sm text-muted-foreground mb-1">价格信息</p>
                       <p className="text-lg font-bold font-mono text-accent">
                         {lastResult.price !== null
-                          ? formatOrderResultPrice(lastResult.price)
-                          : formatOrderResultPrice(lastResult.price)}
+                          ? formatOrderResultPrice(lastResult.price, settings.data?.zone, settings.data)
+                          : formatOrderResultPrice(lastResult.price, settings.data?.zone, settings.data)}
                       </p>
                     </div>
                   )}

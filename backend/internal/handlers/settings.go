@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-webui/server/internal/app"
+	"github.com/ovh-webui/server/internal/exchange"
 	"github.com/ovh-webui/server/internal/monitor"
 	"github.com/ovh-webui/server/internal/telegram"
 	"github.com/ovh-webui/server/internal/types"
@@ -25,6 +28,9 @@ type settingsResponse struct {
 	FeishuVerificationConfigured bool `json:"feishuVerificationTokenConfigured"`
 	FeishuEncryptConfigured      bool `json:"feishuEncryptKeyConfigured"`
 	QQAppSecretConfigured        bool `json:"qqAppSecretConfigured"`
+	ExchangeAPIKeyConfigured     bool `json:"exchangeApiKeyConfigured"`
+	FrankfurterAPIKeyConfigured  bool `json:"frankfurterApiKeyConfigured"`
+	ExchangeActive               bool `json:"exchangeActive"`
 }
 
 func toSettingsResponse(cfg types.Config) settingsResponse {
@@ -37,11 +43,16 @@ func toSettingsResponse(cfg types.Config) settingsResponse {
 		FeishuVerificationConfigured: cfg.FeishuVerificationToken != "",
 		FeishuEncryptConfigured:      cfg.FeishuEncryptKey != "",
 		QQAppSecretConfigured:        cfg.QQAppSecret != "",
+		ExchangeAPIKeyConfigured:     cfg.ExchangeAPIKey != "",
+		FrankfurterAPIKeyConfigured:  cfg.FrankfurterAPIKey != "",
+		ExchangeActive:               exchange.ProviderConfigured(cfg) && exchange.RatesFromConfig(cfg).Valid() && cfg.ExchangeStatus == "active",
 	}
 	response.AppKey, response.AppSecret, response.ConsumerKey = "", "", ""
 	response.TgToken, response.TgChatID, response.TgWebhookSecret = "", "", ""
 	response.FeishuAppSecret, response.FeishuVerificationToken, response.FeishuEncryptKey = "", "", ""
 	response.QQAppSecret = ""
+	response.ExchangeAPIKey = ""
+	response.FrankfurterAPIKey = ""
 	return response
 }
 
@@ -181,6 +192,20 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		patch.Endpoint = strings.TrimSpace(patch.Endpoint)
 		patch.Zone = strings.TrimSpace(patch.Zone)
 		patch.IAM = strings.TrimSpace(patch.IAM)
+		rawExchangeProvider := strings.TrimSpace(patch.ExchangeProvider)
+		patch.ExchangeProvider = exchange.NormalizeProvider(rawExchangeProvider)
+		patch.ExchangeAPIKey = strings.TrimSpace(patch.ExchangeAPIKey)
+		patch.FrankfurterAPIKey = strings.TrimSpace(patch.FrankfurterAPIKey)
+		rawExchangeDisplayMode := strings.TrimSpace(patch.ExchangeDisplayMode)
+		patch.ExchangeDisplayMode = exchange.NormalizeDisplayMode(rawExchangeDisplayMode)
+		if rawExchangeDisplayMode != "" && rawExchangeDisplayMode != exchange.DisplayOriginal && rawExchangeDisplayMode != exchange.DisplayCNY {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "不支持的汇率显示模式"})
+			return
+		}
+		if rawExchangeProvider != "" && patch.ExchangeProvider == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "不支持的汇率提供商"})
+			return
+		}
 
 		// 非空才覆盖（合并语义）；Webhook secret 绝不用空串覆盖
 		if patch.AppKey != "" {
@@ -258,6 +283,18 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		if patch.IAM != "" {
 			newCfg.IAM = patch.IAM
 		}
+		if patch.ExchangeProvider != "" {
+			newCfg.ExchangeProvider = patch.ExchangeProvider
+		}
+		if patch.ExchangeAPIKey != "" {
+			newCfg.ExchangeAPIKey = patch.ExchangeAPIKey
+		}
+		if patch.FrankfurterAPIKey != "" {
+			newCfg.FrankfurterAPIKey = patch.FrankfurterAPIKey
+		}
+		if rawExchangeDisplayMode != "" {
+			newCfg.ExchangeDisplayMode = patch.ExchangeDisplayMode
+		}
 
 		// 默认值兜底
 		if newCfg.Endpoint == "" {
@@ -270,9 +307,17 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 			newCfg.FeishuConnectionMode = "long_connection"
 		}
 
+		exchangeChanged := newCfg.ExchangeProvider != prev.ExchangeProvider || newCfg.ExchangeAPIKey != prev.ExchangeAPIKey || newCfg.FrankfurterAPIKey != prev.FrankfurterAPIKey
 		if err := state.Config.Set(newCfg); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "保存设置失败"})
 			return
+		}
+		if exchangeChanged && state.Exchange != nil {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
+			if err := state.Exchange.Refresh(ctx); err != nil {
+				state.Logger.Warn("汇率即时刷新失败，保留配置并等待后续重试: "+err.Error(), "exchange")
+			}
+			cancel()
 		}
 		if newCfg.FeishuAppID != prev.FeishuAppID || newCfg.FeishuAppSecret != prev.FeishuAppSecret || newCfg.FeishuDomain != prev.FeishuDomain {
 			monitor.FeishuResetToken()

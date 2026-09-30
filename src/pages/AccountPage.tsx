@@ -9,28 +9,24 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Chip } from "@/components/common/Chip";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
-import {
-  useAccountInfo,
-  useRefunds,
-  useEmails,
-  useOrders,
-  type EmailHistoryEntry,
-} from "@/hooks/use-account";
-import { formatCurrencyAmount } from "@/lib/currency";
+import { useAccountInfo, useRefunds, useEmails, useOrders, type EmailHistoryEntry } from "@/hooks/use-account";
+import { useSettings } from "@/hooks/use-settings";
+import { formatDisplayPrice, formatCurrencyAmount, type ExchangeDisplaySettings } from "@/lib/currency";
 
 type AccountPrice = { value?: number; text?: string; currencyCode?: string };
 
-function formatWithoutTax(price?: AccountPrice): string {
-  if (price?.text && price.text.trim() !== "") return price.text;
+function formatWithoutTax(price?: AccountPrice, zone?: string, settings?: ExchangeDisplaySettings): string {
   if (price?.value != null && Number.isFinite(price.value)) {
-    return formatCurrencyAmount(price.value, price.currencyCode);
+    return formatDisplayPrice(price.value, price.currencyCode, zone, settings || {});
   }
+  if (price?.text && price.text.trim() !== "") return price.text;
   return "价格不可用";
 }
 
 /** 账户管理：顶部 3 张 KPI + Tabs (邮件 / 订单 / 退款) */
 function AccountPage() {
   const info = useAccountInfo();
+  const settings = useSettings();
   return (
     <div className="space-y-6">
       <PageHeader icon={User} title="账户管理" description="查看和管理您的 OVH 账户信息" />
@@ -79,10 +75,10 @@ function AccountPage() {
           <EmailsTab />
         </TabsContent>
         <TabsContent value="orders">
-          <OrdersTab />
+          <OrdersTab zone={info.data?.ovhSubsidiary} settings={settings.data} />
         </TabsContent>
         <TabsContent value="refunds">
-          <RefundsTab />
+          <RefundsTab zone={info.data?.ovhSubsidiary} settings={settings.data} />
         </TabsContent>
       </Tabs>
     </div>
@@ -234,7 +230,7 @@ function EmailsTab() {
   );
 }
 
-function OrdersTab() {
+function OrdersTab({ zone, settings }: { zone?: string; settings?: ExchangeDisplaySettings }) {
   const orders = useOrders(30);
   return (
     <Card>
@@ -272,7 +268,7 @@ function OrdersTab() {
           <div className="divide-y divide-border">
             {(orders.data || []).map((o, idx) => {
               const id = o.orderId != null ? o.orderId : idx;
-              const priceText = formatWithoutTax(o.priceWithoutTax);
+              const priceText = formatWithoutTax(o.priceWithoutTax, zone, settings);
               const dateStr = o.date ? new Date(String(o.date)).toLocaleString("zh-CN") : "—";
               return (
                 <div
@@ -324,7 +320,7 @@ function OrdersTab() {
   );
 }
 
-function RefundsTab() {
+function RefundsTab({ zone, settings }: { zone?: string; settings?: ExchangeDisplaySettings }) {
   const refunds = useRefunds();
   return (
     <Card>
@@ -359,7 +355,7 @@ function RefundsTab() {
                   <p className="text-[11px] text-muted-foreground">{new Date(r.date).toLocaleString("zh-CN")}</p>
                 </div>
                 <div className="text-right flex-shrink-0">
-                  <p className="text-lg font-bold text-success">{formatWithoutTax(r.priceWithoutTax)}</p>
+                  <p className="text-lg font-bold text-success">{formatWithoutTax(r.priceWithoutTax, zone, settings)}</p>
                   {r.pdfUrl && (
                     <a href={r.pdfUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-foreground hover:underline">
                       下载 PDF

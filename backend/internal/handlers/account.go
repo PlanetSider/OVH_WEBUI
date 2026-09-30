@@ -378,6 +378,7 @@ func GetAccountBills(state *app.State) gin.HandlerFunc {
 		list := []map[string]interface{}{}
 		for _, d := range details {
 			if d != nil {
+				enrichBillExchange(c.Request.Context(), state, d)
 				list = append(list, d)
 			}
 		}

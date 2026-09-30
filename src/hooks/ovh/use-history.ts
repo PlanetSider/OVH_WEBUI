@@ -33,7 +33,29 @@ export interface PurchaseHistory {
   totalMs?: number;
 }
 
-/** 抢购历史 */
+export interface HistoricalExchangeRateResult {
+  status: string;
+  available: boolean;
+  date: string;
+  base: string;
+  quote: string;
+  rate?: number;
+  error?: string;
+}
+
+export function useHistoricalExchangeRate(date: string | undefined, base: string | undefined, quote = "CNY", enabled = true) {
+  const normalizedDate = date ? new Date(date).toISOString().slice(0, 10) : "";
+  const normalizedBase = (base || "").trim().toUpperCase();
+  return useQuery({
+    queryKey: ["exchange", "historical", normalizedDate, normalizedBase, quote],
+    queryFn: async () => (await api.get<HistoricalExchangeRateResult>("/exchange/historical-rate", {
+      params: { date: normalizedDate, base: normalizedBase, quote },
+    })).data,
+    enabled: enabled && normalizedDate !== "" && normalizedBase !== "",
+    staleTime: 24 * 60 * 60_000,
+    retry: false,
+  });
+}
 export function useHistory() {
   return useQuery({
     queryKey: qk.history(),

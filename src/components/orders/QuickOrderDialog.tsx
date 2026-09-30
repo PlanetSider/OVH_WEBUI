@@ -3,7 +3,9 @@ import { z } from "zod";
 import { Loader2, Settings2, Zap } from "lucide-react";
 
 import api from "@/lib/api";
-import { formatCurrencyAmount } from "@/lib/currency";
+import { formatDisplayPrice, type ExchangeDisplaySettings } from "@/lib/currency";
+import { useSettings } from "@/hooks/use-settings";
+import { useAccounts } from "@/hooks/use-accounts";
 import { useBackendConnection, useServers } from "@/hooks/useApi";
 import { cn } from "@/lib/utils";
 import { AccountSelect } from "@/components/common/AccountSelect";
@@ -46,7 +48,7 @@ type PriceQuote = {
   prices?: { withTax?: unknown; withoutTax?: unknown; currencyCode?: unknown };
 };
 
-function formatWithoutTax(priceInfo: PriceQuote): string {
+function formatWithoutTax(priceInfo: PriceQuote, zone?: string, settings?: ExchangeDisplaySettings): string {
   const raw = priceInfo.prices?.withoutTax;
   const value = raw && typeof raw === "object" && "value" in raw
     ? (raw as { value?: unknown }).value
@@ -58,16 +60,20 @@ function formatWithoutTax(priceInfo: PriceQuote): string {
     (raw && typeof raw === "object" && "currencyCode" in raw
       ? (raw as { currencyCode?: unknown }).currencyCode
       : undefined);
-  return formatCurrencyAmount(amount, currency);
+  return formatDisplayPrice(amount, currency, zone, settings || {});
 }
 
 export function QuickOrderDialog({ open, onOpenChange }: QuickOrderDialogProps) {
   const { data: servers, isLoading: isServersLoading, refetch: refetchServers } = useServers();
   const { isConnected, isChecking, checkConnection } = useBackendConnection();
+  const settings = useSettings();
+  const accounts = useAccounts();
 
   const [planCode, setPlanCode] = useState<string>("");
   const [datacenter, setDatacenter] = useState<string>("");
   const [accountId, setAccountId] = useState<string>("");
+  const selectedAccount = accounts.data?.find((account) => account.id === accountId);
+
   const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingPrice, setIsLoadingPrice] = useState(false);
@@ -307,7 +313,7 @@ export function QuickOrderDialog({ open, onOpenChange }: QuickOrderDialogProps) 
                   </>
                 ) : priceInfo ? (
                   <span className="truncate">
-                    预估价格{priceInfo.duration && priceInfo.duration !== "P1M" ? `（${priceInfo.duration}）` : ""}：{formatWithoutTax(priceInfo)}
+                    预估价格{priceInfo.duration && priceInfo.duration !== "P1M" ? `（${priceInfo.duration}）` : ""}：{formatWithoutTax(priceInfo, selectedAccount?.zone, settings.data)}
                   </span>
                 ) : (
                   <span className="truncate">选择账户和机房后显示价格</span>

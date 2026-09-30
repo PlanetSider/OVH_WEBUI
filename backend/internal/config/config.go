@@ -82,6 +82,12 @@ func (s *Store) applyDefaults() {
 	if s.cfg.FeishuConnectionMode == "" {
 		s.cfg.FeishuConnectionMode = "long_connection"
 	}
+	if s.cfg.ExchangeProvider == "" {
+		s.cfg.ExchangeProvider = "FreeExchangeRateApi"
+	}
+	if s.cfg.ExchangeDisplayMode == "" {
+		s.cfg.ExchangeDisplayMode = "original"
+	}
 	// 旧版本配置没有通知开关字段，缺失/为 null 时默认开启；只有显式 false 才关闭。
 	if s.cfg.TgNotificationsEnabled == nil {
 		v := true

@@ -14,6 +14,7 @@ import (
 	"github.com/ovh-webui/server/internal/availability"
 	"github.com/ovh-webui/server/internal/config"
 	"github.com/ovh-webui/server/internal/db"
+	"github.com/ovh-webui/server/internal/exchange"
 	"github.com/ovh-webui/server/internal/logger"
 	"github.com/ovh-webui/server/internal/ovh"
 	"github.com/ovh-webui/server/internal/proxyguard"
@@ -158,6 +159,7 @@ type QQNotifier interface {
 type State struct {
 	Paths       storage.Paths
 	Config      *config.Store
+	Exchange    *exchange.Service
 	OVH         *ovh.Factory
 	ProxyGuard  *proxyguard.Guard
 	Logger      *logger.Logger
@@ -317,6 +319,7 @@ func NewState(paths storage.Paths, cfg *config.Store, lg *logger.Logger, sqliteD
 	}
 	guard := proxyguard.New(proxyguard.DefaultFailureThreshold)
 	s.ProxyGuard = guard
+	s.Exchange = exchange.New(cfg)
 	s.OVH = ovh.NewFactory(cfg, s.FindAccount, proxyHealthReporter{guard: guard, logger: lg, state: s})
 	return s
 }

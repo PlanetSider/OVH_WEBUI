@@ -1,6 +1,6 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Helmet } from "react-helmet-async";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Radar, Network, AlertCircle, ShoppingCart, CalendarClock } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, MessageSquare, QrCode, Loader2, ExternalLink, Radar, Network, AlertCircle, ShoppingCart, CalendarClock, CircleDollarSign } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -49,6 +49,7 @@ function endpointForZone(zone: string): string {
 const SECTIONS = [
   { id: "password", icon: KeyRound, label: "访问密码" },
   { id: "accounts", icon: Globe, label: "OVH 账户" },
+  { id: "exchange", icon: CircleDollarSign, label: "汇率与价格" },
   { id: "ordering", icon: ShoppingCart, label: "下单设置" },
   { id: "telegram", icon: Send, label: "Telegram" },
   { id: "feishu", icon: MessageSquare, label: "飞书" },
@@ -195,6 +196,8 @@ function SettingsPage() {
                 </Section>
               ) : active === "accounts" ? (
                 <AccountsSection />
+               ) : active === "exchange" ? (
+                 <ExchangeSection form={form} set={set} />
               ) : active === "ordering" ? (
                  <Section title="下单设置">
                    <p className="text-xs text-muted-foreground">全局开关默认关闭；修改后需点击页面右上角“保存设置”才会生效。</p>
@@ -250,6 +253,73 @@ function Field({ label, hint, children }: {
       {children(id, labelId, hintId)}
       {hint && <p id={hintId} className="text-[11px] text-muted-foreground mt-1">{hint}</p>}
     </div>
+  );
+}
+
+function ExchangeSection({
+  form,
+  set,
+}: {
+  form: SettingsConfig;
+  set: <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => void;
+}) {
+  const provider = form.exchangeProvider || "FreeExchangeRateApi";
+  const active = form.exchangeActive === true;
+  const updatedAt = form.exchangeRatesUpdatedAt ? new Date(form.exchangeRatesUpdatedAt).toLocaleString("zh-CN") : "尚未刷新";
+  return (
+    <Section title="汇率与价格显示">
+      <p className="text-xs text-muted-foreground">
+        CA 账户保留 OVH 返回的 CAD 原值并换算为 USD，US 使用 USD，IE 使用 EUR。未启用人民币显示时，各账户仍按上述地区规则显示。
+      </p>
+      <Field label="当前汇率提供商" hint="选择后点击右上角保存；FreeExchangeRateApi 不需要 API Key。">
+        {(id) => (
+          <Select value={provider} onValueChange={(value) => set("exchangeProvider", value as SettingsConfig["exchangeProvider"])}>
+            <SelectTrigger id={id}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="FreeExchangeRateApi">FreeExchangeRateApi（免费，无需 Key）</SelectItem>
+              <SelectItem value="ExchangeRateApi">Exchange Rate API（需要 Key）</SelectItem>
+            </SelectContent>
+          </Select>
+        )}
+      </Field>
+      {provider === "ExchangeRateApi" ? (
+        <Field label="Exchange Rate API Key" hint="只发送到后端保存，设置接口不会返回明文。">
+          {(id) => <Input id={id} type="password" value={form.exchangeApiKey || ""} onChange={(event) => set("exchangeApiKey", event.target.value)} placeholder={form.exchangeApiKeyConfigured ? "已配置，留空保持不变" : "输入 API Key"} />}
+        </Field>
+      ) : null}
+      <Field label="Frankfurter 历史汇率 API Key" hint="人民币模式下，购买历史和账单按记录日期查询；未配置或查询失败时显示不可用。">
+        {(id) => <Input id={id} type="password" value={form.frankfurterApiKey || ""} onChange={(event) => set("frankfurterApiKey", event.target.value)} placeholder={form.frankfurterApiKeyConfigured ? "已配置，留空保持不变" : "输入 API Key"} />}
+      </Field>
+      <div className="rounded-xl border border-border p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            {active ? <CheckCircle2 className="w-4 h-4 text-success" /> : <AlertCircle className="w-4 h-4 text-muted-foreground" />}
+            {active ? "当前汇率已生效" : "当前汇率尚未生效"}
+          </div>
+          <Chip tone={active ? "success" : form.exchangeStatus === "error" ? "danger" : "default"}>
+            {active ? "active" : form.exchangeStatus || "inactive"}
+          </Chip>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-muted-foreground">
+          <span>EUR/CNY：{form.exchangeEurCny && form.exchangeEurCny > 0 ? form.exchangeEurCny.toFixed(6) : "—"}</span>
+          <span>USD/CNY：{form.exchangeUsdCny && form.exchangeUsdCny > 0 ? form.exchangeUsdCny.toFixed(6) : "—"}</span>
+          <span>CAD/CNY：{form.exchangeCadCny && form.exchangeCadCny > 0 ? form.exchangeCadCny.toFixed(6) : "—"}</span>
+        </div>
+        <p className="text-[11px] text-muted-foreground">最近更新：{updatedAt}</p>
+        {form.exchangeError ? <p className="text-xs text-destructive break-words">{form.exchangeError}</p> : null}
+      </div>
+      <label className={cn("flex items-start gap-3 rounded-xl border border-border p-4", active ? "cursor-pointer" : "opacity-60 cursor-not-allowed")}>
+        <Checkbox
+          checked={form.exchangeDisplayMode === "cny"}
+          disabled={!active}
+          onCheckedChange={(value) => set("exchangeDisplayMode", value === true ? "cny" : "original")}
+        />
+        <span>
+          <span className="block text-sm font-medium">使用人民币显示价格</span>
+          <span className="block text-xs text-muted-foreground mt-1">启用后普通价格使用当前日缓存汇率；购买历史和账单使用记录日期的 Frankfurter 汇率。</span>
+        </span>
+      </label>
+    </Section>
   );
 }
 

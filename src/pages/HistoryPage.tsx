@@ -21,8 +21,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useHistory, useClearHistory, useRefreshOrderStatus, type PurchaseHistory } from "@/hooks/use-history";
-import { formatCurrencyAmount } from "@/lib/currency";
+import { useHistory, useClearHistory, useRefreshOrderStatus, useHistoricalExchangeRate, type PurchaseHistory } from "@/hooks/use-history";
+import { useSettings } from "@/hooks/use-settings";
+import { useAccounts } from "@/hooks/use-accounts";
+import { formatDisplayPrice, formatCurrencyAmount, type ExchangeDisplaySettings } from "@/lib/currency";
 
 /** 抢购历史：表格 + 搜索 + 状态过滤 */
 /** 订单有效期 15 天，未提供 expirationTime 时用 purchaseTime + 15d 兜底 */
@@ -45,11 +47,28 @@ function getExpirationMs(item: PurchaseHistory): number {
   return new Date(item.purchaseTime).getTime() + ORDER_VALIDITY_MS;
 }
 
-function formatHistoryPrice(item: PurchaseHistory): string {
+function HistoryPrice({
+  item,
+  settings,
+  accounts,
+}: {
+  item: PurchaseHistory;
+  settings?: ExchangeDisplaySettings;
+  accounts?: Array<{ id: string; zone?: string }>;
+}) {
   const amount = item.price?.withoutTax;
-  return amount != null
-    ? formatCurrencyAmount(amount, item.price?.currencyCode)
-    : "价格不可用";
+  const sourceCurrency = item.price?.currencyCode;
+  const accountZone = accounts?.find((account) => account.id === item.accountId)?.zone;
+  const cnyMode = settings?.exchangeDisplayMode === "cny";
+  const historical = useHistoricalExchangeRate(item.purchaseTime, sourceCurrency, "CNY", cnyMode && settings?.exchangeActive === true);
+  if (amount == null) return <>价格不可用</>;
+  if (cnyMode) {
+    if (!settings?.exchangeActive) return <>价格不可用</>;
+    if (historical.isPending) return <>汇率查询中…</>;
+    if (!historical.data?.available || !historical.data.rate) return <>价格不可用</>;
+    return <>{formatCurrencyAmount(amount * historical.data.rate, "CNY")}</>;
+  }
+  return <>{formatDisplayPrice(amount, sourceCurrency, accountZone, settings || {})}</>;
 }
 
 function orderStatusLabel(status?: string): string {
@@ -79,6 +98,8 @@ function orderStatusTone(status?: string): "default" | "success" | "warning" | "
 
 function HistoryPage() {
   const list = useHistory();
+  const settings = useSettings();
+  const accounts = useAccounts();
   const clear = useClearHistory();
   const refreshOrderStatus = useRefreshOrderStatus();
   const [search, setSearch] = useState("");
@@ -191,7 +212,7 @@ function HistoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {filtered.map((item) => <HistoryRow key={item.id} item={item} now={now} />)}
+                {filtered.map((item) => <HistoryRow key={item.id} item={item} now={now} settings={settings.data} accounts={accounts.data} />)}
               </tbody>
             </table>
             </div>
@@ -199,7 +220,7 @@ function HistoryPage() {
 
           {/* 手机:卡片堆叠,每条订单一张卡 */}
           <div className="md:hidden space-y-2">
-            {filtered.map((item) => <HistoryCard key={item.id} item={item} now={now} />)}
+            {filtered.map((item) => <HistoryCard key={item.id} item={item} now={now} settings={settings.data} accounts={accounts.data} />)}
           </div>
         </>
       )}
@@ -222,14 +243,13 @@ function HistoryPage() {
   );
 }
 
-function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
+function HistoryRow({ item, now, settings, accounts }: { item: PurchaseHistory; now: number; settings?: ExchangeDisplaySettings; accounts?: Array<{ id: string; zone?: string }> }) {
   // 只有成功且拿到 orderId 的行才显示倒计时
   const showCountdown = item.status === "success" && !!item.orderId;
   const remainingMs = showCountdown ? getExpirationMs(item) - now : 0;
   const isExpired = showCountdown && remainingMs <= 0;
   // 24 小时内进入告警色
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
-  const priceText = formatHistoryPrice(item);
   return (
     <tr className={`text-[13px] hover:bg-muted ${isExpired ? "opacity-60" : ""}`}>
       <td className={`px-4 py-3 font-mono font-semibold ${isExpired ? "line-through" : ""}`}>
@@ -244,9 +264,9 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
         {item.options && item.options.length > 0 ? item.options.join(", ") : "默认配置"}
       </td>
       <td className="px-4 py-3">
-        {priceText !== "" ? (
+        {item.price?.withoutTax != null ? (
           <span className={`font-mono font-medium text-success ${isExpired ? "line-through" : ""}`}>
-            {formatHistoryPrice(item)}
+            <HistoryPrice item={item} settings={settings} accounts={accounts} />
           </span>
         ) : (
           <span className="text-muted-foreground">—</span>
@@ -325,12 +345,11 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
 }
 
 /** 手机端的订单卡片渲染。跟 HistoryRow 字段一一对应,但堆叠成卡片。 */
-function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
+function HistoryCard({ item, now, settings, accounts }: { item: PurchaseHistory; now: number; settings?: ExchangeDisplaySettings; accounts?: Array<{ id: string; zone?: string }> }) {
   const showCountdown = item.status === "success" && !!item.orderId;
   const remainingMs = showCountdown ? getExpirationMs(item) - now : 0;
   const isExpired = showCountdown && remainingMs <= 0;
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
-  const priceText = formatHistoryPrice(item);
   return (
     <Card className={isExpired ? "opacity-60" : ""}>
       <CardContent className="p-3 space-y-2">
@@ -363,9 +382,9 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
           <span className="text-muted-foreground font-mono">
             {new Date(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
           </span>
-          {priceText !== "" ? (
+          {item.price?.withoutTax != null ? (
             <span className={`font-mono font-medium text-success ${isExpired ? "line-through" : ""}`}>
-              {formatHistoryPrice(item)}
+              <HistoryPrice item={item} settings={settings} accounts={accounts} />
             </span>
           ) : null}
         </div>

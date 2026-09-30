@@ -75,6 +75,17 @@ type Config struct {
 	TaskBroadcastReportEnabled  *bool  `json:"taskBroadcastReportEnabled,omitempty"`
 	IAM                         string `json:"iam"`
 	Zone                        string `json:"zone"`
+	// ExchangeProvider 支持 FreeExchangeRateApi 与 ExchangeRateApi。
+	ExchangeProvider       string  `json:"exchangeProvider,omitempty"`
+	ExchangeAPIKey         string  `json:"exchangeApiKey,omitempty"`
+	FrankfurterAPIKey      string  `json:"frankfurterApiKey,omitempty"`
+	ExchangeDisplayMode    string  `json:"exchangeDisplayMode,omitempty"`
+	ExchangeEURCNY         float64 `json:"exchangeEurCny,omitempty"`
+	ExchangeUSDCNY         float64 `json:"exchangeUsdCny,omitempty"`
+	ExchangeCADCNY         float64 `json:"exchangeCadCny,omitempty"`
+	ExchangeRatesUpdatedAt string  `json:"exchangeRatesUpdatedAt,omitempty"`
+	ExchangeStatus         string  `json:"exchangeStatus,omitempty"`
+	ExchangeError          string  `json:"exchangeError,omitempty"`
 }
 
 func notificationsEnabled(flag *bool) bool {
@@ -126,6 +137,8 @@ func DefaultConfig() Config {
 		FeishuNotificationsEnabled:  &trueValue,
 		WeixinNotificationsEnabled:  &trueValue,
 		QQNotificationsEnabled:      &trueValue,
+		ExchangeProvider:            "FreeExchangeRateApi",
+		ExchangeDisplayMode:         "original",
 	}
 }
 

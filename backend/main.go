@@ -101,6 +101,14 @@ func main() {
 		catalog.WarmRegionCache(ctx, state)
 	})
 
+	state.GoBackground(func(ctx context.Context) {
+		location, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			location = time.FixedZone("Asia/Shanghai", 8*60*60)
+		}
+		state.Exchange.RunDaily(ctx, location)
+	})
+
 	// 监控器
 	mon := monitor.New(state)
 	mon.SetVPSBroadcastModelResolver(func(ctx context.Context, accountID, subsidiary, planCode string) (monitor.VPSBroadcastModel, error) {
@@ -226,6 +234,9 @@ func main() {
 		// Settings
 		api.GET("/settings", handlers.GetSettings(state))
 		api.POST("/settings", handlers.SaveSettings(state))
+		api.GET("/exchange/status", handlers.GetExchangeStatus(state))
+		api.GET("/exchange/rate", handlers.GetExchangeRate(state))
+		api.GET("/exchange/historical-rate", handlers.GetHistoricalExchangeRate(state))
 		api.POST("/verify-auth", handlers.VerifyAuth(state))
 		api.GET("/endpoint-config", handlers.EndpointConfig(state))
 

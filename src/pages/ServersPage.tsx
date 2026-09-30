@@ -16,7 +16,7 @@ import { EmptyState } from "@/components/common/EmptyState";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { useServers, type ServerPlan } from "@/hooks/use-servers";
 import { useCreateQueueItem } from "@/hooks/use-queue";
-import { useCacheInfo } from "@/hooks/use-settings";
+import { useCacheInfo, useSettings } from "@/hooks/use-settings";
 import { useAccounts, useDefaultAccount } from "@/hooks/use-accounts";
 import { isValidQueueBatch, MAX_QUEUE_BATCH_TASKS, subsidiaryForQueueAccount } from "@/lib/purchase-guards";
 import { AccountSelect } from "@/components/common/AccountSelect";
@@ -31,7 +31,6 @@ import {
   useOvhCatalog,
   buildCatalogIndex,
   computePriceFromOptions,
-  formatPrice,
   type AvailabilityItem,
   type CatalogIndex,
   type PriceInfo,
@@ -40,7 +39,7 @@ import { groupOptions, type OptionGroupKey } from "@/lib/option-groups";
 import { OptionGroupSection } from "@/components/common/OptionGroupSection";
 import { OVH_DATACENTERS, lookupDcStatus } from "@/lib/datacenters";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
-import { formatCurrencyAmount, currencyLabel } from "@/lib/currency";
+import { formatDisplayPrice, resolveDisplayPrice, currencyLabel, type ExchangeDisplaySettings } from "@/lib/currency";
 import { MonitorSubscriptionDialog } from "@/components/common/MonitorSubscriptionDialog";
 
 const EMPTY_SERVER_PLANS: ServerPlan[] = [];
@@ -62,6 +61,7 @@ function ServersPage() {
   // Do not use /me.ovhSubsidiary from the active control account here: that account
   // can be different from the account that owns this server catalog.
   const defaultAccount = useDefaultAccount();
+  const settings = useSettings();
   const accountSub = subsidiaryForQueueAccount(defaultAccount) || undefined;
 
   // 价格地区（默认跟账户走；用户手动改过后用本地存的）
@@ -267,6 +267,8 @@ function ServersPage() {
               server={srv}
               realtimeDcMap={availMap[srv.planCode]}
               price={priceMap[srv.planCode]}
+              priceZone={subsidiary}
+              settings={settings.data}
               onView={() => setDetailPlanCode(srv.planCode)}
             />
           ))}
@@ -290,7 +292,8 @@ function ServersPage() {
               onRetryCatalog={() => void catalogQ.refetch()}
               onBusyChange={setDetailBusy}
               subsidiary={subsidiary}
-              onClose={() => setDetailPlanCode(null)}
+              settings={settings.data}
+               onClose={() => setDetailPlanCode(null)}
             />
           ) : null}
         </DialogContent>
@@ -304,11 +307,15 @@ function ServerCard({
   server,
   realtimeDcMap,
   price,
+  priceZone,
+  settings,
   onView,
 }: {
   server: ServerPlan;
   realtimeDcMap?: Record<string, string>;
   price?: PriceInfo;
+  priceZone: string;
+  settings?: ExchangeDisplaySettings;
   onView: () => void;
 }) {
   const [monitorOpen, setMonitorOpen] = useState(false);
@@ -347,7 +354,7 @@ function ServerCard({
             <p className="text-[12px] text-muted-foreground truncate mt-0.5">{server.name}</p>
             <div className="text-[13px] font-semibold mt-1 tabular-nums">
               {price ? (
-                formatPrice(price)
+                formatDisplayPrice(price.price, price.currency, priceZone, settings || {})
               ) : (
                 <span className="text-muted-foreground font-normal">— · 价格加载中</span>
               )}
@@ -433,6 +440,7 @@ function DetailContent({
   onRetryCatalog,
   onBusyChange,
   subsidiary,
+  settings,
   onClose,
 }: {
   server: ServerPlan;
@@ -449,6 +457,7 @@ function DetailContent({
   onBusyChange: (busy: boolean) => void;
   /** 浏览中的价格地区；实际下单由所选账户地区决定。 */
   subsidiary: string;
+  settings?: ExchangeDisplaySettings;
   onClose: () => void;
 }) {
   const create = useCreateQueueItem();
@@ -541,6 +550,7 @@ function DetailContent({
     if (selectedValues.length === 0) return defaultPrice;
     return computePriceFromOptions(server.planCode, selectedValues, catalogIdx);
   }, [server.planCode, selectedValues, catalogIdx, defaultPrice]);
+  const displayPrice = price ? resolveDisplayPrice(price.price, price.currency, subsidiary, settings || {}) : null;
   const allOptionsPriced = selectedValues.every((code) => !!catalogIdx.addonByCode[code]);
   const canCreate = validBatch && !!selectedAccount && accounts.isSuccess && !accounts.isFetching
     && priceMatchesAccount && catalogReady && !!price && allOptionsPriced && !batchResult;
@@ -627,7 +637,7 @@ function DetailContent({
               </span>
             </div>
             <div className="text-2xl font-bold tabular-nums mt-0.5">
-              {catalogReady && price ? formatPrice(price)
+              {catalogReady && price ? formatDisplayPrice(price.price, price.currency, subsidiary, settings || {})
                 : <span className="text-muted-foreground font-normal text-base">— · {catalogError ? "价格目录读取失败" : "价格待确认"}</span>}
             </div>
             {!catalogReady && catalogError && (
@@ -639,9 +649,9 @@ function DetailContent({
           {catalogReady && price && (
             <div className="text-right text-[11px] text-muted-foreground space-y-0.5 tabular-nums">
               {price.installPrice > 0 && (
-                <div>安装费 {fmtMoney(price.installPrice, price.currency)}（一次性）</div>
+                <div>安装费 {formatDisplayPrice(price.installPrice, price.currency, subsidiary, settings || {})}（一次性）</div>
               )}
-              <div>币种 {currencyLabel(price.currency)}</div>
+              <div>币种 {currencyLabel(displayPrice?.currency || price.currency)}</div>
             </div>
           )}
         </div>
@@ -846,11 +856,6 @@ function DetailContent({
       />
     </>
   );
-}
-
-
-function fmtMoney(v: number, currency: string): string {
-  return formatCurrencyAmount(v, currency);
 }
 
 function SpecCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {

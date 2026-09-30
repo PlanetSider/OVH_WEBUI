@@ -13,7 +13,8 @@ import {
   type EngagementPricing,
 } from "@/hooks/use-server-control";
 import { toast } from "sonner";
-import { currencyLabel } from "@/lib/currency";
+import { formatDisplayPrice, type ExchangeDisplaySettings } from "@/lib/currency";
+import { useSettings } from "@/hooks/use-settings";
 
 /** EngagementDialog 钩子绑定 —— dedicated / vps 各自传入。
  *  类型上接受 (svc, enabled?) → query / mutation 形状即可。 */
@@ -54,6 +55,7 @@ export function EngagementDialog({
   const createReq = hooks.useCreateEngagementRequest(serviceName);
   const deleteReq = hooks.useDeleteEngagementRequest(serviceName);
   const updateRule = hooks.useUpdateEngagementEndRule(serviceName);
+  const settings = useSettings();
   const [confirmMode, setConfirmMode] = useState<string | null>(null);
 
   const isLoading = current.isPending || available.isPending || ongoing.isPending;
@@ -216,6 +218,7 @@ export function EngagementDialog({
                       <PricingRow
                         key={p.pricingMode}
                         pricing={p}
+                        settings={settings.data}
                         onSubscribe={() => setConfirmMode(p.pricingMode)}
                         disabled={createReq.isPending || !!ongoing.data}
                       />
@@ -285,22 +288,25 @@ export function EngagementDialog({
 
 function PricingRow({
   pricing,
+  settings,
   onSubscribe,
   disabled,
 }: {
   pricing: EngagementPricing;
+  settings?: ExchangeDisplaySettings & { zone?: string };
   onSubscribe: () => void;
   disabled: boolean;
 }) {
-  const currency = currencyLabel(pricing.price?.currencyCode);
   const totalValue = pricing.price?.value ?? 0;
   const months = parseDurationMonths(pricing.engagementConfiguration?.duration || "");
   const perMonth = months > 0 ? totalValue / months : 0;
 
-  const totalText =
-    pricing.price?.text ||
-    (totalValue > 0 ? `${totalValue.toFixed(2)} ${currency}` : "—");
-  const perMonthText = perMonth > 0 ? `${perMonth.toFixed(2)} ${currency} / 月` : "";
+  const totalText = totalValue > 0
+    ? formatDisplayPrice(totalValue, pricing.price?.currencyCode, settings?.zone, settings || {})
+    : (pricing.price?.text || "—");
+  const perMonthText = perMonth > 0
+    ? `${formatDisplayPrice(perMonth, pricing.price?.currencyCode, settings?.zone, settings || {})} / 月`
+    : "";
 
   const isUpfront = pricing.pricingMode.toLowerCase().includes("upfront");
   const friendlyTitle = humanizeDescription(pricing.description, months, isUpfront);
