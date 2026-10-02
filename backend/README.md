@@ -44,7 +44,7 @@ server/
 ```bash
 cd backend
 cp .env.example .env
-# 编辑 .env：API_SECRET_KEY（至少 8 位且含大写、小写、数字）等
+# 编辑 .env：API_SECRET_KEY（推荐 openssl rand -hex 32 生成的 64 位十六进制随机密钥）等
 
 go mod tidy
 go run .
@@ -58,7 +58,7 @@ go run .
 
 | 变量 | 说明 |
 |---|---|
-| `API_SECRET_KEY` | 前端和脚本访问后端的网关密钥，至少 8 位且同时含英文大写、小写和数字。前端 localStorage 也存这个值 |
+| `API_SECRET_KEY` | 前端和脚本访问后端的网关密钥；推荐 64 位十六进制随机值（`openssl rand -hex 32`）。其他格式须为 8–256 位且同时含英文大写、小写和数字。前端 localStorage 也存这个值 |
 | `ENABLE_API_KEY_AUTH` | 必须保持 `true`；设置为 `false` 会导致服务启动失败 |
 | `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` | OVH API 凭据，可在前端“API 设置”页面填，也可写入 .env |
 | `OVH_ENDPOINT` | `ovh-eu` / `ovh-us` / `ovh-ca`，决定 OVH API host |

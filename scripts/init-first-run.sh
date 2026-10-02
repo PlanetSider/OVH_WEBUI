@@ -51,14 +51,14 @@ else
     echo "  backed up .env -> $bak"
   fi
   API_KEY="$(gen_key)"
-  sed "s/API_SECRET_KEY=change-me-to-a-long-random-string/API_SECRET_KEY=$API_KEY/" "$ENV_EXAMPLE" \
+  sed "s/^API_SECRET_KEY=.*/API_SECRET_KEY=$API_KEY/" "$ENV_EXAMPLE" \
     | grep -Ev 'INSPECTION_ALLOWLIST|ALLOW_FULL_INSPECTION' > "$ENV_FILE"
   echo "  wrote backend/.env"
 fi
 
 if [[ -f "$ROOT/.env.example" ]] && { [[ ! -f "$ROOT/.env" ]] || [[ "$FORCE_ENV" -eq 1 ]]; }; then
   KEY="${API_KEY:-$(gen_key)}"
-  sed "s/API_SECRET_KEY=change-me-to-a-long-random-string/API_SECRET_KEY=$KEY/" "$ROOT/.env.example" > "$ROOT/.env"
+  sed "s/^API_SECRET_KEY=.*/API_SECRET_KEY=$KEY/" "$ROOT/.env.example" > "$ROOT/.env"
   echo "  wrote root .env"
 fi
 

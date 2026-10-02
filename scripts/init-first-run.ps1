@@ -46,7 +46,7 @@ $apiKey = $null
 
 if ((Test-Path $EnvFile) -and (-not $ForceEnv)) {
   Write-Host "  keep existing backend/.env (use -ForceEnv to regenerate)"
-  foreach ($line in Get-Content $EnvFile) {
+  foreach ($line in Get-Content -Encoding UTF8 $EnvFile) {
     if ($line -match '^\s*API_SECRET_KEY\s*=\s*(.+)\s*$') {
       $apiKey = $Matches[1].Trim().Trim('"').Trim("'")
       break
@@ -59,7 +59,7 @@ if ((Test-Path $EnvFile) -and (-not $ForceEnv)) {
     Write-Host "  backed up -> $bak"
   }
   $apiKey = New-ApiSecretKey
-  $lines = Get-Content $EnvExample
+  $lines = Get-Content -Encoding UTF8 $EnvExample
   $out = New-Object System.Collections.Generic.List[string]
   foreach ($line in $lines) {
     if ($line -match 'INSPECTION_ALLOWLIST|ALLOW_FULL_INSPECTION') {
@@ -88,7 +88,7 @@ if ((Test-Path $RootEnvExample) -and ((-not (Test-Path $RootEnv)) -or $ForceEnv)
   if ($rootKey -like "(see*") {
     $rootKey = New-ApiSecretKey
   }
-  $rlines = Get-Content $RootEnvExample
+  $rlines = Get-Content -Encoding UTF8 $RootEnvExample
   $rout = New-Object System.Collections.Generic.List[string]
   foreach ($line in $rlines) {
     if ($line -match '^\s*API_SECRET_KEY\s*=') {
@@ -128,7 +128,7 @@ if ($Fresh) {
 Write-Step "security checklist"
 $giPath = Join-Path $Root ".gitignore"
 if (Test-Path $giPath) {
-  $giText = Get-Content $giPath -Raw
+  $giText = Get-Content -Encoding UTF8 $giPath -Raw
   foreach ($pat in @("backend/.env", ".env", "backend/data/")) {
     if ($giText.Contains($pat)) {
       Write-Host "  [ok] gitignore has $pat" -ForegroundColor DarkGreen

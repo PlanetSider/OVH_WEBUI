@@ -48,13 +48,19 @@ func DefaultWhitelist() map[string]struct{} {
 }
 
 // ValidateAPIKeyStrength 检查 API_SECRET_KEY 是否满足生产最低强度。
-// 要求至少 8 个字符，同时包含 ASCII 英文大写、小写和数字。
+// 支持 64 位十六进制密钥（32 字节随机值的编码），以及至少 8 个字符、
+// 同时包含 ASCII 英文大写、小写和数字的人工配置密钥。
 func ValidateAPIKeyStrength(key string) error {
 	if len(key) < 8 {
 		return fmt.Errorf("API_SECRET_KEY 至少需要 8 个字符")
 	}
 	if len(key) > 256 {
 		return fmt.Errorf("API_SECRET_KEY 不能超过 256 个字符")
+	}
+	if len(key) == hex.EncodedLen(32) {
+		if _, err := hex.DecodeString(key); err == nil {
+			return nil
+		}
 	}
 	var upper, lower, digit bool
 	for _, r := range key {
@@ -68,7 +74,7 @@ func ValidateAPIKeyStrength(key string) error {
 		}
 	}
 	if !upper || !lower || !digit {
-		return fmt.Errorf("API_SECRET_KEY 必须同时包含英文大写、英文小写和数字")
+		return fmt.Errorf("API_SECRET_KEY 必须是 64 位十六进制密钥，或同时包含英文大写、英文小写和数字")
 	}
 	return nil
 }

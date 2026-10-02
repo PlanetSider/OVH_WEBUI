@@ -2,6 +2,7 @@
 
 ## 鉴权
 
+- 启动时 `API_SECRET_KEY` 支持 32 字节随机值编码成的 64 位十六进制密钥（推荐由初始化脚本或 `openssl rand -hex 32` 生成）；其他格式保持 8–256 个字符且同时含英文大写、小写和数字。长度/字符格式校验不能验证随机性，生产密钥必须使用密码学安全随机源生成。
 - 受保护 API 必须携带：`X-API-Key: <API_SECRET_KEY>`、`X-Request-Time: <Unix milliseconds>`、`X-Request-Nonce: <unique nonce>`、`X-Request-Signature: <HMAC-SHA256 hex>`
 - 签名原文为 `METHOD\nEscapedPath?RawQuery\nTimestamp\nNonce\nBody`，其中 Body 是实际发送的原始字节；时间戳偏差超过 5 分钟或重复 nonce 会被拒绝
 - 白名单免 API 鉴权：`/health`, `/api/health`, `/api/version`, `/api/version/check-update`, `/api/telegram/webhook`, `/api/feishu/events`, `/api/feishu/card-action`；Webhook 必须通过各自协议校验

@@ -29,7 +29,7 @@ docker compose ps
 ## 配置
 
 ```dotenv
-API_SECRET_KEY=同时含大写、小写、数字且至少 8 位的随机密钥
+API_SECRET_KEY=openssl rand -hex 32 生成的 64 位十六进制随机密钥
 OVH_WEBUI_IMAGE=ghcr.io/planetsider/ovh-webui@sha256:<reviewed-digest>
 TG_WEBHOOK_SECRET=随机密钥（配置 Telegram Webhook 时必须设置）
 TG_WEBHOOK_SECRET_OPTIONAL=false
