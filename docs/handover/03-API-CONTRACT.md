@@ -52,6 +52,11 @@
 - 独服监控（/api/monitor/*）支持有货变化后的自动下单；VPS 监控（/api/vps-monitor/*）仅发送库存通知，不支持自动下单。
 - 创建或更新 VPS 订阅不接受 autoOrder、quantity、autoOrderAccountId 字段；旧数据库中的 auto_order_account_id 仅为兼容保留列，不再使用。
 
+### Bot 抢购列表
+
+- Bot 命令 `/list`（中文别名 `/列表`）只读列出全部 OVH 账户状态为 `pending` 或 `running` 的抢购队列；排除暂停、完成、失败、停售和 `ProxyGuardPaused` 任务。按账户、型号、选项和自动付款聚合，显示各机房数量、规格和单台价格；无任务回复“当前没有开启的抢购任务。”，长结果分条回复当前会话。
+- `/list` 沿用 Telegram/飞书授权和 QQ 私聊白名单；QQ群继续只允许 `/stock`、`/price`、`/库存`、`/价格`，拒绝 `/list` 和 `/列表`，不披露任务列表。命令只读队列并使用公开 catalog 的单台未税价格；总价为单台首月月费加安装费，缺失时显示 `暂不可用`。价格查询共用 5 秒超时，超时不会省略任务或数量；不创建购物车、不下单、不发送通知广播。
+
 ### 定时任务播报
 
 - `GET/POST /api/settings` 支持 `taskBroadcastEnabled`、`taskBroadcastTime`（北京时间 `HH:mm`）、`taskBroadcastQueueEnabled`、`taskBroadcastMonitorEnabled`、`taskBroadcastVpsEnabled` 和 `taskBroadcastReportEnabled`。

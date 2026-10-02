@@ -43,6 +43,12 @@ func HandleQQMessage(_ context.Context, state *app.State, mon *monitor.Monitor, 
 		}
 		return
 	}
+	if cmd.Name == "list" {
+		for _, reply := range dispatchBotCommandReplies(state, mon, cmd, telegram.DefaultAccountID(state), "qq") {
+			sendQQCommandReply(client, event, reply)
+		}
+		return
+	}
 	reply := dispatchQQAdminCommand(state, mon, event, cmd)
 	sendQQCommandReply(client, event, reply)
 }

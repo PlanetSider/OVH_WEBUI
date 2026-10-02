@@ -201,7 +201,9 @@ func loadPublicCatalog(ctx context.Context, state *app.State, client *ovhsdk.Cli
 	}
 
 	var raw map[string]interface{}
-	if err := client.GetWithContext(ctx, "/order/catalog/public/eco?ovhSubsidiary="+subsidiary, &raw); err != nil {
+	// Public catalogs do not require signing; signing would first perform an
+	// SDK time-sync request that does not inherit the caller's context.
+	if err := client.GetUnAuthWithContext(ctx, "/order/catalog/public/eco?ovhSubsidiary="+subsidiary, &raw); err != nil {
 		if staleRaw != "" {
 			if catalog, parseErr := parsePublicCatalog([]byte(staleRaw)); parseErr == nil {
 				return catalog, nil

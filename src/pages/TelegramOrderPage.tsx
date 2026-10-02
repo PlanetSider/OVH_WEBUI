@@ -173,6 +173,13 @@ const commandReferences: CommandReference[] = [
     color: "text-blue-500",
   },
   {
+    command: "/list · /列表",
+    format: "/list",
+    description: "查看全部账户当前开启的抢购任务及各机房数量",
+    example: "/list",
+    color: "text-teal-500",
+  },
+  {
     command: "/queue · /抢购",
     format: "/queue <planCode> [datacenter] [quantity] [options]",
     description: "将服务器加入抢购队列",

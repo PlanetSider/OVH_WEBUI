@@ -49,6 +49,9 @@ func TestHandleQQMessageEnforcesPrivateAndGroupCommandBoundaries(t *testing.T) {
 		ID: "private", Content: "/help", UserOpenID: "admin-1",
 	}, client)
 	HandleQQMessage(nil, state, nil, qqbot.MessageEvent{
+		ID: "private-list", Content: "/列表", UserOpenID: "admin-1",
+	}, client)
+	HandleQQMessage(nil, state, nil, qqbot.MessageEvent{
 		ID: "group-denied", Content: "/pay 1", GroupOpenID: "group-1", UserOpenID: "member-1",
 	}, client)
 	HandleQQMessage(nil, state, nil, qqbot.MessageEvent{
@@ -60,23 +63,26 @@ func TestHandleQQMessageEnforcesPrivateAndGroupCommandBoundaries(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(paths) != 3 {
+	if len(paths) != 4 {
 		t.Fatalf("reply count = %d, paths=%#v", len(paths), paths)
 	}
-	if paths[0] != "/v2/users/admin-1/messages" {
-		t.Fatalf("private reply path = %q", paths[0])
+	if paths[0] != "/v2/users/admin-1/messages" || paths[1] != "/v2/users/admin-1/messages" {
+		t.Fatalf("private reply paths = %#v", paths)
 	}
-	if paths[1] != "/v2/groups/group-1/messages" || paths[2] != "/v2/groups/group-1/messages" {
+	if paths[2] != "/v2/groups/group-1/messages" || paths[3] != "/v2/groups/group-1/messages" {
 		t.Fatalf("group reply paths = %#v", paths)
 	}
-	if bodies[0]["msg_id"] != "private" || bodies[1]["msg_id"] != "group-denied" || bodies[2]["msg_id"] != "group-allowed" {
+	if bodies[0]["msg_id"] != "private" || bodies[1]["msg_id"] != "private-list" || bodies[2]["msg_id"] != "group-denied" || bodies[3]["msg_id"] != "group-allowed" {
 		t.Fatalf("reply references = %#v", bodies)
 	}
-	if !strings.Contains(bodies[1]["content"].(string), "仅支持 /stock、/price") {
-		t.Fatalf("group denied reply = %#v", bodies[1])
+	if !strings.Contains(bodies[1]["content"].(string), "当前没有开启的抢购任务。") {
+		t.Fatalf("private list reply = %#v", bodies[1])
 	}
-	if !strings.Contains(bodies[2]["content"].(string), "未配置任何 OVH 账户") {
-		t.Fatalf("group allowed reply = %#v", bodies[2])
+	if !strings.Contains(bodies[2]["content"].(string), "仅支持 /stock、/price") {
+		t.Fatalf("group denied reply = %#v", bodies[2])
+	}
+	if !strings.Contains(bodies[3]["content"].(string), "未配置任何 OVH 账户") {
+		t.Fatalf("group allowed reply = %#v", bodies[3])
 	}
 }
 

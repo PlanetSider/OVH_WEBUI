@@ -28,7 +28,7 @@ OVH_WEBUI 是一个前后端一体的 OVH 自托管控制台：
 ## 网页下单与监控界面
 
 - Telegram、飞书和 QQ 下单页面共用 `src/pages/TelegramOrderPage.tsx`；`FeishuOrderPage.tsx` 和 `QQOrderPage.tsx` 只负责渠道包装。对应路由为 `/telegram-order`、`/feishu-order`、`/qq-order`，抢购导航顺序保持 Telegram、飞书、QQ。
-- 三个下单页面的“命令参考”必须来自同一份当前命令清单，覆盖 `/start`、`/help`、`/account`、`/reboot`、`/stock`、`/queue`、`/buy`、`/monitor`、`/price`、`/order`、`/pay` 及现有中文别名。新增或移除 Bot 命令时，同步更新共用参考，不要为渠道复制三份文案。
+- 三个下单页面的“命令参考”必须来自同一份当前命令清单，覆盖 `/start`、`/help`、`/account`、`/reboot`、`/stock`、`/list`、`/queue`、`/buy`、`/monitor`、`/price`、`/order`、`/pay` 及现有中文别名。新增或移除 Bot 命令时，同步更新共用参考，不要为渠道复制三份文案。
 - `POST /api/qq/quick-order` 是受 API 请求签名保护的网页直执行入口，复用 `buildTelegramCommandArgs` 和 `dispatchBotCommand(..., "qq")`；请求体沿用 Telegram quick-order 的 `mode`、`planCode`、`datacenter`、`quantity`、`options` 字段，网页直接返回结果，不向 QQ 发送回执，也不绕过 Gateway 入站权限模型。
 - 独服监控弹窗 `MonitorSubscriptionDialog` 读取 `useSettings().data?.monitorAutoPayEnabled`。仅当系统允许自动付款且已开启“有货时自动下单”时，才把 `autoPay` 作为同级提醒项显示在其右侧；关闭设置时保持自动下单跨列。`autoPay` 提交字段和后端权限校验不得因布局调整而改变。
 

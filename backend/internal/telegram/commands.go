@@ -23,6 +23,7 @@ var KnownCommands = map[string]string{
 	"account": "查看或切换当前 OVH 账户: /account [switch]",
 	"reboot":  "选择服务器并确认重启",
 	"stock":   "查询库存: /stock <planCode>",
+	"list":    "查看全部账户当前开启的抢购任务: /list",
 	"queue":   "加入队列: /queue <planCode> [dc] [qty] [options]",
 	"buy":     "快速下单: /buy <planCode> [dc] [qty] [options]",
 	"monitor": "添加监控: /monitor <planCode> [dc...]",
@@ -38,6 +39,7 @@ var commandAliases = map[string]string{
 	"切换账户": "account",
 	"重启":   "reboot",
 	"库存":   "stock",
+	"列表":   "list",
 	"抢购":   "queue",
 	"下单":   "buy",
 	"监控":   "monitor",
@@ -129,6 +131,10 @@ func HelpMessage() string {
 📦 库存查询
   /stock <planCode>
   例: /stock 24ska01
+
+🛒 开启的抢购任务
+  /list            查看全部账户等待中或执行中的抢购任务
+  /列表            对应中文别名
 
 🛒 加入抢购队列
   /queue <planCode> [datacenter] [quantity] [options逗号分隔]

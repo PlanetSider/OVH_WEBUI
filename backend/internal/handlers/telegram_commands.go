@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -30,6 +31,8 @@ func dispatchBotCommand(state *app.State, mon *monitor.Monitor, cmd *telegram.Bo
 		return "请在 Telegram 或飞书私聊中发送 /reboot，并通过卡片选择要重启的服务器。"
 	case "stock":
 		return cmdStock(state, cmd.Args, accountID)
+	case "list":
+		return strings.Join(dispatchBotCommandReplies(state, mon, cmd, accountID, channel), "\n\n")
 	case "queue", "buy":
 		return cmdBuyOrQueue(state, cmd.Args, cmd.Name, accountID, channel)
 	case "monitor":
@@ -43,6 +46,19 @@ func dispatchBotCommand(state *app.State, mon *monitor.Monitor, cmd *telegram.Bo
 	default:
 		return "❌ 未知命令: /" + cmd.Name + "\n\n" + telegram.HelpMessage()
 	}
+}
+
+func dispatchBotCommandReplies(state *app.State, mon *monitor.Monitor, cmd *telegram.BotCommand, accountID, channel string) []string {
+	if cmd != nil && cmd.Name == "list" {
+		if len(cmd.Args) > 0 {
+			return []string{"用法：/list（或 /列表）"}
+		}
+		if mon == nil {
+			mon = monitor.New(state)
+		}
+		return mon.BuildQueueListMessages(context.Background())
+	}
+	return []string{dispatchBotCommand(state, mon, cmd, accountID, channel)}
 }
 
 func cmdStock(state *app.State, args []string, accountID string) string {
@@ -359,9 +375,13 @@ func handleTelegramText(state *app.State, mon *monitor.Monitor, text string, cha
 			sendTelegramRebootMenu(state, chatID, userID, int64(messageID))
 			return
 		}
-		// 未知多余参数：buy/queue 若无 planCode 在 dispatch 内拒绝
-		reply := dispatchTelegramCommand(state, mon, cmd)
-		telegram.SendReply(state, chatID, reply, int64(messageID))
+		if cmd.Name == "list" {
+			for _, reply := range dispatchBotCommandReplies(state, mon, cmd, telegram.DefaultAccountID(state), "telegram") {
+				telegram.SendReply(state, chatID, reply, int64(messageID))
+			}
+		} else {
+			telegram.SendReply(state, chatID, dispatchTelegramCommand(state, mon, cmd), int64(messageID))
+		}
 		return
 	}
 

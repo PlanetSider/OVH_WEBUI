@@ -98,6 +98,12 @@ func taskBroadcastCategoryHeader(title string, taskCount, part, total int) strin
 }
 
 func formatTaskBroadcastCategory(title string, items []taskBroadcastItem) []string {
+	return formatTaskBroadcastItems(items, func(part, total int) string {
+		return taskBroadcastCategoryHeader(title, len(items), part, total)
+	})
+}
+
+func formatTaskBroadcastItems(items []taskBroadcastItem, header func(part, total int) string) []string {
 	if len(items) == 0 {
 		return nil
 	}
@@ -123,7 +129,7 @@ func formatTaskBroadcastCategory(title string, items []taskBroadcastItem) []stri
 		groups[index].items = append(groups[index].items, item)
 	}
 
-	baseHeader := taskBroadcastCategoryHeader(title, len(items), 0, 0)
+	baseHeader := header(0, 0)
 	maxBodyBytes := taskBroadcastMessageMaxBytes - len(baseHeader) - taskBroadcastPartTitleReserveBytes
 	bodies := make([]string, 0, 1)
 	currentBody := ""
@@ -181,8 +187,7 @@ func formatTaskBroadcastCategory(title string, items []taskBroadcastItem) []stri
 
 	messages := make([]string, 0, len(bodies))
 	for i, body := range bodies {
-		header := taskBroadcastCategoryHeader(title, len(items), i+1, len(bodies))
-		messages = append(messages, header+body)
+		messages = append(messages, header(i+1, len(bodies))+body)
 	}
 	return messages
 }

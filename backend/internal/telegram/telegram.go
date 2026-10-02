@@ -245,6 +245,7 @@ func SetMyCommands(state *app.State) string {
 		{Command: "account", Description: "查看或切换 OVH 账户"},
 		{Command: "reboot", Description: "选择服务器并确认重启"},
 		{Command: "stock", Description: "查询库存 planCode"},
+		{Command: "list", Description: "查看全部账户开启的抢购任务"},
 		{Command: "queue", Description: "加入队列 planCode [dc]"},
 		{Command: "buy", Description: "快速下单 planCode [dc]"},
 		{Command: "monitor", Description: "添加监控 planCode"},

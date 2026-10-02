@@ -20,6 +20,9 @@ func TestParseBotCommand(t *testing.T) {
 		{"/account switch", "account", []string{"switch"}, false},
 		{"/reboot", "reboot", nil, false},
 		{"/reboot@MyBot", "reboot", nil, false},
+		{"/list", "list", nil, false},
+		{"/LIST@MyBot", "list", nil, false},
+		{"/列表", "list", nil, false},
 		{"/buy 24ska01 gra", "buy", []string{"24ska01", "gra"}, false},
 		{"/buy@MyBot 24ska01 gra 2", "buy", []string{"24ska01", "gra", "2"}, false},
 		{"/STOCK 24ska01", "stock", []string{"24ska01"}, false},
@@ -82,7 +85,7 @@ func TestParseOrderArgs(t *testing.T) {
 }
 
 func TestIsKnownCommand(t *testing.T) {
-	if !IsKnownCommand("buy") || !IsKnownCommand("STOCK") || !IsKnownCommand("account") || !IsKnownCommand("reboot") || !IsKnownCommand("order") || !IsKnownCommand("pay") || !IsKnownCommand("订单") || !IsKnownCommand("支付") {
+	if !IsKnownCommand("buy") || !IsKnownCommand("STOCK") || !IsKnownCommand("account") || !IsKnownCommand("reboot") || !IsKnownCommand("order") || !IsKnownCommand("pay") || !IsKnownCommand("list") || !IsKnownCommand("列表") || !IsKnownCommand("订单") || !IsKnownCommand("支付") {
 		t.Fatal("expected known")
 	}
 	if IsKnownCommand("foo") {
@@ -114,6 +117,9 @@ func TestHelpMessageNonEmpty(t *testing.T) {
 	}
 	if !strings.Contains(HelpMessage(), "/order unpaid") || !strings.Contains(HelpMessage(), "/pay <订单号>") {
 		t.Fatal("help should mention order and pay")
+	}
+	if !strings.Contains(HelpMessage(), "/list") || !strings.Contains(HelpMessage(), "/列表") {
+		t.Fatal("help should mention list")
 	}
 	if !strings.Contains(HelpMessage(), "KS-1") {
 		t.Fatal("help should mention server model lookup")

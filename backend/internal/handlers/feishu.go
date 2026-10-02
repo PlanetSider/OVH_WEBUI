@@ -188,10 +188,12 @@ func FeishuEventsWithMonitor(state *app.State, mon *monitor.Monitor) gin.Handler
 					}
 				} else if !bound {
 					_ = monitor.FeishuSendText(state, openID, "请先在飞书中私聊机器人完成全局接收人绑定")
-				} else if accountID == "" {
+				} else if accountID == "" && cmd.Name != "list" {
 					_ = monitor.FeishuSendText(state, openID, "请先在系统设置中配置默认 OVH 账户")
 				} else {
-					_ = monitor.FeishuSendText(state, openID, dispatchBotCommand(state, mon, cmd, accountID, "feishu"))
+					for _, reply := range dispatchBotCommandReplies(state, mon, cmd, accountID, "feishu") {
+						_ = monitor.FeishuSendText(state, openID, reply)
+					}
 				}
 			} else if plans := findServerPlansByModel(state, trimmed); len(plans) > 0 {
 				// 每个 PlanCode 独立发送非表格卡片；配置过长时在完整分区之间自动分页。
@@ -298,10 +300,12 @@ func processFeishuMessage(state *app.State, mon *monitor.Monitor, body map[strin
 			}
 		} else if !bound {
 			_ = monitor.FeishuSendText(state, openID, "请先在飞书中私聊机器人完成全局接收人绑定")
-		} else if accountID == "" {
+		} else if accountID == "" && cmd.Name != "list" {
 			_ = monitor.FeishuSendText(state, openID, "请先在系统设置中配置默认 OVH 账户")
 		} else {
-			_ = monitor.FeishuSendText(state, openID, dispatchBotCommand(state, mon, cmd, accountID, "feishu"))
+			for _, reply := range dispatchBotCommandReplies(state, mon, cmd, accountID, "feishu") {
+				_ = monitor.FeishuSendText(state, openID, reply)
+			}
 		}
 	} else if plans := findServerPlansByModel(state, trimmed); len(plans) > 0 {
 		if err := sendFeishuServerPlanCards(state, openID, trimmed, plans); err != nil {
