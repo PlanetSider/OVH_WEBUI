@@ -15,11 +15,13 @@
     "backend:rebuild": "powershell -ExecutionPolicy Bypass -File scripts/start-backend.ps1 -Rebuild",
     "dev:all": "powershell -ExecutionPolicy Bypass -File scripts/start-dev.ps1",
     "test:unit:backend": "cd backend && go test ./internal/catalog/ ./internal/numconv/ -count=1",
+    "test:crypto": "node scripts/test-http-signing.mjs",
     "test:smoke": "python scripts/smoke_test.py",
     "test:full": "python scripts/full_functional_test.py"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
+    "@noble/hashes": "^2.4.0",
     "@radix-ui/react-accordion": "^1.2.11",
     "@radix-ui/react-alert-dialog": "^1.1.14",
     "@radix-ui/react-aspect-ratio": "^1.1.7",

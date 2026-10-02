@@ -50,3 +50,6 @@ python scripts/smoke_test.py
 
 - 生产构建不会预填 API Key。
 - 开发可选：`VITE_DEV_API_KEY` 写在**本地** `.env.local`（gitignore）。
+- 请求 nonce 使用 `crypto.getRandomValues` 生成 128 位安全随机值，不依赖 `crypto.randomUUID`。HMAC-SHA256 优先使用原生 `crypto.subtle`；该 API 未提供时使用 `@noble/hashes` 计算相同签名。没有安全随机源时拒绝发送受保护请求；原生签名错误不会被兼容分支吞掉。
+- 浏览器兼容分支不加密 HTTP 传输。API Key 仍通过 `X-API-Key` 发送并保存在本地存储，生产访问必须使用 HTTPS；不要因登录已能在 HTTP 下工作而公开明文入口。
+- `npm run test:crypto` 使用临时打包、测试密钥和内存适配器验证登录及 Axios 签名，不发送网络请求或读取真实账户配置。

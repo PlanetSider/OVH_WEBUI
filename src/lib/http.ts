@@ -16,6 +16,8 @@ import axios, {
   type AxiosRequestConfig,
   type Method,
 } from "axios";
+import { hmac } from "@noble/hashes/hmac.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { toast } from "sonner";
 
 export function apiErrorText(error: unknown, fallback: string): string {
@@ -141,25 +143,54 @@ function requestBodyBytes(config: AxiosRequestConfig): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(config.data));
 }
 
+function browserCrypto(): Crypto {
+  if (typeof window === "undefined" || !window.crypto) {
+    throw new Error("Secure browser crypto is unavailable");
+  }
+  return window.crypto;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function createSecureNonce(): string {
+  const cryptoApi = browserCrypto();
+  if (typeof cryptoApi.getRandomValues !== "function") {
+    throw new Error("Secure random number generation is unavailable");
+  }
+  return bytesToHex(cryptoApi.getRandomValues(new Uint8Array(16)));
+}
+
+function signingPayload(method: string, path: string, timestamp: string, nonce: string, body: Uint8Array): Uint8Array {
+  const prefix = new TextEncoder().encode(`${method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n`);
+  const payload = new Uint8Array(prefix.length + body.length);
+  payload.set(prefix);
+  payload.set(body, prefix.length);
+  return payload;
+}
+
 async function signRequest(apiKey: string, method: string, path: string, timestamp: string, nonce: string, body: Uint8Array): Promise<string> {
-  const prefix = `${method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n`;
-  const payload = new Uint8Array(new TextEncoder().encode(prefix).length + body.length);
-  payload.set(new TextEncoder().encode(prefix));
-  payload.set(body, new TextEncoder().encode(prefix).length);
-  const cryptoKey = await window.crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(apiKey),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const digest = await window.crypto.subtle.sign("HMAC", cryptoKey, payload);
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+  const cryptoApi = browserCrypto();
+  const keyBytes = new TextEncoder().encode(apiKey);
+  const payload = signingPayload(method, path, timestamp, nonce, body);
+  if (typeof cryptoApi.subtle?.importKey === "function" && typeof cryptoApi.subtle.sign === "function") {
+    const cryptoKey = await cryptoApi.subtle.importKey(
+      "raw",
+      keyBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const digest = await cryptoApi.subtle.sign("HMAC", cryptoKey, payload);
+    return bytesToHex(new Uint8Array(digest));
+  }
+  return bytesToHex(hmac(sha256, keyBytes, payload));
 }
 
 export async function buildRequestAuthHeaders(apiKey: string, method: string, path: string, body: string | Uint8Array = ""): Promise<Record<string, string>> {
   const timestamp = Date.now().toString();
-  const nonce = window.crypto.randomUUID();
+  const nonce = createSecureNonce();
   const bodyBytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
   return {
     "X-API-Key": apiKey,
@@ -210,8 +241,6 @@ function createApiClient(): AxiosInstance {
     const key = getApiSecretKey();
     const path = requestPath(config);
     if (key && path.startsWith("/api/")) {
-      const timestamp = Date.now().toString();
-      const nonce = window.crypto.randomUUID();
       const body = requestBodyBytes(config);
       if (body.length > 0 && !config.headers.get("Content-Type")) {
         config.headers.set("Content-Type", "application/json");
@@ -219,10 +248,10 @@ function createApiClient(): AxiosInstance {
       if (typeof config.data !== "string" && config.data != null) {
         config.data = JSON.stringify(config.data);
       }
-      config.headers.set("X-API-Key", key);
-      config.headers.set("X-Request-Time", timestamp);
-      config.headers.set("X-Request-Nonce", nonce);
-      config.headers.set("X-Request-Signature", await signRequest(key, config.method || "GET", path, timestamp, nonce, body));
+      const authHeaders = await buildRequestAuthHeaders(key, config.method || "GET", path, body);
+      for (const [header, value] of Object.entries(authHeaders)) {
+        config.headers.set(header, value);
+      }
     }
     return config;
   });
