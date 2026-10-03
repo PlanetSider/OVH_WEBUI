@@ -342,7 +342,15 @@ func (m *Monitor) BuildBattleReport() string {
 		accounts[account.ID] = firstNonEmpty(account.Name, account.ID)
 	}
 	m.state.AccountsMu.RUnlock()
-	return formatBattleReport(history, time.Now(), accounts)
+	return m.formatBattleReport(history, time.Now(), accounts)
+}
+
+func (m *Monitor) formatBattleReport(history []types.PurchaseHistoryEntry, now time.Time, accountNames map[string]string) string {
+	var resolve func(float64, string) (float64, string, bool)
+	if m != nil && m.state != nil && m.state.Exchange != nil {
+		resolve = m.state.Exchange.ResolveDisplayAmount
+	}
+	return formatBattleReportWithResolver(history, now, accountNames, resolve)
 }
 
 func (m *Monitor) priceParts(ctx context.Context, accountID, planCode string, options, dcs []string) (string, string, string) {
@@ -367,7 +375,7 @@ func (m *Monitor) priceParts(ctx context.Context, accountID, planCode string, op
 		if err != nil {
 			continue
 		}
-		month, setup, first := displayPriceParts(display)
+		month, setup, first := m.displayPricePartsForNotification(display)
 		monthly[dc], install[dc], total[dc] = month, setup, first
 	}
 	return joinPriceValues(monthly), joinPriceValues(install), joinPriceValues(total)
@@ -785,6 +793,10 @@ type battleReportAccount struct {
 }
 
 func formatBattleReport(history []types.PurchaseHistoryEntry, now time.Time, accountNames map[string]string) string {
+	return formatBattleReportWithResolver(history, now, accountNames, nil)
+}
+
+func formatBattleReportWithResolver(history []types.PurchaseHistoryEntry, now time.Time, accountNames map[string]string, resolve func(float64, string) (float64, string, bool)) string {
 	accounts := make(map[string]*battleReportAccount)
 	cutoff := now.Add(-24 * time.Hour)
 	for _, entry := range history {
@@ -813,17 +825,21 @@ func formatBattleReport(history []types.PurchaseHistoryEntry, now time.Time, acc
 			account.Unpaid++
 			if entry.Price == nil || entry.Price.WithoutTax == nil {
 				account.UnpaidKnown = false
+			} else if amount, currency, ok := resolveBattleAmount(*entry.Price.WithoutTax, entry.Price.CurrencyCode, resolve); !ok {
+				account.UnpaidKnown = false
 			} else {
-				account.UnpaidAmount += *entry.Price.WithoutTax
-				account.UnpaidCurrency = mergeCurrency(account.UnpaidCurrency, entry.Price.CurrencyCode)
+				account.UnpaidAmount += amount
+				account.UnpaidCurrency = mergeCurrency(account.UnpaidCurrency, currency)
 			}
 		} else {
 			account.Paid++
 			if entry.Price == nil || entry.Price.WithoutTax == nil {
 				account.PaidKnown = false
+			} else if amount, currency, ok := resolveBattleAmount(*entry.Price.WithoutTax, entry.Price.CurrencyCode, resolve); !ok {
+				account.PaidKnown = false
 			} else {
-				account.PaidAmount += *entry.Price.WithoutTax
-				account.PaidCurrency = mergeCurrency(account.PaidCurrency, entry.Price.CurrencyCode)
+				account.PaidAmount += amount
+				account.PaidCurrency = mergeCurrency(account.PaidCurrency, currency)
 			}
 		}
 	}
@@ -881,6 +897,13 @@ func mergeCurrency(current, next string) string {
 		return ""
 	}
 	return current
+}
+
+func resolveBattleAmount(amount float64, currency string, resolve func(float64, string) (float64, string, bool)) (float64, string, bool) {
+	if resolve == nil {
+		return amount, currency, true
+	}
+	return resolve(amount, currency)
 }
 
 func battleAmount(count int, known bool, amount float64, currency string) string {

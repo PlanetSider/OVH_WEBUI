@@ -60,7 +60,7 @@ func (m *Monitor) BuildQueueListMessages(ctx context.Context) []string {
 			if m.state.OVH != nil && ctx.Err() == nil {
 				if _, exists := m.state.FindAccount(group.AccountID); exists {
 					if display, err := price.GetCatalogDisplayWithContext(ctx, m.state, group.AccountID, group.PlanCode, group.Options); err == nil {
-						parts[0], parts[1], parts[2] = displayPriceParts(display)
+						parts[0], parts[1], parts[2] = m.displayPricePartsForNotification(display)
 					}
 				}
 			}

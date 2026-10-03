@@ -255,6 +255,30 @@ func (s *Service) CurrentRate(from, to string) (float64, bool) {
 	return ConvertRate(RatesFromConfig(cfg), from, to)
 }
 
+// ResolveDisplayAmount resolves one source-currency amount according to the
+// configured display mode. In CNY mode it never falls back to the source
+// amount when the cached exchange rate is unavailable.
+func (s *Service) ResolveDisplayAmount(amount float64, currency string) (float64, string, bool) {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if s == nil || s.store == nil {
+		return amount, currency, true
+	}
+	cfg := s.store.Get()
+	if NormalizeDisplayMode(cfg.ExchangeDisplayMode) != DisplayCNY {
+		return amount, currency, true
+	}
+	if currency == DisplayCNYCode {
+		return amount, DisplayCNYCode, true
+	}
+	rate, ok := s.CurrentRate(currency, DisplayCNYCode)
+	if !ok {
+		return 0, DisplayCNYCode, false
+	}
+	return amount * rate, DisplayCNYCode, true
+}
+
+const DisplayCNYCode = "CNY"
+
 func ConvertRate(rates Rates, from, to string) (float64, bool) {
 	from = strings.ToUpper(strings.TrimSpace(from))
 	to = strings.ToUpper(strings.TrimSpace(to))

@@ -117,6 +117,52 @@ func TestHistoricalRateWithoutKeyIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestResolveDisplayAmountUsesConfiguredCNYRate(t *testing.T) {
+	store := &memoryStore{config: types.Config{
+		ExchangeProvider:    ProviderFreeExchangeRateAPI,
+		ExchangeDisplayMode: DisplayCNY,
+		ExchangeStatus:      "active",
+		ExchangeEURCNY:      8.0,
+		ExchangeUSDCNY:      7.2,
+		ExchangeCADCNY:      5.3,
+	}}
+	service := New(store)
+	got, currency, ok := service.ResolveDisplayAmount(10, "eur")
+	if !ok || got != 80 || currency != DisplayCNYCode {
+		t.Fatalf("ResolveDisplayAmount() = %v, %q, %v; want 80, CNY, true", got, currency, ok)
+	}
+}
+
+func TestResolveDisplayAmountKeepsCNYSourceAmountWithoutProviderRefresh(t *testing.T) {
+	store := &memoryStore{config: types.Config{
+		ExchangeDisplayMode: DisplayCNY,
+		ExchangeStatus:      "inactive",
+	}}
+	service := New(store)
+	got, currency, ok := service.ResolveDisplayAmount(12, "cny")
+	if !ok || got != 12 || currency != DisplayCNYCode {
+		t.Fatalf("CNY source ResolveDisplayAmount() = %v, %q, %v; want 12, CNY, true", got, currency, ok)
+	}
+}
+
+func TestResolveDisplayAmountKeepsOriginalModeAndRejectsUnavailableCNYRate(t *testing.T) {
+	store := &memoryStore{config: types.Config{
+		ExchangeProvider:    ProviderFreeExchangeRateAPI,
+		ExchangeDisplayMode: DisplayOriginal,
+		ExchangeStatus:      "inactive",
+	}}
+	service := New(store)
+	got, currency, ok := service.ResolveDisplayAmount(10, "EUR")
+	if !ok || got != 10 || currency != "EUR" {
+		t.Fatalf("original ResolveDisplayAmount() = %v, %q, %v; want 10, EUR, true", got, currency, ok)
+	}
+	store.config.ExchangeDisplayMode = DisplayCNY
+	got, currency, ok = service.ResolveDisplayAmount(10, "EUR")
+	if ok || got != 0 || currency != DisplayCNYCode {
+		t.Fatalf("unavailable CNY ResolveDisplayAmount() = %v, %q, %v; want 0, CNY, false", got, currency, ok)
+	}
+}
+
 func TestCurrentRateRequiresActiveStatus(t *testing.T) {
 	store := &memoryStore{config: types.Config{
 		ExchangeProvider: ProviderFreeExchangeRateAPI,

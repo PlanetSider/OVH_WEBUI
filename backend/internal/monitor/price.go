@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ovh-webui/server/internal/exchange"
 	"github.com/ovh-webui/server/internal/numconv"
 	"github.com/ovh-webui/server/internal/price"
 )
@@ -83,13 +84,72 @@ func (m *Monitor) verifyPriceAvailable(ctx context.Context, accountID, planCode,
 		m.state.Logger.Warn("价格目录拆分失败", "monitor")
 	}
 	if display.TotalKnown || display.BreakdownKnown {
-		priceText = formatNotificationPrice(display)
+		priceText = m.formatNotificationPrice(display)
 	}
 	m.state.Logger.Debug(fmt.Sprintf("价格校验通过: %s@%s - 含税价格: %v", planCode, datacenter, withTax), "monitor")
 	return priceText, true, ""
 }
 
-// getCatalogPriceInfoText 与服务器列表使用相同的公开 catalog 价格口径。
+// resolveNotificationDisplay applies the configured notification display currency
+// without mutating the raw OVH price result.
+func (m *Monitor) resolveNotificationDisplay(display price.DisplayPrice) (price.DisplayPrice, bool) {
+	if m == nil || m.state == nil {
+		return display, true
+	}
+	if m.state.Exchange == nil {
+		if m.state.Config != nil && exchange.NormalizeDisplayMode(m.state.Config.Get().ExchangeDisplayMode) == exchange.DisplayCNY {
+			return price.DisplayPrice{}, false
+		}
+		return display, true
+	}
+	sourceCurrency := display.Currency
+	convert := func(value float64) (float64, string, bool) {
+		return m.state.Exchange.ResolveDisplayAmount(value, sourceCurrency)
+	}
+	displayCurrency := sourceCurrency
+	if display.BreakdownKnown {
+		monthly, currency, ok := convert(display.MonthlyWithoutTax)
+		if !ok {
+			return price.DisplayPrice{}, false
+		}
+		install, _, ok := convert(display.InstallWithoutTax)
+		if !ok {
+			return price.DisplayPrice{}, false
+		}
+		display.MonthlyWithoutTax = monthly
+		display.InstallWithoutTax = install
+		displayCurrency = currency
+	}
+	if display.TotalWithoutTaxKnown {
+		total, currency, ok := convert(display.TotalWithoutTax)
+		if !ok {
+			return price.DisplayPrice{}, false
+		}
+		display.TotalWithoutTax = total
+		displayCurrency = currency
+	}
+	if display.BreakdownKnown || display.TotalWithoutTaxKnown {
+		display.Currency = displayCurrency
+	}
+	return display, true
+}
+
+func (m *Monitor) formatNotificationPrice(display price.DisplayPrice) string {
+	display, ok := m.resolveNotificationDisplay(display)
+	if !ok {
+		return unavailablePriceText()
+	}
+	return formatNotificationPrice(display)
+}
+
+func (m *Monitor) displayPricePartsForNotification(display price.DisplayPrice) (string, string, string) {
+	display, ok := m.resolveNotificationDisplay(display)
+	if !ok {
+		return "暂不可用", "暂不可用", "暂不可用"
+	}
+	return displayPriceParts(display)
+}
+
 // 购物车失败时仍可显示月费和安装费，但不伪造首月实际总价。
 func (m *Monitor) getCatalogPriceInfoText(accountID, planCode string, options []string) string {
 	return m.getCatalogPriceInfoTextWithContext(context.Background(), accountID, planCode, options)
@@ -103,6 +163,10 @@ func (m *Monitor) getCatalogPriceInfoTextWithContext(ctx context.Context, accoun
 	}
 	if !display.BreakdownKnown {
 		return ""
+	}
+	display, ok := m.resolveNotificationDisplay(display)
+	if !ok {
+		return "月费: 暂不可用\n安装费: 暂不可用\n首月总价: 暂不可用"
 	}
 	installText := "无"
 	if display.InstallWithoutTax > 0 {
@@ -129,7 +193,7 @@ func (m *Monitor) getPriceInfoTextWithContext(ctx context.Context, accountID, pl
 	if !display.TotalKnown && !display.BreakdownKnown {
 		return ""
 	}
-	text := formatNotificationPrice(display)
+	text := m.formatNotificationPrice(display)
 	if text != "" {
 		m.state.Logger.Debug("价格获取成功: "+strings.ReplaceAll(text, "\n", " | "), "monitor")
 	}

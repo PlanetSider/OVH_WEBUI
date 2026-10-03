@@ -315,10 +315,14 @@ func cmdPrice(state *app.State, args []string, accountID string) string {
 		optsText = strings.Join(options, ", ")
 	}
 
-	return formatPriceQueryResponse(planCode, dc, optsText, currency, withoutTax)
+	return formatPriceQueryResponseForState(state, planCode, dc, optsText, currency, withoutTax)
 }
 
 func formatPriceQueryResponse(planCode, dc, optsText, currency string, withoutTax interface{}) string {
+	return formatPriceQueryResponseForState(nil, planCode, dc, optsText, currency, withoutTax)
+}
+
+func formatPriceQueryResponseForState(state *app.State, planCode, dc, optsText, currency string, withoutTax interface{}) string {
 	if strings.TrimSpace(currency) == "" {
 		currency = "币种未知"
 	}
@@ -326,7 +330,11 @@ func formatPriceQueryResponse(planCode, dc, optsText, currency string, withoutTa
 	b.WriteString(fmt.Sprintf("💰 价格查询: %s @ %s\n\n", planCode, strings.ToUpper(dc)))
 	b.WriteString("配置: " + optsText + "\n")
 	if withoutTax != nil {
-		b.WriteString(fmt.Sprintf("价格: %v %s\n", withoutTax, currency))
+		if formatted, ok := formatCommandPriceValue(state, withoutTax, currency); ok {
+			b.WriteString("价格: " + formatted + "\n")
+		} else {
+			b.WriteString("价格: 暂不可用\n")
+		}
 	} else {
 		b.WriteString("价格: 暂不可用\n")
 	}

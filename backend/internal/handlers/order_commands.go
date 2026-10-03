@@ -92,7 +92,7 @@ func cmdOrder(state *app.State, args []string, accountID string) string {
 		}
 		return "📋 最近一个月没有订单"
 	}
-	return formatBotOrders(records, query)
+	return formatBotOrdersForState(state, records, query)
 }
 
 func cmdPay(state *app.State, args []string, accountID string) string {
@@ -195,6 +195,10 @@ func isUnpaidOrderStatus(status string) bool {
 }
 
 func formatBotOrders(records []botOrderRecord, query botOrderQuery) string {
+	return formatBotOrdersForState(nil, records, query)
+}
+
+func formatBotOrdersForState(state *app.State, records []botOrderRecord, query botOrderQuery) string {
 	title := "📋 最近一个月订单"
 	if query.limit > 0 {
 		title = fmt.Sprintf("📋 最近 %d 条订单", query.limit)
@@ -211,7 +215,7 @@ func formatBotOrders(records []botOrderRecord, query botOrderQuery) string {
 			record.ID,
 			formatOrderDate(record.Detail),
 			fallbackText(record.Status, "未知"),
-			formatOrderPrice(record.Detail),
+			formatOrderPriceForState(state, record.Detail),
 		)
 		if expiration := formatOrderFieldDate(record.Detail, "expirationDate"); expiration != "" {
 			block += "到期时间: " + expiration + "\n"
@@ -267,15 +271,29 @@ func orderDate(detail map[string]interface{}) time.Time {
 }
 
 func formatOrderPrice(detail map[string]interface{}) string {
+	return formatOrderPriceForState(nil, detail)
+}
+
+func formatOrderPriceForState(state *app.State, detail map[string]interface{}) string {
 	value, ok := detail["priceWithoutTax"].(map[string]interface{})
 	if !ok {
+		return "价格暂不可用"
+	}
+	currency := orderMapString(value, "currencyCode")
+	if commandUsesCNY(state) {
+		amount := orderMapString(value, "value")
+		if amount == "" {
+			return "价格暂不可用"
+		}
+		if formatted, ok := formatCommandPriceValue(state, amount, currency); ok {
+			return formatted
+		}
 		return "价格暂不可用"
 	}
 	if text := orderMapString(value, "text"); text != "" {
 		return text
 	}
 	amount := orderMapString(value, "value")
-	currency := orderMapString(value, "currencyCode")
 	if amount != "" {
 		return strings.TrimSpace(amount + " " + currency)
 	}
