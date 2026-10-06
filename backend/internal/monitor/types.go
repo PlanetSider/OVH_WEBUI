@@ -52,6 +52,10 @@ type Monitor struct {
 	messageUUIDCache    map[string]*CachedMessage
 	messageUUIDCacheTTL time.Duration
 
+	// 已确认的 OVH 购物车价格缓存；仅在当前可用性仍匹配同一账户、型号、机房和选项时复用。
+	priceCache    map[priceCacheKey]*cachedPrice
+	priceCacheTTL time.Duration
+
 	cacheLock sync.Mutex
 
 	vpsBroadcastModelMu       sync.RWMutex
@@ -74,6 +78,8 @@ const (
 	// 两个渠道共用同一张 SQLite 表，必须使用同一边界，避免飞书按钮
 	// 绕过 Telegram 缓存层后永久有效。
 	MessageButtonTTL = 24 * time.Hour
+	// PriceQuoteCacheTTL 是同一账户、型号、机房和配置选项的成功购物车报价缓存时长。
+	PriceQuoteCacheTTL = 24 * time.Hour
 )
 
 type CachedOptions struct {
@@ -140,6 +146,8 @@ func New(state *app.State) *Monitor {
 		optionsCacheTTL:     24 * time.Hour,
 		messageUUIDCache:    map[string]*CachedMessage{},
 		messageUUIDCacheTTL: MessageButtonTTL,
+		priceCache:          map[priceCacheKey]*cachedPrice{},
+		priceCacheTTL:       PriceQuoteCacheTTL,
 	}
 }
 

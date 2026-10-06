@@ -66,7 +66,7 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 			history = []HistoryEntry{}
 		}
 		sub := &Subscription{
-			ID:                   uuid.NewString(),
+			ID:                    uuid.NewString(),
 			PlanCode:              planCode,
 			Datacenters:           datacenters,
 			Memories:              cloneStrings(memories),
@@ -311,9 +311,17 @@ func (m *Monitor) OptionsCacheLookup(key string) []string {
 
 // cleanupExpiredCaches 对应 Python: _cleanup_expired_caches
 func (m *Monitor) cleanupExpiredCaches() {
-	now := time.Now().Unix()
+	if m == nil {
+		return
+	}
+	nowTime := time.Now()
+	now := nowTime.Unix()
 	ttlUUID := int64(m.messageUUIDCacheTTL.Seconds())
 	ttlOpts := int64(m.optionsCacheTTL.Seconds())
+	ttlPrice := m.priceCacheTTL
+	if ttlPrice <= 0 {
+		ttlPrice = PriceQuoteCacheTTL
+	}
 	m.cacheLock.Lock()
 	expUUIDs := []string{}
 	for k, v := range m.messageUUIDCache {
@@ -333,18 +341,29 @@ func (m *Monitor) cleanupExpiredCaches() {
 	for _, k := range expOpts {
 		delete(m.optionsCache, k)
 	}
+	expPrices := []priceCacheKey{}
+	for k, v := range m.priceCache {
+		if v == nil || nowTime.Sub(v.createdAt) >= ttlPrice {
+			expPrices = append(expPrices, k)
+		}
+	}
+	for _, k := range expPrices {
+		delete(m.priceCache, k)
+	}
 	m.cacheLock.Unlock()
 
 	// 同步清理 SQLite 过期按钮
-	if m.state.DB != nil {
+	if m.state != nil && m.state.DB != nil {
 		if n, err := m.state.DB.DeleteExpiredTelegramButtons(float64(now - ttlUUID)); err != nil {
-			m.state.Logger.Warn("清理过期 TG 按钮失败", "monitor")
-		} else if n > 0 {
+			if m.state.Logger != nil {
+				m.state.Logger.Warn("清理过期 TG 按钮失败", "monitor")
+			}
+		} else if n > 0 && m.state.Logger != nil {
 			m.state.Logger.Debug(fmt.Sprintf("清理过期 TG 按钮: %d 条", n), "monitor")
 		}
 	}
-	if len(expUUIDs) > 0 || len(expOpts) > 0 {
-		m.state.Logger.Debug(fmt.Sprintf("清理过期缓存: UUID=%d个, Options=%d个", len(expUUIDs), len(expOpts)), "monitor")
+	if (len(expUUIDs) > 0 || len(expOpts) > 0 || len(expPrices) > 0) && m.state != nil && m.state.Logger != nil {
+		m.state.Logger.Debug(fmt.Sprintf("清理过期缓存: UUID=%d个, Options=%d个, Price=%d个", len(expUUIDs), len(expOpts), len(expPrices)), "monitor")
 	}
 }
 

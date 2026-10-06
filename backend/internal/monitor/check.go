@@ -419,6 +419,18 @@ func (m *Monitor) checkAvailabilityChange(ctx context.Context, target, sub *Subs
 		return
 	}
 	currentAvailability := availabilityResult.Configs
+	availablePriceKeys := make(map[priceCacheKey]struct{})
+	for _, configData := range currentAvailability {
+		if configData == nil {
+			continue
+		}
+		for dc, status := range configData.Datacenters {
+			if catalog.AvailabilityExplicitlyAvailable(status) {
+				availablePriceKeys[newPriceCacheKey(notificationAccountID, planCode, dc, configData.Options)] = struct{}{}
+			}
+		}
+	}
+	m.retainPriceCachesForAvailability(notificationAccountID, planCode, availablePriceKeys)
 
 	if sub.LastStatus == nil {
 		sub.LastStatus = map[string]string{}
@@ -502,6 +514,9 @@ func (m *Monitor) checkAvailabilityChange(ctx context.Context, target, sub *Subs
 		dcStatusMap := map[string]dcStatus{}
 		priceCheckTasks := []string{}
 		for dc, status := range configData.Datacenters {
+			if strings.EqualFold(strings.TrimSpace(status), "unavailable") {
+				m.invalidatePriceCache(notificationAccountID, planCode, dc, configData.Options)
+			}
 			if len(monitoredDCs) > 0 && !monitorDatacenterMatches(monitoredDCs, dc) {
 				continue
 			}

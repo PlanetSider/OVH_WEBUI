@@ -3,6 +3,8 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,13 +46,124 @@ func optionsFromConfig(configInfo map[string]interface{}) []string {
 	return options
 }
 
+type priceCacheKey struct {
+	accountID  string
+	planCode   string
+	datacenter string
+	optionsKey string
+}
+
+type cachedPrice struct {
+	display   price.DisplayPrice
+	createdAt time.Time
+}
+
+func newPriceCacheKey(accountID, planCode, datacenter string, options []string) priceCacheKey {
+	normalized := make([]string, 0, len(options))
+	for _, option := range options {
+		option = strings.TrimSpace(option)
+		if option != "" {
+			normalized = append(normalized, option)
+		}
+	}
+	sort.Strings(normalized)
+	return priceCacheKey{
+		accountID:  strings.TrimSpace(accountID),
+		planCode:   strings.TrimSpace(planCode),
+		datacenter: strings.TrimSpace(datacenter),
+		optionsKey: strings.Join(normalized, "\x00"),
+	}
+}
+
+func (m *Monitor) priceCacheLookup(accountID, planCode, datacenter string, options []string) (price.DisplayPrice, bool) {
+	if m == nil {
+		return price.DisplayPrice{}, false
+	}
+	key := newPriceCacheKey(accountID, planCode, datacenter, options)
+	now := time.Now()
+	m.cacheLock.Lock()
+	entry, ok := m.priceCache[key]
+	ttl := m.priceCacheTTL
+	if ttl <= 0 {
+		ttl = PriceQuoteCacheTTL
+	}
+	if ok && entry != nil && now.Sub(entry.createdAt) < ttl {
+		display := entry.display
+		m.cacheLock.Unlock()
+		return display, true
+	}
+	if ok {
+		delete(m.priceCache, key)
+	}
+	m.cacheLock.Unlock()
+	return price.DisplayPrice{}, false
+}
+
+func (m *Monitor) priceCacheStore(accountID, planCode, datacenter string, options []string, display price.DisplayPrice) {
+	if m == nil {
+		return
+	}
+	key := newPriceCacheKey(accountID, planCode, datacenter, options)
+	m.cacheLock.Lock()
+	if m.priceCache == nil {
+		m.priceCache = map[priceCacheKey]*cachedPrice{}
+	}
+	m.priceCache[key] = &cachedPrice{display: display, createdAt: time.Now()}
+	m.cacheLock.Unlock()
+}
+
+// invalidatePriceCache 删除 API 明确报告无货的单个报价键。
+// 失败、空结果或未知状态不触碰缓存，避免临时接口问题把已确认报价删掉。
+func (m *Monitor) invalidatePriceCache(accountID, planCode, datacenter string, options []string) {
+	if m == nil {
+		return
+	}
+	key := newPriceCacheKey(accountID, planCode, datacenter, options)
+	m.cacheLock.Lock()
+	delete(m.priceCache, key)
+	m.cacheLock.Unlock()
+}
+
+// retainPriceCachesForAvailability 仅在库存接口成功返回完整快照后调用。
+// 当前有货键继续保留；同账户、同型号下不在快照中的旧配置/机房报价全部删除。
+// 调用方在错误或空结果时不得调用它，以免临时接口故障清空有效缓存。
+func (m *Monitor) retainPriceCachesForAvailability(accountID, planCode string, available map[priceCacheKey]struct{}) {
+	if m == nil {
+		return
+	}
+	accountID = strings.TrimSpace(accountID)
+	planCode = strings.TrimSpace(planCode)
+	m.cacheLock.Lock()
+	for key := range m.priceCache {
+		if key.accountID == accountID && key.planCode == planCode {
+			if _, keep := available[key]; !keep {
+				delete(m.priceCache, key)
+			}
+		}
+	}
+	m.cacheLock.Unlock()
+}
+
 // verifyPriceAvailable 完成一次购物车价格校验，并返回可直接用于通知的价格文案。
 // 返回值依次为：价格文案、价格校验是否通过、失败原因。
 func (m *Monitor) verifyPriceAvailable(ctx context.Context, accountID, planCode, datacenter string, configInfo map[string]interface{}) (string, bool, string) {
+	if m == nil || m.state == nil {
+		return "", false, "价格校验服务不可用"
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	options := optionsFromConfig(configInfo)
+	if err := ctx.Err(); err != nil {
+		return "", false, "价格校验已取消"
+	}
+	if display, ok := m.priceCacheLookup(accountID, planCode, datacenter, options); ok {
+		priceText := ""
+		if display.TotalKnown || display.BreakdownKnown {
+			priceText = m.formatNotificationPrice(display)
+		}
+		return priceText, true, ""
+	}
 	result := price.GetInternalWithContext(ctx, m.state, accountID, planCode, datacenter, options)
 	if err := ctx.Err(); err != nil {
 		return "", false, "价格校验已取消"
@@ -60,33 +173,57 @@ func (m *Monitor) verifyPriceAvailable(ctx context.Context, accountID, planCode,
 		if errMsg == "" {
 			errMsg = "未知错误"
 		}
-		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
+		if m.state.Logger != nil {
+			m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
+		}
 		return m.getCatalogPriceInfoTextWithContext(ctx, accountID, planCode, options), false, errMsg
 	}
 	if result.Price == nil {
-		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - price字段缺失", planCode, datacenter), "monitor")
+		if m.state.Logger != nil {
+			m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - price字段缺失", planCode, datacenter), "monitor")
+		}
 		return m.getCatalogPriceInfoTextWithContext(ctx, accountID, planCode, options), false, "price字段缺失"
 	}
 	withTax := result.Price.Prices["withTax"]
 	if withTax == nil {
 		errMsg := "withTax无效(<nil>)"
-		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
+		if m.state.Logger != nil {
+			m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
+		}
 		return m.getCatalogPriceInfoTextWithContext(ctx, accountID, planCode, options), false, errMsg
 	}
-	if v, ok := numconv.ToFloat64(withTax); ok && v == 0 {
-		errMsg := "withTax无效(0)"
-		m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
+	withTaxValue, withTaxOK := numconv.ToFloat64(withTax)
+	if !withTaxOK || math.IsNaN(withTaxValue) || math.IsInf(withTaxValue, 0) || withTaxValue <= 0 {
+		errMsg := "withTax无效(格式)"
+		if withTaxOK {
+			switch {
+			case withTaxValue == 0:
+				errMsg = "withTax无效(0)"
+			case withTaxValue < 0:
+				errMsg = "withTax无效(负数)"
+			default:
+				errMsg = "withTax无效(非有限)"
+			}
+		}
+		if m.state.Logger != nil {
+			m.state.Logger.Debug(fmt.Sprintf("价格校验失败: %s@%s - %s", planCode, datacenter, errMsg), "monitor")
+		}
 		return m.getCatalogPriceInfoTextWithContext(ctx, accountID, planCode, options), false, errMsg
 	}
 	display, displayErr := price.GetDisplayFromResult(m.state, accountID, planCode, options, result)
+	m.priceCacheStore(accountID, planCode, datacenter, options, display)
 	priceText := ""
 	if displayErr != nil {
-		m.state.Logger.Warn("价格目录拆分失败", "monitor")
+		if m.state.Logger != nil {
+			m.state.Logger.Warn("价格目录拆分失败", "monitor")
+		}
 	}
 	if display.TotalKnown || display.BreakdownKnown {
 		priceText = m.formatNotificationPrice(display)
 	}
-	m.state.Logger.Debug(fmt.Sprintf("价格校验通过: %s@%s - 含税价格: %v", planCode, datacenter, withTax), "monitor")
+	if m.state.Logger != nil {
+		m.state.Logger.Debug(fmt.Sprintf("价格校验通过: %s@%s - 含税价格: %v", planCode, datacenter, withTax), "monitor")
+	}
 	return priceText, true, ""
 }
 
@@ -158,7 +295,9 @@ func (m *Monitor) getCatalogPriceInfoText(accountID, planCode string, options []
 func (m *Monitor) getCatalogPriceInfoTextWithContext(ctx context.Context, accountID, planCode string, options []string) string {
 	display, err := price.GetCatalogDisplayWithContext(ctx, m.state, accountID, planCode, options)
 	if err != nil {
-		m.state.Logger.Warn("价格目录获取失败", "monitor")
+		if m.state.Logger != nil {
+			m.state.Logger.Warn("价格目录获取失败", "monitor")
+		}
 		return ""
 	}
 	if !display.BreakdownKnown {

@@ -32,6 +32,16 @@ type PriceInfo struct {
 	Items       []map[string]interface{} `json:"items"`
 }
 
+// priceFailure 保留可用于监控诊断的阶段和安全错误类别，避免暴露
+// OVH 响应正文（其中可能包含供应商细节或凭据）。
+func priceFailure(fallback, stage string, err error) string {
+	summary := ovh.ErrorSummary(err)
+	if summary == "" {
+		return fallback
+	}
+	return fmt.Sprintf("%s（%s：%s）", fallback, stage, summary)
+}
+
 // GetInternal 询价。accountID 决定用哪个账户调 OVH(空 = 默认账户),
 // 以及购物车走哪个 subsidiary(账户的 zone)。多账户必须区分。
 func GetInternal(state *app.State, accountID, planCode, datacenter string, options []string) Result {
@@ -95,7 +105,7 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 	if err := client.PostWithContext(ctx, "/order/cart", map[string]interface{}{
 		"ovhSubsidiary": subsidiary,
 	}, &cartResult); err != nil {
-		return Result{Success: false, Error: "创建购物车失败，请稍后重试"}
+		return Result{Success: false, Error: priceFailure("创建购物车失败，请稍后重试", "创建购物车", err)}
 	}
 	cartID, _ = cartResult["cartId"].(string)
 	if strings.TrimSpace(cartID) == "" {
@@ -103,7 +113,7 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 	}
 	state.Logger.Debug("购物车创建成功，ID: "+cartID, "price")
 	if err := client.PostWithContext(ctx, "/order/cart/"+cartID+"/assign", map[string]interface{}{}, nil); err != nil {
-		return Result{Success: false, Error: "绑定购物车失败，请稍后重试"}
+		return Result{Success: false, Error: priceFailure("绑定购物车失败，请稍后重试", "绑定购物车", err)}
 	}
 
 	// 2. 添加基础商品；只有 P1M/default 被 OVH 拒绝时才查询真实计价并重试一次。
@@ -114,7 +124,7 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 			state.Logger.Warn("配置在指定数据中心不可用", "price")
 			return Result{Success: false, Error: "该配置在指定数据中心不可用"}
 		}
-		return Result{Success: false, Error: "添加基础商品失败，请稍后重试"}
+		return Result{Success: false, Error: priceFailure("添加基础商品失败，请稍后重试", "添加基础商品", err)}
 	}
 	if baseDuration != "P1M" || basePricingMode != "default" {
 		state.Logger.Warn(fmt.Sprintf("基础商品 %s 使用目录计价 %s/%s 加购成功", planCode, baseDuration, basePricingMode), "price")
@@ -140,7 +150,7 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 	for _, cfg := range configurations {
 		body := map[string]interface{}{"label": cfg.label, "value": cfg.value}
 		if err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/item/%d/configuration", cartID, itemID), body, nil); err != nil {
-			return Result{Success: false, Error: "设置必需配置失败，请稍后重试"}
+			return Result{Success: false, Error: priceFailure("设置必需配置失败，请稍后重试", "设置配置 "+cfg.label, err)}
 		} else {
 			state.Logger.Debug(fmt.Sprintf("设置配置: %s = %s", cfg.label, cfg.value), "price")
 		}
@@ -152,7 +162,7 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 		q := url.Values{}
 		q.Set("planCode", planCode)
 		if err := client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s/eco/options?%s", cartID, q.Encode()), &availableOpts); err != nil {
-			return Result{Success: false, Error: "获取可用 Eco 选项失败，请稍后重试"}
+			return Result{Success: false, Error: priceFailure("获取可用 Eco 选项失败，请稍后重试", "读取 Eco 选项", err)}
 		}
 		state.Logger.Debug(fmt.Sprintf("找到 %d 个可用选项", len(availableOpts)), "price")
 		added := []string{}
@@ -179,7 +189,7 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 				"pricingMode": pricingMode, "quantity": 1,
 			}
 			if err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/eco/options", cartID), optPayload, nil); err != nil {
-				return Result{Success: false, Error: "添加配置失败，请稍后重试"}
+				return Result{Success: false, Error: priceFailure("添加配置失败，请稍后重试", "添加配置 "+matchedCode, err)}
 			}
 			added = append(added, matchedCode)
 			state.Logger.Debug(fmt.Sprintf("成功添加选项: %s (匹配档次: %s)", matchedCode, tier), "price")
@@ -192,11 +202,11 @@ func GetInternalWithContext(ctx context.Context, state *app.State, accountID, pl
 	// 之前 Go 静默忽略会导致瞬断时 success:true 但价格全 nil，前端误以为有效价格 0
 	var cartInfo map[string]interface{}
 	if err := client.GetWithContext(ctx, "/order/cart/"+cartID, &cartInfo); err != nil {
-		return Result{Success: false, Error: "读取购物车详情失败，请稍后重试"}
+		return Result{Success: false, Error: priceFailure("读取购物车详情失败，请稍后重试", "读取购物车详情", err)}
 	}
 	var cartSummary map[string]interface{}
 	if err := client.GetWithContext(ctx, "/order/cart/"+cartID+"/summary", &cartSummary); err != nil {
-		return Result{Success: false, Error: "读取购物车价格失败，请稍后重试"}
+		return Result{Success: false, Error: priceFailure("读取购物车价格失败，请稍后重试", "读取购物车 summary", err)}
 	}
 
 	priceInfo := &PriceInfo{
